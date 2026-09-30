@@ -226,7 +226,4 @@ hook.js (MAIN)  ──postMessage──►  content.js (ISOLATED)  ──runtime
 
 ## License
 
-个人自用 / 学习研究向工具。上传 GitHub 前请自行确认合规义务，并勿提交：
-- 登录 Cookie / 浏览器 profile  
-- 真实评论数据集  
-- 私钥（`.pem`）与本机绝对路径敏感配置  
+个人自用 / 学习研究向工具。
