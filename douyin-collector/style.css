@@ -1,0 +1,139 @@
+:root {
+  --bg: #0f1419;
+  --card: #1a2332;
+  --ink: #e7ecf3;
+  --muted: #8b9bb4;
+  --accent: #3d8bfd;
+  --ok: #3dd68c;
+  --bad: #ff6b6b;
+  --warn: #f0c9a0;
+  --border: #2a3548;
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  min-height: 100vh;
+}
+
+.wrap {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 32px 20px 48px;
+}
+
+header h1 {
+  margin: 0 0 8px;
+  font-size: 28px;
+  font-weight: 600;
+}
+
+.sub {
+  margin: 0 0 24px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px 22px;
+  margin-bottom: 16px;
+}
+
+.card h2 {
+  margin: 0 0 14px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+label {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+input {
+  flex: 1;
+  min-width: 220px;
+  background: #0c121a;
+  border: 1px solid var(--border);
+  color: var(--ink);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+button {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+button:hover { filter: brightness(1.08); }
+
+.badge {
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #243044;
+  color: var(--muted);
+}
+
+.badge.ok { background: rgba(61, 214, 140, 0.15); color: var(--ok); }
+.badge.bad { background: rgba(255, 107, 107, 0.15); color: var(--bad); }
+
+.out {
+  margin: 0;
+  padding: 12px;
+  background: #0c121a;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 280px;
+  overflow: auto;
+}
+
+.check, .check li {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--ink);
+  line-height: 1.7;
+  font-size: 14px;
+}
+
+ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--ink);
+  line-height: 1.7;
+  font-size: 14px;
+}
+
+code {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  background: #0c121a;
+  padding: 1px 5px;
+  border-radius: 4px;
+}

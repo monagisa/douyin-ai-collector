@@ -1,0 +1,6 @@
+{
+  "host": "127.0.0.1",
+  "port": 18765,
+  "hubPath": "/api/v1",
+  "commandTimeoutMs": 90000
+}

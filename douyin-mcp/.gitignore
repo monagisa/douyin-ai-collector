@@ -1,0 +1,5 @@
+node_modules/
+config.json
+*.log
+douyin-comments-*.csv
+douyin-comments-*.json
