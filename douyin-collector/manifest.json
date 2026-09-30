@@ -1,0 +1,64 @@
+{
+  "manifest_version": 3,
+  "name": "抖音评论采集器",
+  "version": "0.2.1",
+  "description": "在抖音视频页/推荐页采集公开评论（含二级回复）并导出 CSV。不滚动页面、不破解签名、不绕过登录——复用页面自己已生成的签名请求，只改分页游标。",
+  "minimum_chrome_version": "111",
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "downloads",
+    "scripting"
+  ],
+  "host_permissions": [
+    "*://*.douyin.com/*",
+    "*://*.iesdouyin.com/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.douyin.com/*",
+        "*://*.iesdouyin.com/*"
+      ],
+      "js": [
+        "hook.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "*://*.douyin.com/*",
+        "*://*.iesdouyin.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "panel.css"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "hook.js"
+      ],
+      "matches": [
+        "*://*.douyin.com/*",
+        "*://*.iesdouyin.com/*"
+      ]
+    }
+  ],
+  "action": {
+    "default_title": "抖音评论采集器"
+  }
+}

@@ -1,0 +1,57 @@
+# 不要进 Git
+node_modules/
+package-lock.json
+*.log
+
+# Chrome / Playwright 登录态与本机 profile
+.profile/
+.profile-*/
+**/.profile/
+**/.profile-*/
+
+# 敏感导出与 cookie
+cookies.json
+**/cookies.json
+*.pem
+*.key
+
+# 测试运行产物
+_*
+!_README.md
+downloads/
+_downloads*/
+*.db
+*.db-journal
+*.db-wal
+*.ldb
+*.journal
+*.baj
+*.baf
+*.bf
+*.dat
+*.pma
+*.tmp
+*.usage
+*.pb
+*.old
+*.bak
+
+# 本地 MCP / 扩展配置（含本机绝对路径）
+douyin-mcp/config.json
+douyin-collector/**/config.local.json
+
+# 评论数据（勿公开数据集）
+douyin-comments-*.csv
+douyin-comments-*.json
+# ---- 上传前审计补的洞（2026-09-30）----
+# ⚠️ Chrome profile 备份目录：含 Local State / Cookie / 保存的密码，绝不入库。
+#    实测发现它**不在**上面的 **/.profile/ 规则覆盖范围内，是个真漏。
+chrome-profile-backup-*/
+**/chrome-profile-backup-*/
+
+# 探测/脚手架留下的 profile 目录（同样含 Cookie 与 Login Data）
+dts-ext/
+dsh-douyin-collector/
+
+# 打包产物（每次发布都重新生成，没必要进仓库）
+douyin-collector-dist/

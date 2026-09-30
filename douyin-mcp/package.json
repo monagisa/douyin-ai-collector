@@ -1,0 +1,19 @@
+{
+  "name": "douyin-collector-mcp",
+  "version": "0.2.0",
+  "description": "本地 MCP Hub for 抖音评论采集器 Chrome 扩展（方案 B：扩展出站轮询 + 本机 tools）",
+  "type": "commonjs",
+  "main": "mcp.js",
+  "bin": {
+    "douyin-collector-mcp": "mcp.js"
+  },
+  "scripts": {
+    "start": "node mcp.js",
+    "hub-only": "node mcp.js --hub-only",
+    "test": "node test-hub.js && node test-mcp-handshake.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

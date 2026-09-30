@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>抖音评论采集器 · AI Bridge 诊断</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <h1>AI Bridge 诊断</h1>
+      <p class="sub">用于排查扩展 ↔ 本地 Hub（douyin-mcp）连通性。本页在浏览器里打开，不替代扩展面板。</p>
+    </header>
+
+    <section class="card">
+      <h2>Hub 探测</h2>
+      <div class="row">
+        <label for="hubUrl">Hub URL</label>
+        <input id="hubUrl" value="http://127.0.0.1:18765/api/v1/health" />
+      </div>
+      <div class="row">
+        <button id="btnProbe" type="button">探测 /health</button>
+        <span id="probeBadge" class="badge">未探测</span>
+      </div>
+      <pre id="probeOut" class="out">—</pre>
+    </section>
+
+    <section class="card">
+      <h2>扩展侧清单</h2>
+      <ol class="check">
+        <li><strong>不要</strong>依赖 <code>chrome.alarms</code>（已从 background 去掉，避免 onAlarm TypeError）</li>
+        <li><code>manifest.json</code> host 权限需含 <code>http://127.0.0.1/*</code></li>
+        <li>Hub 必须运行<strong>新版</strong> <code>mcp.js</code>（带 <code>Access-Control-Allow-Origin</code>）</li>
+        <li>Chrome 扩展页 → <strong>重新加载</strong> → 抖音页 <strong>F5</strong></li>
+        <li>扩展 SW 控制台不应再出现 CORS / onAlarm 红错</li>
+      </ol>
+    </section>
+
+    <section class="card">
+      <h2>预期</h2>
+      <ul>
+        <li>探测成功时 JSON 里 <code>ok: true</code>，响应头含 <code>access-control-allow-origin</code></li>
+        <li>扩展轮询 <code>/api/v1/pending</code>；无命令时为空数组也算通</li>
+        <li>Hub 未启动时：探测失败（本机拒绝连接）；扩展应静默失败，不影响面板采集</li>
+      </ul>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
