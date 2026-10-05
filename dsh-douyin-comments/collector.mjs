@@ -372,6 +372,16 @@ function readManifest(dir) {
   } catch (e) { return null; }
 }
 
+/** 未打包扩展的 ID：SHA256(绝对路径的 UTF-16LE 字节) 前 16 字节，每个半字节 0-f 映射到 a-p（Chromium 定法） */
+export function extensionIdFromPath(dir) {
+  const h = crypto.createHash('sha256').update(Buffer.from(path.resolve(dir), 'utf16le')).digest();
+  let id = '';
+  for (let i = 0; i < 16; i++) {
+    id += String.fromCharCode(97 + (h[i] >> 4)) + String.fromCharCode(97 + (h[i] & 15));
+  }
+  return id;
+}
+
 /** 目录指纹（内容哈希），用来判断要不要重新安装 */
 function dirSignature(dir) {
   const manifest = readManifest(dir);
@@ -445,6 +455,45 @@ export function installExtension({ log = () => {} } = {}) {
   log(`扩展就绪：v${sig.version}${sig.name ? '（' + sig.name + '）' : ''}`
     + ` @ ${target}` + (copied ? `（本次从「${src.why}」安装）` : '（已是最新，无需重装）'));
   return { dir: target, version: sig.version, name: sig.name, source: src.dir, sourceWhy: src.why, copied, hash: sig.hash, files: sig.files };
+}
+
+/** 记录「上一次启动浏览器时用的扩展 hash」，用来判断扩展文件有没有变过 */
+const LAUNCH_STATE_FILE = 'extension.launched.json';
+
+export function readLaunchState() {
+  try { return JSON.parse(fs.readFileSync(path.join(DEFAULTS.home, LAUNCH_STATE_FILE), 'utf8')) || {}; } catch { return {}; }
+}
+
+export function writeLaunchState(next) {
+  fs.mkdirSync(DEFAULTS.home, { recursive: true });
+  fs.writeFileSync(path.join(DEFAULTS.home, LAUNCH_STATE_FILE), JSON.stringify(next, null, 2), 'utf8');
+}
+
+/**
+ * 清掉浏览器 profile 里对「未打包扩展脚本」的缓存。
+ *
+ * 实测坑（v0.2.6 排查了两小时）：Chrome 把扩展的脚本/代码缓存在 profile 里
+ * （`Default/Code Cache`、`Default/Service Worker/ScriptCache`）。扩展目录里的
+ * background.js 换了新代码、`chrome.runtime.getManifest().version` 也是新版本，
+ * 但**新开的浏览器里跑的 `executeAiCommand` 还是旧代码**（AI 桥回 UNKNOWN_COMMAND），
+ * 只有把这两个目录挪走才生效。所以扩展内容一变，启动前先清一次。
+ *
+ * @returns {string[]} 真正删掉的目录
+ */
+export function clearStaleScriptCaches(profileDir, { log = () => {} } = {}) {
+  const targets = [
+    path.join(profileDir, 'Default', 'Code Cache'),
+    path.join(profileDir, 'Default', 'Service Worker', 'ScriptCache'),
+  ];
+  const cleared = [];
+  for (const t of targets) {
+    try {
+      if (fs.existsSync(t)) { fs.rmSync(t, { recursive: true, force: true }); cleared.push(t); }
+    } catch (e) {
+      log('清浏览器脚本缓存失败（继续跑，但可能还在用旧扩展代码）：' + t + ' — ' + e.message);
+    }
+  }
+  return cleared;
 }
 
 // ---------- CSV（列契约抄自扩展 background.js，顺序不变） ----------
@@ -566,9 +615,29 @@ export async function collectDouyinComments(o = {}) {
   const releaseLock = acquireRunLock({ log, url });
 
   // 上一次为了等扫码把窗口留着了？那就接上去：同一个 profile 目录不能再开第二个进程。
-  const running = await attachRunningBrowser(chromium, log);
+  let running = await attachRunningBrowser(chromium, log);
+
+  // 扩展文件变过（或第一次记录）→ profile 里的旧脚本缓存会让新窗口继续跑旧代码。
+  // 接了旧窗口也一样（它的扩展代码是启动那一刻的），先关掉它再重开。
+  const launchState = readLaunchState();
+  const extChanged = launchState.hash !== ext.hash;
+  if (running && extChanged) {
+    log('扩展文件跟上次启动时不一样（' + (launchState.hash || '没有记录') + ' → ' + ext.hash + '）：'
+      + '旧窗口里跑的还是旧扩展代码，关掉它重新开一个');
+    await running.browser.close().catch(() => {});
+    running = null;
+  }
   const adopted = running ? running.browser : null;
-  if (!running) log('启动 Chromium（已装入扩展 v' + ext.version + '）…');
+  if (!running) {
+    if (extChanged) {
+      const cleared = clearStaleScriptCaches(profile, { log });
+      if (cleared.length) {
+        log('清掉浏览器里缓存的旧扩展脚本（扩展更新过，不清的话新窗口还在跑旧代码）：'
+          + cleared.map((p) => path.relative(profile, p) || p).join('、'));
+      }
+    }
+    log('启动 Chromium（已装入扩展 v' + ext.version + '）…');
+  }
   let ctx;
   try {
     ctx = running ? running.ctx : await chromium.launchPersistentContext(profile, {
@@ -592,13 +661,21 @@ export async function collectDouyinComments(o = {}) {
     throw new Error('打开浏览器失败：' + (e && e.message)
       + '（如果上一次采集留了个窗口没关，先关掉它，或用 DOUYIN_PROFILE 换一个 profile 目录）');
   }
+  // 记下这次启动用的扩展 hash：下次扩展一变，就先清 profile 里的旧脚本缓存
+  writeLaunchState({
+    hash: ext.hash, version: ext.version, profile,
+    adopted: !!running, launchedAt: new Date().toISOString(),
+  });
 
   let closed = false;
   let keepForLogin = false;      // 「没登录，窗口留给你扫码」时不许关窗口
+  let extHelperPage = null;      // 扩展 SW 睡着时开的兜底扩展页（读/写 chrome.storage 用）
   const close = async () => {
     if (closed) return;
     closed = true;
     releaseLock();
+    try { if (extHelperPage && !extHelperPage.isClosed()) await extHelperPage.close(); } catch (e) { /* 忽略 */ }
+    extHelperPage = null;
     if (o.keep || keepForLogin) {
       log('浏览器窗口保持打开（' + (keepForLogin ? '等你扫码登录' : 'keepOpen=true') + '）');
       return;
@@ -750,27 +827,48 @@ export async function collectDouyinComments(o = {}) {
       if (b) { b.click(); return true; }
       return false;
     }, re.source);
+    /**
+     * 只在「扩展自己的」service worker / 扩展页里 eval。
+     * 不能用 ctx.serviceWorkers()[0]：抖音页面自己也注册了 sw.js，清过脚本缓存后它可能排在前面，
+     * 在里面 eval chrome.storage 会直接 `ReferenceError: chrome is not defined`（实测踩过：
+     * 设置没写进去、落库读成 0 条、明明采到了却判「没本轮新数据」）。
+     * 扩展 SW 睡着时开一个扩展自己的页面兜底（扩展页同样有 chrome.* 权限，顺手把 SW 唤醒）。
+     */
+    const isExtWorker = (s) => /^chrome-extension:\/\//.test(s.url());
+    const extEval = async (fn, arg) => {
+      const sw = ctx.serviceWorkers().find(isExtWorker)
+        || await ctx.waitForEvent('serviceworker', { timeout: 8000, predicate: isExtWorker }).catch(() => null);
+      if (sw) {
+        try { return await sw.evaluate(fn, arg); } catch (e) { if (!/chrome is not defined/.test(String(e))) throw e; }
+      }
+      if (!extHelperPage || extHelperPage.isClosed()) {
+        extHelperPage = await ctx.newPage();
+        await extHelperPage.goto('chrome-extension://' + extensionIdFromPath(ext.dir) + '/index.html', { waitUntil: 'domcontentloaded' }).catch(() => {});
+        const back = ctx.serviceWorkers().find(isExtWorker);
+        if (back) { try { return await back.evaluate(fn, arg); } catch (e) { /* 落到扩展页兜底 */ } }
+      }
+      return extHelperPage.evaluate(fn, arg);
+    };
+
     /** 从扩展 SW 读该视频的落库快照 */
     const readBucket = async (videoId) => {
-      const sw = ctx.serviceWorkers()[0] || await ctx.waitForEvent('serviceworker', { timeout: 8000 }).catch(() => null);
-      if (!sw) return { ok: false, keys: [], title: '' };
-      const r = await sw.evaluate(async (id) => {
+      const r = await extEval(async (id) => {
         const store = await chrome.storage.local.get(['dts_c_' + id, 'dts_videos']);
         const bucket = store['dts_c_' + id] || {};
         const meta = (store.dts_videos || {})[id] || {};
         return { keys: Object.keys(bucket), title: meta.title || '' };
-      }, videoId).catch(() => ({ keys: [], title: '' }));
+      }, videoId).catch(() => null);
+      if (!r) return { ok: false, keys: [], title: '' };
       return { ok: true, keys: r.keys || [], title: r.title || '' };
     };
     const readComments = async (videoId) => {
-      const sw = ctx.serviceWorkers()[0] || await ctx.waitForEvent('serviceworker', { timeout: 8000 }).catch(() => null);
-      if (!sw) return { list: [], title: '' };
-      const r = await sw.evaluate(async (id) => {
+      const r = await extEval(async (id) => {
         const store = await chrome.storage.local.get(['dts_c_' + id, 'dts_videos']);
         const bucket = store['dts_c_' + id] || {};
         const meta = (store.dts_videos || {})[id] || {};
         return { list: Object.values(bucket), title: meta.title || '' };
-      }, videoId).catch(() => ({ list: [], title: '' }));
+      }, videoId).catch(() => null);
+      if (!r) return { list: [], title: '' };
       return { list: Array.isArray(r.list) ? r.list : [], title: r.title || '' };
     };
     /**
@@ -779,14 +877,13 @@ export async function collectDouyinComments(o = {}) {
      * 写不进去不算致命：扩展会退回内置的 4 路，只是设置没生效，所以只记日志。
      */
     const pushExtensionSettings = async (settings) => {
-      const sw = ctx.serviceWorkers()[0] || await ctx.waitForEvent('serviceworker', { timeout: 8000 }).catch(() => null);
-      if (!sw) return { ok: false, error: '没拿到扩展 service worker（设置没写进去，扩展用内置默认值）' };
-      const r = await sw.evaluate(async (value) => {
+      const r = await extEval(async (value) => {
         await chrome.storage.local.set({ dts_settings: value });
         const back = await chrome.storage.local.get(['dts_settings']);
         return back.dts_settings || null;
       }, settings).catch((e) => ({ error: String((e && e.message) || e) }));
-      if (r && r.error) return { ok: false, error: r.error };
+      if (!r) return { ok: false, error: '没拿到扩展的 service worker（设置没写进去，扩展用内置默认值）' };
+      if (r.error) return { ok: false, error: r.error };
       return { ok: true, value: r };
     };
     /**
@@ -794,9 +891,7 @@ export async function collectDouyinComments(o = {}) {
      * 拿不到就返回 null（只是诊断信息，不影响采集结果）。
      */
     const readEffectiveLanes = async () => {
-      const sw = ctx.serviceWorkers()[0];
-      if (!sw) return null;
-      const r = await sw.evaluate(async () => {
+      const r = await extEval(async () => {
         const o = await chrome.storage.local.get(['dts_settings_effective']);
         return o.dts_settings_effective || null;
       }).catch(() => null);
@@ -1049,4 +1144,4 @@ export async function collectDouyinComments(o = {}) {
   }
 }
 
-export default { collectDouyinComments, videoIdFromUrl, toCsv, cleanText, DEFAULTS, installExtension, findExtensionSource, loginGate, SESSION_COOKIE_NAMES, acquireRunLock };
+export default { collectDouyinComments, videoIdFromUrl, toCsv, cleanText, DEFAULTS, installExtension, findExtensionSource, loginGate, SESSION_COOKIE_NAMES, acquireRunLock, clearStaleScriptCaches, readLaunchState, writeLaunchState };

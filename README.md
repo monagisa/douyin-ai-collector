@@ -48,12 +48,14 @@ douyin-ai-collector/          ← 仓库根（可自行命名）
 3. （可选）`cd douyin-mcp && node mcp.js`，在 MCP 客户端注册 stdio server
 4. （可选，DSH）`dsh plugin --profile web add file:./dsh-douyin-comments` 后重启 dsh，直接对 agent 说
    「采集这个视频的评论 <链接>」——扩展由插件自己装，不用手动加载目录；目标条数 `max`（默认 80000）、
-   并发路数 `lanes`（默认 4）、超时、等扫码秒数、是否先清空、二级回复限速可在 DSH
-   「设置 → 插件 → dsh-douyin-comments」里改（0.5.0 起，改完立即生效，不用重启）；
-   **扩展面板标题栏右上角的设置齿轮 `⚙`**（0.2.5 起，在收起「—」左边；0.2.4 是面板第三行的「设置」文字按钮）
-   优先级更高，用不用 DSH 都能改，可调项含 `max`（目标条数）/并发路数/回复并发/回复间隔/限流等待。
-   要把这套发给别人：用 [release/dsh-douyin-comments-v0.5.3.zip](./release/dsh-douyin-comments-v0.5.3.zip)
-   （单文件，解压后是 `dsh-douyin-comments-0.5.3.tgz` 插件包 + `douyin-collector-extension-v0.2.5.zip`
+   并发路数 `lanes`（默认 4）、超时、等扫码秒数、是否先清空、二级回复限速都可以改，三个入口：
+   **扩展面板标题栏右上角的设置齿轮 `⚙`**（0.2.5 起，优先级最高，用不用 DSH 都能改）→
+   DSH「设置 → 插件 → dsh-douyin-comments」的设置表（0.5.0 起，改完立即生效，不用重启）→
+   AI 经 MCP（`douyin-mcp` 0.3.0）的 `ai_get_settings` / `ai_set_settings`，`ai_start_collect`
+   可带 `max` / `lanes` / `replyLanes` / `replyGapMs` / `replyWarmupMs` / `replyThrottleMaxWaitMs`
+   （优先级：面板齿轮 > AI 下发 > 内置默认）。
+   要把这套发给别人：用 [release/dsh-douyin-comments-v0.5.4.zip](./release/dsh-douyin-comments-v0.5.4.zip)
+   （单文件，解压后是 `dsh-douyin-comments-0.5.4.tgz` 插件包 + `douyin-collector-extension-v0.2.6.zip`
    单独扩展 + `使用说明.md` + `SHA256SUMS.txt`）。
 
 ---

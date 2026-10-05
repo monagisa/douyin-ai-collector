@@ -20,6 +20,10 @@
   `~/Library/Caches/ms-playwright`、`/Applications/Chromium.app`、`Google Chrome for Testing.app`、
   Homebrew / node 全局模块目录；另外品牌版 Chrome 137+ 会忽略命令行的 `--load-extension`，
   这时要么用 playwright 装的 Chromium，要么用 `DOUYIN_CHROME` 指过去（详见插件 README）
+- v0.2.6：**AI 桥也能读写设置**——新增 `get_settings` / `set_settings` 两条命令，`start_collect`
+  可带 `settings`（写 `dts_settings` 后立即生效）；配套 MCP `douyin-mcp` **0.3.0** 新增
+  `ai_get_settings` / `ai_set_settings`，`ai_start_collect` 支持 `max` / `lanes` / `replyLanes` /
+  `replyGapMs` / `replyWarmupMs` / `replyThrottleMaxWaitMs`（协议 §7.9）
 - 可选：配套 **MCP** 让 AI 代理调用采集能力（见下文）
 
 > ⚠️ 使用本工具可能违反抖音用户协议，**账号风险自负**。请仅用于自有账号、公开数据与合规研究。
@@ -57,8 +61,8 @@
 | 二级回复 | 顶层采完自动补采 `reply_comment_total > 0` 的线程 |
 | 本地存储 | 按 `videoId` 分池去重，关浏览器数据仍在 |
 | 导出 | CSV（UTF-8 BOM）/ JSON，写入浏览器下载目录 |
-| 面板 | 右下角可拖动采集面板：状态灯、进度、开始/暂停/导出/清空 |
-| AI Bridge | 本地 MCP Hub，AI 可 `status` / `start_collect` / `get_comments` / `export` |
+| 面板 | 右下角可拖动采集面板：标题栏齿轮 ⚙ 可改设置（目标条数 max / 并发路数 / 回复并发 / 回复间隔 / 限流等待） |
+| AI Bridge | 本地 MCP Hub，AI 可 `status` / `start_collect`（可带设置）/ `get_settings` / `set_settings` / `get_comments` / `export` |
 
 ---
 

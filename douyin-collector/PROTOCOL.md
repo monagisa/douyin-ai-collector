@@ -781,9 +781,11 @@ Hub 对 **MCP 客户端** 的内部接口（同进程 in-memory / 可选 localho
 
 | type | 执行者 | 语义 |
 |---|---|---|
-| `status` | background | storage 摘要 + 最近一次页面 live 快照 + Hub 连接信息 |
+| `status` | background | storage 摘要 + 最近一次页面 live 快照 + Hub 连接信息 + `settings`（见 §7.9） |
 | `live_status` | content.js | 当前抖音页采集器只读快照（`__DTS_COLLECTOR_STATUS__`） |
-| `start_collect` | content.js | 等价面板「开始采集」（`onStartClick`） |
+| `start_collect` | content.js | 等价面板「开始采集」（`onStartClick`）；可带 `args.settings` 先写 `dts_settings` 再启动，回包含 `appliedSettings` / `settingsNote` |
+| `get_settings` | background | 只读设置快照 `{ external, user, effective, precedence, limits }`（见 §7.9） |
+| `set_settings` | background | `{ settings, scope? }` 写设置：`scope="external"`（默认）→ `dts_settings`，`scope="panel"` → `dts_user_settings`；或 `{ clear: "external"\|"user"\|"all" }` 删键回默认；空设置 → `{ ok:false, error:"NO_SETTINGS", hint }` |
 | `pause_collect` | content.js | 等价面板「暂停」 |
 | `clear_page` | content.js | 等价面板「清空」（页面内存 + `dts-clear`） |
 | `list_videos` | background | `dts_videos` 列表 |
@@ -811,13 +813,27 @@ Hub 对 **MCP 客户端** 的内部接口（同进程 in-memory / 可选 localho
 
 | tool | 参数 | 结果要点 |
 |---|---|---|
-| `ai_status` | `videoId?` | 扩展/页面/存储总览 |
+| `ai_status` | `videoId?` | 扩展/页面/存储总览 + 当前采集设置快照 |
 | `ai_list_videos` | — | 已采视频元数据 |
-| `ai_start_collect` | — | 触发当前页采集 |
+| `ai_start_collect` | 见下「设置参数」全部可选 | 触发当前页采集；带设置时先写 `dts_settings` 再启动 |
 | `ai_pause_collect` | — | 暂停 |
+| `ai_get_settings` | — | 读设置快照（external / user / effective / precedence / limits） |
+| `ai_set_settings` | `scope?=external\|panel`、`clear?=external\|user\|all`，以及「设置参数」 | 写设置或清设置；两样都空 → `NO_SETTINGS`（不会发桥命令） |
 | `ai_get_comments` | `videoId`, `mode=summary\|page`, `limit?`, `offset?`, `fields?` | 默认摘要，避免刷爆上下文 |
 | `ai_export` | `videoId`, `format=csv\|json` | 文件名/路径 |
 | `ai_clear_storage` | `videoId?` | 清空（可选） |
+
+**设置参数**（`ai_start_collect` / `ai_set_settings` 通用）: `max`（AI 别名，等价面板齿轮的「目标条数 max」）、`maxCount`、`lanes`、`replyLanes`、`replyGapMs`、`replyWarmupMs`、`replyThrottleMaxWaitMs`。`max` 与 `maxCount` 同时给时以 `max` 为准。
+
+### 7.9 设置（AI 可调）与优先级
+
+三层优先级（`content.js` 每次「开始采集」时重读）:
+**内置常量 < `dts_settings`（external，AI 经桥下发） < `dts_user_settings`（panel，面板齿轮里保存的值）**。
+
+- `get_settings` / `ai_get_settings` 返回 `{ external, user, effective, precedence, limits }`；`effective` = 上次采集实际生效的 `dts_settings_effective`（含 `from: 'panel'|'plugin'`）。
+- `set_settings` / `ai_set_settings` 只写一层；写值都过 `clampSettings()` 钳位（`lanes 1..8`、`maxCount 0..1000000`、`replyLanes 1..8`、`replyGapMs 0..60000`、`replyWarmupMs 0..600000`、`replyThrottleMaxWaitMs 10000..600000`），未知键与非法值在回包 `unknown` 里列出。
+- 想「一键恢复默认」用 `clear: 'all'`（同时删两层的键）；面板里按「恢复默认」只删 `dts_user_settings`。
+
 
 ### 7.7 硬约束
 
