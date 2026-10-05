@@ -1,7 +1,24 @@
 # dsh-douyin-comments
 
 DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**，注册一个工具 `douyin_comments`。
-（插件版本 0.5.3，内置扩展「抖音评论采集器」v0.2.5。）
+（插件版本 0.5.4，内置扩展「抖音评论采集器」v0.2.6。）
+
+**0.5.4 新增**：
+
+1. **内置扩展升级到 0.2.6**：AI 桥新增 `get_settings` / `set_settings` 两条命令，`start_collect`
+   可带 `settings`（先写 `dts_settings` 再启动，回包带 `appliedSettings` / `settingsNote`），
+   `status` 回包多了 `settings` 快照。配套 MCP `douyin-mcp` **0.3.0**
+   新增 `ai_get_settings` / `ai_set_settings`，`ai_start_collect` 支持 `max` / `lanes` /
+   `replyLanes` / `replyGapMs` / `replyWarmupMs` / `replyThrottleMaxWaitMs`。协议见 PROTOCOL §7.9。
+2. **优先级没变**：`dts_user_settings`（面板齿轮）> `dts_settings`（AI/插件下发）> 内置常量 ——
+   也就是人在面板里点过「保存」的项，AI 覆盖不了（想覆盖得用 `scope:"panel"` 或先 `clear:"user"`）。
+3. 离线自测 **102/102**（多了 6 项桥命令断言 + 8 项「扩展更新后不跑旧脚本」断言 + 5 项「只从扩展自己的 SW/扩展页读写 storage」断言）；扩展与插件两处副本逐字节一致。
+4. **修掉「扩展更新了、浏览器还在跑旧代码」**：Chrome 会把未打包扩展的脚本缓存在 profile 的
+   `Default/Code Cache` 与 `Default/Service Worker/ScriptCache` 里，只换扩展文件不换这两处，
+   新开的窗口仍执行上一次的 `background.js`（实测表现：manifest 已是 0.2.6，AI 桥却回
+   `UNKNOWN_COMMAND:get_settings`）。现在插件把每次启动用的扩展 hash 记进
+   `~/.dsh/douyin-collector/extension.launched.json`，下次启动发现扩展变了就
+   （a）清掉这两个缓存目录、（b）把「接上一次留下的窗口」也关掉重开。
 
 **0.5.3 新增**：
 
@@ -9,7 +26,7 @@ DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**
    不再占第三行按钮位置；点开浮层第一项就是 **`max` 目标条数**，另有 并发路数 / 回复并发 /
    回复间隔 / 限流等待，当前生效值显示在浮层顶部「当前：并发 N 路 · 目标 M 条/不限（面板）」。
    存键与优先级不变（仍是 `dts_user_settings` > `dts_settings` > 内置）。
-2. 浮层打开时面板自动撑高（`.dts-settings-open`，`min-height: 276px`），并修掉「当前：…」
+2. 浮层打开时面板自动撑高（`.dts-settings-open`，`min-height: 292px`），并修掉「当前：…」
    那一行被 flex 压成一条缝的样式 bug（子项 `flex: 0 0 auto`）。
 
 **0.5.2 新增**：
@@ -52,7 +69,7 @@ DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**
 
 特点：
 
-- **自带 Chrome 扩展**（抖音评论采集器 v0.2.5）。第一次调用时会自动把扩展装进它启动的浏览器，
+- **自带 Chrome 扩展**（抖音评论采集器 v0.2.6）。第一次调用时会自动把扩展装进它启动的浏览器，
   不需要使用者手动「加载已解压的扩展程序」；扩展面板标题栏自带设置齿轮 `⚙`（0.2.5 起，在「—」左边）。
 - **只交付本次新采的数据**：结束时按 `cid` 差集剔除旧数据，只交付本轮新增的；
   一条新数据都没有就返回失败并说明原因，绝不把上一轮残留当成本轮结果。
@@ -216,11 +233,12 @@ node _demo_autoinstall.mjs https://www.douyin.com/video/7660328050596371819     
 
 | 用例 | 结果 |
 | --- | --- |
-| 离线自检 `node verify-tool.mjs` | **84/84**（含：设置表单 schema/volatile/toJSON 往返、readSettings 现读、扩展读 `dts_settings`、客户端半身注册两个 slot、面板齿轮入口与 `dts_user_settings` 优先级、浮层第一项是 `目标条数 max`、浮层撑高/不被压扁的样式、`maxCount` 到量自动收工） |
+| 离线自检 `node verify-tool.mjs` | **102/102**（含：设置表单 schema/volatile/toJSON 往返、readSettings 现读、扩展读 `dts_settings`、客户端半身注册两个 slot、面板齿轮入口与 `dts_user_settings` 优先级、浮层第一项是 `目标条数 max`、浮层撑高/不被压扁的样式、`maxCount` 到量自动收工、AI 桥 `get_settings`/`set_settings` 与 `appliedSettings` 透传、扩展 hash 一变就清 `Code Cache`/`ScriptCache` 并把旧窗口关掉重开、扩展 ID 推导与「只认 chrome-extension:// 的 SW」） |
 | 真采 `_verify_live.txt`（视频 7684883150782106916） | 22/22，197 条 / 10.1s，CSV 行数 = count，带 BOM |
 | 设置真生效（0.5.0 新增，4 例） | `lanes=2`→回报 2；`lanes=9`→钳到 8；设置里 `lanes=3`→回报 3；设置里 `lanes=99`→钳到 8。四例 `ok=true`，日志均见「已把并发路数 N 写进扩展设置」+「扩展实际并发路数：N」 |
 | 二级回复真跑通（2026-10-05） | 视频 7666035829038501129（macOS 报告里 0/243 回复的那个）：**1403 条 = 一级 623 + 二级回复 780**，246/246 个线程、247 次回复请求、37.8s，`phase=done`；CSV 里 `is_reply=1` 共 780 行 |
 | 扩展面板设置真机 E2E（0.5.2 起，0.5.3 改齿轮后重跑） | 齿轮按钮（`⚙`，在「—」左边）、面板内容区不再有设置按钮行、浮层 5 项且第一项是 `目标条数 max`、「当前：…」行没被压扁、保存按钮完整可见不用滚动、保存写进 `dts_user_settings`、摘要更新、7 条到量后自动收工——**16/16 全过**（脚本跑完已删） |
+| MCP 设置链路真机 E2E（0.5.4 新增，扩展 v0.2.6） | MCP `initialize` 0.3.0 + `tools/list` 10 个 tool（含 `ai_get_settings`/`ai_set_settings`）、`ai_status` 带六项设置快照与优先级、`ai_set_settings{max:5,lanes:2,replyLanes:2,replyGapMs:700}` 写进 `dts_settings`（`max`→`maxCount`）、`ai_get_settings` 读回、`ai_start_collect{max:5,lanes:3}` 回包带 `appliedSettings` 且 `dts_settings_effective={maxCount:5,lanes:3}`、`ai_set_settings{scope:"panel"}` 写 `dts_user_settings`、再 start 后 `effective.from="panel"`（`lanes=2` 覆盖插件下发）、`clear:"all"` 清掉两个键、桥配置还原——**19/19 全过**（脚本跑完已删） |
 | 两轮新鲜度 `_freshness3.txt` | 15/15，两轮各自清空后重抓，CSV=JSON=count，无重复 cid |
 | 负向（假装拿不到签名）`_nosig.txt` | ok=false、count=0、不写文件 |
 | 吞吐 | 约 30~70 条/秒（469 条 / 13.8s；1010 条 / 14.1s；8 路 405 条 / 9.8s） |
@@ -264,30 +282,30 @@ node sync-extension.mjs D:\path\to\ext
 
 ## 打包 / 发布
 
-发布物在 `D:\dycopy\release\dsh-douyin-comments-v0.5.3\`：
+发布物在 `D:\dycopy\release\dsh-douyin-comments-v0.5.4\`：
 
 | 文件 | 说明 |
 | --- | --- |
-| `dsh-douyin-comments-0.5.3.tgz` | 插件本体，14 个文件（`index.js`/`collector.mjs`/`cordis.patch.yml`/`README.md`/`package.json` + `client/client.js` + `extension/` 8 个） |
-| `douyin-collector-extension-v0.2.5.zip` | 单独的扩展 zip，顶层目录 `douyin-collector/`（8 个文件），供 `chrome://extensions` 手动「加载已解压的扩展程序」 |
+| `dsh-douyin-comments-0.5.4.tgz` | 插件本体，15 个文件（`index.js`/`collector.mjs`/`cordis.patch.yml`/`README.md`/`package.json` + `client/client.js` + `extension/` 8 个） |
+| `douyin-collector-extension-v0.2.6.zip` | 单独的扩展 zip，顶层目录 `douyin-collector/`（8 个文件），供 `chrome://extensions` 手动「加载已解压的扩展程序」 |
 | `使用说明.md` | 给收件人看的中文说明（安装/扫码/两处设置/参数/FAQ/macOS） |
 | `SHA256SUMS.txt` | 三个文件的 SHA256 |
 
-再外面还有 `D:\dycopy\release\dsh-douyin-comments-v0.5.3.zip`（把上面整目录打成一个单文件，方便直接发给人）。
+再外面还有 `D:\dycopy\release\dsh-douyin-comments-v0.5.4.zip`（把上面整目录打成一个单文件，方便直接发给人）。
 
-草稿目录 `D:\dycopy\release\dsh-douyin-comments-v0.5.2\` 是上一版，保留作对照。
+草稿目录 `D:\dycopy\release\dsh-douyin-comments-v0.5.3\` 是上一版，保留作对照。
 
 重新打包：
 
 ```powershell
 cd D:\dycopy\dsh-douyin-comments
-npm pack --pack-destination D:\dycopy\release\dsh-douyin-comments-v0.5.3
+npm pack --pack-destination D:\dycopy\release\dsh-douyin-comments-v0.5.4
 
 # 扩展开 zip（顶层目录名必须是 douyin-collector；只装 8 个运行文件，别把 md 打进去）。
 # 用 .NET ZipFile 逐个 CreateEntry 造，避免 Compress-Archive 多套一层目录：
-$rel = 'D:\dycopy\release\dsh-douyin-comments-v0.5.3'
+$rel = 'D:\dycopy\release\dsh-douyin-comments-v0.5.4'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-$zip = [IO.Compression.ZipFile]::Open("$rel\douyin-collector-extension-v0.2.5.zip", 'Create')
+$zip = [IO.Compression.ZipFile]::Open("$rel\douyin-collector-extension-v0.2.6.zip", 'Create')
 Get-ChildItem D:\dycopy\douyin-collector -File |
   Where-Object { $_.Extension -in '.js','.json','.css','.html' } |
   ForEach-Object { [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $_.FullName, "douyin-collector/$($_.Name)") | Out-Null }
@@ -301,7 +319,7 @@ $zip.Dispose()
 
 ```powershell
 mkdir C:\Users\mo\.dsh\profiles\pkgtest     # package.json：dsh.profile.bundles = ["@deepseek-ai/dsh-base","@deepseek-ai/dsh-headless"]
-dsh plugin --profile pkgtest add file:D:\dycopy\release\dsh-douyin-comments-v0.5.3\dsh-douyin-comments-0.5.3.tgz
+dsh plugin --profile pkgtest add file:D:\dycopy\release\dsh-douyin-comments-v0.5.4\dsh-douyin-comments-0.5.4.tgz
 dsh --profile pkgtest --dump-config | Select-String dsh-douyin-comments
 dsh --profile pkgtest headless '用 douyin_comments 工具采集 https://www.douyin.com/video/7660328050596371819 （max=20）。工具返回后只回复三行：ok=、count=、csvPath=。'
 # ⇒ ok=true，CSV 落在 ~\.dsh\douyin-collector\out\（实测两轮：194 条 / 227 条——按页落库，条数每轮不同）
@@ -313,8 +331,11 @@ dsh --profile pkgtest headless '用 douyin_comments 工具采集 https://www.dou
 
 ## 与其他组件的关系
 
-- 浏览器里跑的扩展本体在 `D:\dycopy\douyin-collector\`（权威开发目录，v0.2.4）；插件里的 `extension/`
-  由 `node sync-extension.mjs` 单向同步过去（别再手动复制）。
+- 浏览器里跑的扩展本体在 `D:\dycopy\douyin-collector\`（权威开发目录，v0.2.6）；插件里的 `extension/`
+  由 `node sync-extension.mjs` 单向同步过去（别再手动复制）。插件每次启动都会把扩展 hash 记进
+  `~/.dsh/douyin-collector/extension.launched.json`，一变就清掉 profile 里的旧脚本缓存
+  （`Default/Code Cache`、`Default/Service Worker/ScriptCache`）再开浏览器——手工换扩展文件后
+  若发现浏览器还在跑旧代码（AI 桥回 `UNKNOWN_COMMAND`），就是因为漏了这两处缓存。
 - 采集结果想接着做统计/情感/检索，用分析后端 `D:\dycopy\douyin-analysis\`：
   `python -m douyin_analysis ingest`（自动扫 `~/Downloads` 与 `~/.dsh/douyin-collector/out`），
   或让 agent 直接调 MCP 工具 `mcp__douyin__ingest_paths`。

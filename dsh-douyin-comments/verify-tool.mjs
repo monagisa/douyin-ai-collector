@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { installExtension, findExtensionSource, DEFAULTS, loginGate, acquireRunLock, resolveOutDir, sessionWorkspaceCwd } from './collector.mjs';
+import { installExtension, findExtensionSource, DEFAULTS, loginGate, acquireRunLock, resolveOutDir, sessionWorkspaceCwd, clearStaleScriptCaches, readLaunchState, writeLaunchState, extensionIdFromPath } from './collector.mjs';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const results = [];
@@ -275,6 +275,77 @@ check('内置默认值没被改坏（不装插件单用扩展还是原行为）'
 check('装出来的扩展 ≥ 0.2.3（0.2.2 不认识回复限流设置）',
   /^0\.2\.(3|[4-9]|\d\d+)$/.test(String(targetManifest.version)) || Number(String(targetManifest.version).split('.')[1]) >= 3,
   targetManifest.version);
+
+// ---------- 3a-3) AI 桥（v0.2.6）：douyin-mcp / DSH 插件可通过桥命令下发采集设置 ----------
+// douyin-mcp v0.3.0 的 ai_get_settings / ai_set_settings / ai_start_collect{max,lanes,…}
+// 全靠这些桥命令；扩展副本里缺了就只剩「开始/暂停」能用。
+const bgSrc = fs.readFileSync(path.join(ext.dir, 'background.js'), 'utf8');
+check('桥命令 get_settings / set_settings（写 dts_settings，可 clear 恢复默认）',
+  /case 'get_settings'/.test(bgSrc) && /case 'set_settings'/.test(bgSrc)
+  && bgSrc.includes("KEY_RUNTIME_SETTINGS = 'dts_settings'")
+  && bgSrc.includes("KEY_USER_SETTINGS = 'dts_user_settings'")
+  && /case 'set_settings'[\s\S]{0,400}?args\.clear/.test(bgSrc));
+check('start_collect 支持带 settings（先写 dts_settings 再触发开始）',
+  /case 'start_collect'[\s\S]{0,700}?args\.settings/.test(bgSrc) && /clampSettings/.test(bgSrc));
+check('status 回包带设置快照（AI 一眼看到当前生效设置）', /settings: await readSettingsSnapshot\(\)/.test(bgSrc));
+check('设置项硬上限与 content.js 同源（六项都在，含 maxCount 与 replyThrottleMaxWaitMs）',
+  ['maxCount', 'lanes', 'replyLanes', 'replyGapMs', 'replyWarmupMs', 'replyThrottleMaxWaitMs']
+    .every((k) => bgSrc.includes(k + ': { min:')),
+  'SETTINGS_FIELDS');
+check('start_collect 的 appliedSettings 会透到桥回包（拍平 result 时不能丢）',
+  /body\.result = \{ status: out\.status, tabId: out\.tabId, tabUrl: out\.tabUrl \};[\s\S]{0,200}?body\.result\.appliedSettings = out\.appliedSettings/.test(bgSrc));
+check('装出来的扩展 ≥ 0.2.6（桥的设置命令从 0.2.6 起）',
+  /^0\.2\.(6|[7-9]|\d\d+)$/.test(String(targetManifest.version)) || Number(String(targetManifest.version).split('.')[1]) >= 6,
+  targetManifest.version);
+
+// ---------- 3a-4) 扩展更新后，别让浏览器继续跑 profile 里缓存的旧扩展脚本 ----------
+// 实测坑（2026-10-05）：改了 background.js 后新开的浏览器里 executeAiCommand 还是旧代码
+// （AI 桥回 UNKNOWN_COMMAND），要清掉 profile 的 Default/Code Cache 与 Service Worker/ScriptCache 才生效。
+const collectorSrc = fs.readFileSync(path.join(here, 'collector.mjs'), 'utf8');
+check('导出 clearStaleScriptCaches / readLaunchState / writeLaunchState',
+  typeof clearStaleScriptCaches === 'function' && typeof readLaunchState === 'function' && typeof writeLaunchState === 'function');
+const tmpProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'dts-cache-'));
+fs.mkdirSync(path.join(tmpProfile, 'Default', 'Code Cache', 'js'), { recursive: true });
+fs.mkdirSync(path.join(tmpProfile, 'Default', 'Service Worker', 'ScriptCache'), { recursive: true });
+fs.writeFileSync(path.join(tmpProfile, 'Default', 'Code Cache', 'js', 'x'), 'x');
+fs.writeFileSync(path.join(tmpProfile, 'Default', 'Service Worker', 'ScriptCache', 'y'), 'y');
+const clearedDirs = clearStaleScriptCaches(tmpProfile);
+check('清缓存真的删掉 Code Cache 与 Service Worker/ScriptCache',
+  clearedDirs.length === 2
+  && !fs.existsSync(path.join(tmpProfile, 'Default', 'Code Cache'))
+  && !fs.existsSync(path.join(tmpProfile, 'Default', 'Service Worker', 'ScriptCache')),
+  clearedDirs.map((p) => path.relative(tmpProfile, p)).join('、'));
+check('清缓存不碰登录态（只删这两个缓存目录）',
+  fs.readdirSync(path.join(tmpProfile, 'Default', 'Service Worker')).length === 0);
+fs.rmSync(tmpProfile, { recursive: true, force: true });
+check('扩展 hash 变了就判定 extChanged（没记录也算变）',
+  /const launchState = readLaunchState\(\);/.test(collectorSrc)
+  && /const extChanged = launchState\.hash !== ext\.hash;/.test(collectorSrc));
+check('extChanged 时先清缓存再启动浏览器',
+  /if \(extChanged\) \{[\s\S]{0,300}?clearStaleScriptCaches\(profile, \{ log \}\)/.test(collectorSrc));
+check('extChanged 时接了旧窗口也关掉重开（旧窗口跑的是旧代码）',
+  /if \(running && extChanged\) \{[\s\S]{0,400}?running\.browser\.close\(\)[\s\S]{0,200}?running = null;/.test(collectorSrc));
+check('启动后把这次用的扩展 hash 记进 extension.launched.json',
+  /const LAUNCH_STATE_FILE = 'extension\.launched\.json';/.test(collectorSrc)
+  && /writeLaunchState\(\{[\s\S]{0,200}?hash: ext\.hash/.test(collectorSrc));
+
+// ---------- 3a-5) 读/写扩展 storage 只能落在「扩展自己的」SW 或扩展页上 ----------
+// 实测坑：ctx.serviceWorkers()[0] 可能是抖音页面自己的 sw.js，在里面 eval chrome.storage
+// 会 ReferenceError: chrome is not defined ⇒ 设置没写进去、落库读成 0 条、误判「本轮没新数据」。
+check('扩展 ID 推导（SHA256(路径 UTF-16LE) 前 16 字节 → a-p）',
+  extensionIdFromPath('C:\\Users\\mo\\.dsh\\douyin-collector\\extension') === 'mffgocmhknhhomckdfkopddbjnfabkpn',
+  extensionIdFromPath('C:\\Users\\mo\\.dsh\\douyin-collector\\extension'));
+check('不再拿 ctx.serviceWorkers()[0] 当扩展 SW',
+  !/ctx\.serviceWorkers\(\)\[0\]/.test(collectorSrc.replace(/\/\*\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')),
+  '去掉注释后无残留');
+check('读/写 storage 走 extEval（只在 chrome-extension:// 的 worker 上）',
+  collectorSrc.includes('const isExtWorker = (s) => /^chrome-extension:\\/\\//')
+  && (collectorSrc.match(/await extEval\(/g) || []).length >= 4,
+  String((collectorSrc.match(/await extEval\(/g) || []).length) + ' 处 extEval');
+check('扩展 SW 睡着时用扩展自己的页面兜底（extensionIdFromPath + index.html）',
+  /chrome-extension:\/\/' \+ extensionIdFromPath\(ext\.dir\) \+ '\/index\.html'/.test(collectorSrc));
+check('兜底开的扩展页在 close() 里关掉',
+  /if \(extHelperPage && !extHelperPage\.isClosed\(\)\) await extHelperPage\.close\(\)/.test(collectorSrc));
 
 // ---------- 3a-2) 面板自己的「设置」入口（v0.2.4 文字按钮 → v0.2.5 标题栏齿轮） ----------
 // 用户要的是**扩展面板上的设置按键**（独立装的扩展没有 DSH 设置页），所以入口必须在 content.js 里。

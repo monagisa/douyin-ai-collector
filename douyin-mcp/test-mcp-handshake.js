@@ -94,8 +94,10 @@ function handshake(label, port, mode) {
         got = true;
         setTimeout(() => {
           const hasTools = out.includes('ai_status');
+          const hasSettingsTools = out.includes('ai_get_settings') && out.includes('ai_set_settings');
+          const hasMaxParam = out.includes('目标条数上限');
           try { child.kill(); } catch (e) {}
-          resolve({ label, ok: true, hasTools, out: out.slice(0, 350), err: err.slice(0, 350) });
+          resolve({ label, ok: true, hasTools, hasSettingsTools, hasMaxParam, out: out.slice(0, 350), err: err.slice(0, 350) });
         }, 300);
       }
     });
@@ -150,6 +152,6 @@ function handshake(label, port, mode) {
   ];
   try { holder.kill(); } catch (e) {}
   console.log(JSON.stringify(results, null, 2));
-  if (!results.every((r) => r.ok)) process.exit(1);
+  if (!results.every((r) => r.ok && r.hasTools && r.hasSettingsTools && r.hasMaxParam)) process.exit(1);
   console.log('ALL MCP HANDSHAKE: PASS');
 })();

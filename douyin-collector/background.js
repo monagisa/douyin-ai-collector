@@ -370,6 +370,54 @@ function aiBaseUrl(cfg) {
   return `http://${cfg.host}:${cfg.port}/api/v1`;
 }
 
+// ========================================================================
+// 运行时设置（协议 §3.9）：AI（MCP / DSH 插件）通过桥命令下发采集参数。
+//   dts_settings        ← 外部下发（本文件 set_settings / start_collect 的 settings，
+//                          以及 DSH 插件每次调用推的那份）
+//   dts_user_settings   ← 面板齿轮里用户当场设的（优先级更高）
+//   dts_settings_effective ← content.js 每次「开始采集」把**实际生效值**写回来，供核对
+// 优先级：内置常量 < dts_settings < dts_user_settings（逐字段判断，见 content.js
+// loadRuntimeSettings）。所以 AI 设的值会被用户在面板里设过的同名项盖掉 —— 这是设计如此。
+// ========================================================================
+const KEY_RUNTIME_SETTINGS = 'dts_settings';
+const KEY_USER_SETTINGS = 'dts_user_settings';
+const KEY_EFFECTIVE_SETTINGS = 'dts_settings_effective';
+
+// 与 content.js 的硬上限保持一致（改这里要同步改那边）
+const SETTINGS_FIELDS = {
+  maxCount: { min: 0, max: 1000000, desc: '目标条数，0=不限' },
+  lanes: { min: 1, max: 8, desc: '顶层并发路数' },
+  replyLanes: { min: 1, max: 8, desc: '二级回复并发路数' },
+  replyGapMs: { min: 0, max: 60000, desc: '回复同线程请求间隔 ms' },
+  replyWarmupMs: { min: 0, max: 600000, desc: '进补采前的静默 ms' },
+  replyThrottleMaxWaitMs: { min: 10000, max: 600000, desc: '整段等限流窗口的墙钟上限 ms' }
+};
+
+function clampSettings(input, base) {
+  const out = Object.assign({}, base || {});
+  const unknown = [];
+  if (!input || typeof input !== 'object') return { settings: {}, unknown };
+  for (const k of Object.keys(input)) {
+    const spec = SETTINGS_FIELDS[k];
+    if (!spec) { unknown.push(k); continue; }
+    const n = Number(input[k]);
+    if (!isFinite(n)) { unknown.push(k); continue; }
+    out[k] = Math.max(spec.min, Math.min(Math.round(n), spec.max));
+  }
+  return { settings: out, unknown };
+}
+
+async function readSettingsSnapshot() {
+  const o = await chrome.storage.local.get([KEY_RUNTIME_SETTINGS, KEY_USER_SETTINGS, KEY_EFFECTIVE_SETTINGS]);
+  return {
+    external: o[KEY_RUNTIME_SETTINGS] || null,
+    user: o[KEY_USER_SETTINGS] || null,
+    effective: o[KEY_EFFECTIVE_SETTINGS] || null,
+    precedence: '内置常量 < dts_settings（AI 下发） < dts_user_settings（面板齿轮）',
+    limits: SETTINGS_FIELDS
+  };
+}
+
 async function findDouyinTabs() {
   try {
     return await chrome.tabs.query({
@@ -491,6 +539,7 @@ async function executeAiCommand(cmd) {
         ok: true,
         result: {
           storage: { videos, count, videoCount: Object.keys(videos).length },
+          settings: await readSettingsSnapshot(),
           live: aiLastLive,
           tabs: tabs.map((t) => ({ id: t.id, title: t.title, url: t.url, active: !!t.active })),
           bridge: {
@@ -506,9 +555,24 @@ async function executeAiCommand(cmd) {
       return sendToDouyinTab({ type: 'dts-ai-live-status' });
 
     case 'start_collect': {
+      // 可选：本次开始采集要用的参数（协议 §3.9）。写进 dts_settings 后内容脚本
+      // 在 startLoop() 里会重读一次 —— 与 DSH 插件同一条通路，改完立即生效。
+      let appliedSettings = null;
+      if (args.settings && typeof args.settings === 'object') {
+        const cur = (await chrome.storage.local.get(KEY_RUNTIME_SETTINGS))[KEY_RUNTIME_SETTINGS] || {};
+        const c = clampSettings(args.settings, cur);
+        if (Object.keys(c.settings).length) {
+          await chrome.storage.local.set({ [KEY_RUNTIME_SETTINGS]: c.settings });
+          appliedSettings = c.settings;
+        }
+      }
       const r = await sendToDouyinTab({ type: 'dts-ai-start' });
       if (r.ok && r.status && r.status.phase === 'waiting-sign' && !r.status.liveVideoId) {
         r.hint = r.status.hint || '当前页还没识别到视频：请先点开一条具体视频（网格页需点开作品浮层）。';
+      }
+      if (appliedSettings) {
+        r.appliedSettings = appliedSettings;
+        r.settingsNote = '参数已写进 dts_settings，本次采集生效；面板齿轮里用户设过的同名项优先级更高。';
       }
       return r;
     }
@@ -628,6 +692,46 @@ async function executeAiCommand(cmd) {
       return { ok: true, result: { cleared: videoId || 'ALL' } };
     }
 
+    case 'get_settings':
+      return { ok: true, result: await readSettingsSnapshot() };
+
+    case 'set_settings': {
+      // args.clear = 'external' | 'user' | 'all' → 删掉对应键（恢复内置/插件值）
+      if (args.clear) {
+        const which = String(args.clear);
+        const keys = which === 'all'
+          ? [KEY_RUNTIME_SETTINGS, KEY_USER_SETTINGS]
+          : which === 'user'
+            ? [KEY_USER_SETTINGS]
+            : [KEY_RUNTIME_SETTINGS];
+        await chrome.storage.local.remove(keys);
+        return { ok: true, result: { cleared: which, clearedKeys: keys, settings: await readSettingsSnapshot() } };
+      }
+      const scope = args.scope === 'panel' ? 'panel' : 'external';
+      const key = scope === 'panel' ? KEY_USER_SETTINGS : KEY_RUNTIME_SETTINGS;
+      const cur = (await chrome.storage.local.get(key))[key] || {};
+      const c = clampSettings(args.settings, cur);
+      if (!Object.keys(c.settings).length) {
+        return {
+          ok: false,
+          error: 'NO_SETTINGS',
+          hint: '请传 settings：{ maxCount, lanes, replyLanes, replyGapMs, replyWarmupMs, replyThrottleMaxWaitMs }；'
+            + '或传 clear:"external"|"user"|"all" 恢复默认。'
+        };
+      }
+      await chrome.storage.local.set({ [key]: c.settings });
+      return {
+        ok: true,
+        result: {
+          scope,
+          key,
+          settings: c.settings,
+          unknown: c.unknown.length ? c.unknown : undefined,
+          note: '内容脚本每次「开始采集」都会重读，改完立即生效；面板齿轮里用户设过的同名项优先级更高。'
+        }
+      };
+    }
+
     case 'set_bridge_config': {
       const next = await setAiConfig(args || {});
       return { ok: true, result: { config: next } };
@@ -689,6 +793,11 @@ async function aiPollOnce() {
     // 统一拍平：ok 分支把扩展回包主体放进 result（Hub/MCP 更好消费）
     if (out.ok && out.result === undefined && out.status !== undefined) {
       body.result = { status: out.status, tabId: out.tabId, tabUrl: out.tabUrl };
+      // start_collect 带参数时要把「本次实际写进去的设置」透出来（否则这里会被拍平丢掉）
+      if (out.appliedSettings) {
+        body.result.appliedSettings = out.appliedSettings;
+        body.result.settingsNote = out.settingsNote;
+      }
     } else if (out.ok && out.result === undefined && out.filename !== undefined) {
       body.result = {
         ok: true,

@@ -29,7 +29,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const VERSION = '0.2.0';
+const VERSION = '0.3.0';
 const HUB_NAME = 'douyin-collector-mcp';
 
 const argv = process.argv.slice(2);
@@ -296,10 +296,37 @@ function createHubServer() {
 
 // ---------------- MCP tools ----------------
 
+// 与扩展 content.js 的硬上限一致（扩展侧还会再钳一次，这里只是给 AI 写清范围）。
+// `max` 是给 AI 用的别名 → 扩展里的字段名是 `maxCount`（面板齿轮里显示为「目标条数 max」）。
+const SETTINGS_PROPS = {
+  max: { type: 'number', description: '目标条数上限（一级评论），0=不限；等价面板齿轮里的「目标条数 max」' },
+  maxCount: { type: 'number', description: '同 max（扩展里的原始字段名），两者都传时以 max 为准' },
+  lanes: { type: 'number', description: '顶层并发路数 1~8（默认 4）' },
+  replyLanes: { type: 'number', description: '二级回复并发路数 1~8（默认 4）' },
+  replyGapMs: { type: 'number', description: '回复同线程请求间隔 ms 0~60000（默认 600）' },
+  replyWarmupMs: { type: 'number', description: '进补采前的静默 ms 0~600000（默认 1500）' },
+  replyThrottleMaxWaitMs: { type: 'number', description: '整段等限流窗口的墙钟上限 ms 10000~600000（默认 10000）' }
+};
+
+const SETTINGS_KEYS = ['maxCount', 'lanes', 'replyLanes', 'replyGapMs', 'replyWarmupMs', 'replyThrottleMaxWaitMs'];
+
+/** 把工具参数里的设置项拣出来（max 归一成 maxCount），返回 { maxCount?, lanes?, … } */
+function pickSettings(a) {
+  const args = a || {};
+  const out = {};
+  if (args.max !== undefined && args.max !== null) out.maxCount = args.max;
+  else if (args.maxCount !== undefined && args.maxCount !== null) out.maxCount = args.maxCount;
+  for (const k of SETTINGS_KEYS) {
+    if (k === 'maxCount') continue;
+    if (args[k] !== undefined && args[k] !== null) out[k] = args[k];
+  }
+  return out;
+}
+
 const TOOLS = [
   {
     name: 'ai_status',
-    description: '查看抖音评论采集器扩展状态：存储摘要、最近页面采集快照、当前打开的抖音页、Hub 连接情况。',
+    description: '查看抖音评论采集器扩展状态：存储摘要、最近页面采集快照、当前打开的抖音页、Hub 连接情况、当前采集设置（dts_settings / 面板 dts_user_settings / 上次生效值）。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -315,8 +342,14 @@ const TOOLS = [
   },
   {
     name: 'ai_start_collect',
-    description: '在当前已打开的抖音页面上开始采集评论（等价面板「开始采集」）。前提：Chrome 已登录抖音、扩展已加载、已打开具体视频页/浮层。',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false }
+    description: '在当前已打开的抖音页面上开始采集评论（等价面板「开始采集」）。前提：Chrome 已登录抖音、扩展已加载、已打开具体视频页/浮层。'
+      + '可选参数会把采集设置写进 dts_settings（等价 DSH 插件下发/面板齿轮），本次采集立即生效；'
+      + '面板齿轮里用户设过的同名项优先级更高。不传参数则沿用当前设置。',
+    inputSchema: {
+      type: 'object',
+      properties: Object.assign({}, SETTINGS_PROPS),
+      additionalProperties: false
+    }
   },
   {
     name: 'ai_pause_collect',
@@ -362,6 +395,26 @@ const TOOLS = [
     }
   },
   {
+    name: 'ai_get_settings',
+    description: '读取采集设置：AI 下发的 dts_settings、面板齿轮里用户设的 dts_user_settings、'
+      + '以及上一次「开始采集」真正生效的 dts_settings_effective（含来源 from=panel|plugin），外加各项硬上限。',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false }
+  },
+  {
+    name: 'ai_set_settings',
+    description: '写入采集设置（改完在下一次「开始采集」生效，内容脚本每次开始都重读）。'
+      + 'scope=external（默认）写 dts_settings，等价 DSH 插件下发；scope=panel 写 dts_user_settings，等价面板齿轮，优先级最高。'
+      + 'clear="external"|"user"|"all" 可删掉对应设置恢复内置/插件值。部分字段可以不传（与已有值合并）。',
+    inputSchema: {
+      type: 'object',
+      properties: Object.assign({
+        scope: { type: 'string', enum: ['external', 'panel'], description: '默认 external（AI 下发层）；panel = 等价面板齿轮（优先级更高）' },
+        clear: { type: 'string', enum: ['external', 'user', 'all'], description: '删掉对应设置恢复默认：external=dts_settings，user=面板的 dts_user_settings，all=都删' }
+      }, SETTINGS_PROPS),
+      additionalProperties: false
+    }
+  },
+  {
     name: 'ai_clear_storage',
     description: '清空扩展本地评论存储。videoId 指定时只清该视频；不传则清空全部（危险操作）。',
     inputSchema: {
@@ -389,8 +442,11 @@ async function callTool(name, args) {
         return toolResult(JSON.stringify(await callExtension('status', a), null, 2));
       case 'ai_list_videos':
         return toolResult(JSON.stringify(await callExtension('list_videos', a), null, 2));
-      case 'ai_start_collect':
-        return toolResult(JSON.stringify(await callExtension('start_collect', a), null, 2));
+      case 'ai_start_collect': {
+        const s = pickSettings(a);
+        const payload = Object.keys(s).length ? { settings: s } : {};
+        return toolResult(JSON.stringify(await callExtension('start_collect', payload), null, 2));
+      }
       case 'ai_pause_collect':
         return toolResult(JSON.stringify(await callExtension('pause_collect', a), null, 2));
       case 'ai_live_status':
@@ -401,6 +457,24 @@ async function callTool(name, args) {
       case 'ai_export':
         if (!a.videoId) return toolResult(JSON.stringify({ ok: false, error: 'videoId 必填' }), true);
         return toolResult(JSON.stringify(await callExtension('export', a), null, 2));
+      case 'ai_get_settings':
+        return toolResult(JSON.stringify(await callExtension('get_settings', {}), null, 2));
+      case 'ai_set_settings': {
+        if (a.clear) {
+          return toolResult(JSON.stringify(await callExtension('set_settings', { clear: a.clear }), null, 2));
+        }
+        const s = pickSettings(a);
+        if (!Object.keys(s).length) {
+          return toolResult(JSON.stringify({
+            ok: false,
+            error: 'NO_SETTINGS',
+            hint: '至少传一个设置项（max/lanes/replyLanes/replyGapMs/replyWarmupMs/replyThrottleMaxWaitMs），或 clear="external"|"user"|"all"。'
+          }), true);
+        }
+        const payload = { settings: s };
+        if (a.scope) payload.scope = a.scope;
+        return toolResult(JSON.stringify(await callExtension('set_settings', payload), null, 2));
+      }
       case 'ai_clear_storage':
         return toolResult(JSON.stringify(await callExtension('clear_storage', a), null, 2));
       default:
