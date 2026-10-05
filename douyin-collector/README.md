@@ -5,6 +5,21 @@
 - **不破解签名** · **不绕过登录** · **不伪造请求**  
 - 复用页面自己生成的签名请求，只改分页 `cursor` / `count`  
 - 数据只落在本机 `chrome.storage.local`，可导出后自行分析  
+- v0.2.2：并发路数可由外部设置（`chrome.storage.local.dts_settings = {lanes: 1~8}`，默认 4）；
+  DSH 插件 `dsh-douyin-comments` 在「设置 → 插件」里改的就是它
+- v0.2.3：二级回复的四档限速同样可被外部覆盖（`replyLanes` 并发线程数、`replyGapMs` 同线程页间隔、
+  `replyWarmupMs` 进补采前的静默、`replyThrottleMaxWaitMs` 等限流窗口的墙钟上限）；
+  不写就等价于老版本（4 / 600ms / 1500ms / 10s），扩展单独使用时行为不变
+- v0.2.4：**面板上多了「设置」按钮**（就在「开始采集/暂停」下面一行），点开可直接改
+  目标条数 / 并发路数 / 回复并发 / 回复间隔 / 限流等待，存到 `chrome.storage.local.dts_user_settings`；
+  优先级 **面板设置 > `dts_settings`（外部/插件写入）> 内置默认**；目标条数到量会自动收工
+- v0.2.5：**面板设置入口改成标题栏的齿轮 ⚙**（在「—」收起按钮左边，不再占一整行），
+  点开浮层里第一项就是 **`max` 目标条数**（另有 并发路数 / 回复并发 / 回复间隔 / 限流等待），
+  当前生效值以「当前：并发 N 路 · 目标 M 条/不限（面板）」显示在浮层顶部
+- v0.2.4 配套的插件侧（`dsh-douyin-comments` 0.5.2）**兼容 macOS**：浏览器查找覆盖
+  `~/Library/Caches/ms-playwright`、`/Applications/Chromium.app`、`Google Chrome for Testing.app`、
+  Homebrew / node 全局模块目录；另外品牌版 Chrome 137+ 会忽略命令行的 `--load-extension`，
+  这时要么用 playwright 装的 Chromium，要么用 `DOUYIN_CHROME` 指过去（详见插件 README）
 - 可选：配套 **MCP** 让 AI 代理调用采集能力（见下文）
 
 > ⚠️ 使用本工具可能违反抖音用户协议，**账号风险自负**。请仅用于自有账号、公开数据与合规研究。

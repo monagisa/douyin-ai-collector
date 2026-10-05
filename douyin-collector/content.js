@@ -96,9 +96,34 @@
   //   各 cursor 独立返回，next == cursor+count 全部成立 → 可安全并发
   //   每路平均：1 路 698ms → 4 路 92ms（7.63x）
   //   全量 206 页：串行 2.9 分钟 → 4 路 0.4 分钟
-  const MAX_LANES = 4;                  // 实测甜点；6 路更慢且有风控风险
+  const MAX_LANES = 4;                  // 内置默认：实测甜点；6 路更慢且有风控风险
+  // DSH 插件（dsh-douyin-comments）可以在自己的「设置 → 插件」里调并发路数：它把
+  // { lanes } 写进 chrome.storage.local.dts_settings，扩展每次开始采集时读一次。
+  // LANES_HARD_MAX 是兜底硬上限（6 路起服务端开始排队，再多只是白挨风控）；
+  // 读不到设置（扩展单独装、没经过 DSH）时用 MAX_LANES，行为与以前完全一致。
+  const LANES_HARD_MAX = 8;
+  const RUNTIME_SETTINGS_KEY = 'dts_settings';
+  // 面板自己的「设置」按钮写这里（用户当场点的偏好，v0.2.4 新增）。
+  // 两个键同时存在时**以面板为准**：插件写的 dts_settings 只是「面板里没设过」时的默认值，
+  // 这样用户在面板上改了并发/目标条数，下一次开始采集立刻按新值跑，不用去 DSH 里改。
+  // 面板点「恢复默认」会整条删掉本键，回到 DSH 设置 / 内置常量。
+  const USER_SETTINGS_KEY = 'dts_user_settings';
+  const MAX_COUNT_HARD_MAX = 1000000;   // 面板「目标条数」硬上限（0 = 不限）
   const LANE_GAP_MS = 100;              // 多路模式轮间隔（单发形态靠 LANES=1 保底）
   const MIN_LANE_ITEMS = 30;            // 一路返回 <30 条视为触底，该轮结束后停
+
+  // 本次「开始采集」实际使用的设置：默认就是上面那几个内置常量（扩展单独用时行为不变），
+  // DSH 插件可以在设置里把二级回复的档位调宽（写进 dts_settings，见 loadRuntimeSettings）。
+  var RS = {
+    lanes: MAX_LANES,
+    maxCount: 0,                        // 0 = 不限；面板「目标条数」到量即自动收工
+    replyLanes: REPLY_LANES,
+    replyGapMs: REPLY_GAP_MS,
+    replyWarmupMs: REPLY_WARMUP_MS,
+    replyThrottleMaxWaitMs: REPLY_THROTTLE_MAX_WAIT_MS,
+  };
+  // 最近一次读设置时，面板（dts_user_settings）里是否有用户改动 —— 只用于面板上显示来源
+  var hasUserSettings = false;
 
   // 协议未规定重放超时：没有它时一条丢失的上行消息会让采集永久挂起
   const REPLAY_TIMEOUT_MS = 15000;
@@ -1187,7 +1212,8 @@
   /**
    * 回复请求被拒后的恢复（协议 §3.8）。
    * 返回 { r }（拿到成功响应）| { needSign: true }（签名真的没了）| { givingUp: true }。
-   * 限流（EMPTY_BODY / STATUS_NULL / STATUS_5）**只等 10 秒**（REPLY_THROTTLE_MAX_WAIT_MS），
+   * 限流（EMPTY_BODY / STATUS_NULL / STATUS_5）**只在预算内等**（RS.replyThrottleMaxWaitMs：
+   * 内置 10 秒，DSH 插件的设置里可以放宽到 10 分钟），
    * 到点就 { givingUp, throttled } 收尾 —— 绝不无限等待、绝不要求用户滚动。
    */
   async function recoverReply(parentCid, cur, firstErr) {
@@ -1200,7 +1226,7 @@
     var throttleStart = replyThrottleStartAt;
     // 立刻把状态告诉用户：这是「接口正在限流、我自己在短退避重试」，不需要任何操作
     setPhase('replies', '回复接口正在限流（' + err + '），自动退避重试中，最多试 '
-      + Math.round(REPLY_THROTTLE_MAX_WAIT_MS / 1000) + ' 秒（无需你操作）…');
+      + Math.round(RS.replyThrottleMaxWaitMs / 1000) + ' 秒（无需你操作）…');
 
     while (!stopFlag) {
       if (replyPages >= REPLY_MAX_REQUESTS) return { givingUp: true, error: '达到请求上限' };
@@ -1208,10 +1234,10 @@
       // 短退避重试：一直重试到连续失败累计 REPLY_FAIL_STREAK_STOP 次
       while (replyFailStreak < REPLY_FAIL_STREAK_STOP && !stopFlag) {
         if (replyPages >= REPLY_MAX_REQUESTS) return { givingUp: true, error: '达到请求上限' };
-        // 预算检查必须在内层也做：否则要等退避跑完、冷却结束才判上限，会超出 10 秒一大截
-        if (Date.now() - throttleStart >= REPLY_THROTTLE_MAX_WAIT_MS) {
+        // 预算检查必须在内层也做：否则要等退避跑完、冷却结束才判上限，会超出预算一大截
+        if (Date.now() - throttleStart >= RS.replyThrottleMaxWaitMs) {
           return { givingUp: true, throttled: true, error: '回复接口持续拒绝超过 '
-            + Math.round(REPLY_THROTTLE_MAX_WAIT_MS / 1000) + ' 秒' };
+            + Math.round(RS.replyThrottleMaxWaitMs / 1000) + ' 秒' };
         }
         await sleep(Math.min(REPLY_BACKOFF_MAX_MS, REPLY_BACKOFF_BASE_MS * Math.pow(2, k)));
         k++;
@@ -1237,13 +1263,13 @@
       }
       replyLastError = err + '（列表接口仍正常，判定为回复接口临时拒绝）';
       // 先判预算再报状态：否则刚说完「还在重试」下一行就收尾了
-      if (replyThrottledMs >= REPLY_THROTTLE_MAX_WAIT_MS) {
+      if (replyThrottledMs >= RS.replyThrottleMaxWaitMs) {
         return { givingUp: true, throttled: true, error: '回复接口持续拒绝超过 '
-          + Math.round(REPLY_THROTTLE_MAX_WAIT_MS / 1000) + ' 秒' };
+          + Math.round(RS.replyThrottleMaxWaitMs / 1000) + ' 秒' };
       }
       setPhase('replies', '回复接口正在限流（' + err + '），已退避重试 '
         + Math.round(replyThrottledMs / 1000) + ' 秒（最多试 '
-        + Math.round(REPLY_THROTTLE_MAX_WAIT_MS / 1000) + ' 秒，不成先收尾）…');
+        + Math.round(RS.replyThrottleMaxWaitMs / 1000) + ' 秒，不成先收尾）…');
     }
     return { givingUp: true, error: 'stopped' };
   }
@@ -1283,7 +1309,7 @@
       var next = Number(r.next);
       if (!Number.isFinite(next) || next <= cur) break;
       cur = next;
-      await sleep(REPLY_GAP_MS);
+      await sleep(RS.replyGapMs);
     }
     return { got: got };
   }
@@ -1303,7 +1329,7 @@
     setPhase('replies', '', '顶层评论已采完，开始补采二级回复：共 ' + todo.length + ' 个线程……');
     // 主扫描刚把列表接口轰完，紧接着打回复接口会被服务端用字面量 null 拒掉一批；
     // 先停一下让配额回血，能明显削掉进入补采时的失败尖峰（实测 probe-replyfail）。
-    await sleep(REPLY_WARMUP_MS);
+    await sleep(RS.replyWarmupMs);
     if (stopFlag) return;
     var needSignStop = false, hardStop = false, throttledStop = false;
     replyThrottledMs = 0;   // 每次进入补采重算「静默等待」预算
@@ -1335,7 +1361,7 @@
         }
       }
       var ws = [];
-      var lanes = Math.min(REPLY_LANES, list.length);
+      var lanes = Math.min(RS.replyLanes, list.length);
       for (var i = 0; i < lanes; i++) ws.push(worker());
       await Promise.all(ws);
       return failed;
@@ -1538,11 +1564,91 @@
     replyStoppedByThrottle = false;
   }
 
+  /**
+   * 读运行时设置。两个来源：
+   *   ① chrome.storage.local.dts_settings   —— DSH 插件每次调用下发（协议 §3.9）
+   *   ② chrome.storage.local.dts_user_settings —— 面板「设置」按钮里用户当场写的（v0.2.4）
+   * 优先级：内置常量 < ① < ②。面板是用户当场点的意图，插件下发只是默认值。
+   * 两个键都没有 → 全用内置常量，扩展单独使用时行为与以前完全一致。
+   * 可调项：lanes（顶层并发路数）、maxCount（目标条数，0=不限）、replyLanes（回复并发）、
+   *        replyGapMs（回复同线程间隔）、replyWarmupMs（进补采前静默）、
+   *        replyThrottleMaxWaitMs（整段等限流窗口的墙钟上限）。
+   * @returns {Promise<object>} 本次开始采集要用的设置（已按硬上限钳过）
+   */
+  function loadRuntimeSettings() {
+    return new Promise(function (resolve) {
+      var out = {
+        lanes: MAX_LANES,
+        maxCount: 0,
+        replyLanes: REPLY_LANES,
+        replyGapMs: REPLY_GAP_MS,
+        replyWarmupMs: REPLY_WARMUP_MS,
+        replyThrottleMaxWaitMs: REPLY_THROTTLE_MAX_WAIT_MS,
+      };
+      var clamp = function (v, lo, hi, dflt) {
+        var n = Number(v);
+        if (!isFinite(n)) return dflt;
+        return Math.max(lo, Math.min(Math.round(n), hi));
+      };
+      try {
+        chrome.storage.local.get([USER_SETTINGS_KEY, RUNTIME_SETTINGS_KEY], function (o) {
+          var s = (o && o[RUNTIME_SETTINGS_KEY]) || null;    // ① 插件本次下发
+          var u = (o && o[USER_SETTINGS_KEY]) || null;       // ② 面板里用户设的（优先）
+          hasUserSettings = !!(u && typeof u === 'object');
+          // 逐项取：面板设过就用面板的，否则用插件的，都没有就内置默认
+          var pick = function (key, lo, hi, dflt) {
+            if (u && u[key] !== undefined && u[key] !== null) return clamp(u[key], lo, hi, dflt);
+            if (s && s[key] !== undefined && s[key] !== null) return clamp(s[key], lo, hi, dflt);
+            return dflt;
+          };
+          out.lanes = pick('lanes', 1, LANES_HARD_MAX, MAX_LANES);
+          out.maxCount = pick('maxCount', 0, MAX_COUNT_HARD_MAX, 0);
+          out.replyLanes = pick('replyLanes', 1, LANES_HARD_MAX, REPLY_LANES);
+          out.replyGapMs = pick('replyGapMs', 0, 60000, REPLY_GAP_MS);
+          out.replyWarmupMs = pick('replyWarmupMs', 0, 600000, REPLY_WARMUP_MS);
+          // 等限流窗口的预算：上限 10 分钟；下限仍是内置的 10 秒（只放宽、不提前放弃）
+          out.replyThrottleMaxWaitMs = pick('replyThrottleMaxWaitMs', REPLY_THROTTLE_MAX_WAIT_MS, 600000, REPLY_THROTTLE_MAX_WAIT_MS);
+          resolve(out);
+        });
+      } catch (e) {
+        resolve(out);
+      }
+    });
+  }
+
+  /** 面板「设置」里读取用户自己存的那份（原样，不钳位不合并）——用于回显输入框 */
+  function loadUserSettings(cb) {
+    try {
+      chrome.storage.local.get(USER_SETTINGS_KEY, function (o) {
+        cb((o && o[USER_SETTINGS_KEY]) || null);
+      });
+    } catch (e) {
+      cb(null);
+    }
+  }
+
   async function startLoop() {
     if (running) return;
     var epoch = collectEpoch;
     running = true;
     stopFlag = false;
+    // 设置每次「开始采集」都重读一次：DSH 插件改完立即生效，不用重开浏览器。
+    RS = await loadRuntimeSettings();
+    var lanesWanted = RS.lanes;
+    // 把「实际用了几路」落进 storage，供 DSH 插件/排查时核对（读不回来也不影响采集）
+    try {
+      chrome.storage.local.set({
+        dts_settings_effective: {
+          lanes: lanesWanted,
+          maxCount: RS.maxCount,
+          replyLanes: RS.replyLanes,
+          replyGapMs: RS.replyGapMs,
+          replyThrottleMaxWaitMs: RS.replyThrottleMaxWaitMs,
+          from: hasUserSettings ? 'panel' : 'plugin',
+          at: Date.now(),
+        },
+      });
+    } catch (e) { /* 忽略 */ }
     down('start-capture');
 
     try {
@@ -1598,8 +1704,8 @@
           break;
         }
 
-        // ---- 一轮：并发 N 路（MAX_LANES），每路一个 cursor ----
-        var lanes = Math.min(MAX_LANES, MAX_PAGES - pages);
+        // ---- 一轮：并发 N 路（内置 4，可由 DSH 插件调），每路一个 cursor ----
+        var lanes = Math.min(lanesWanted, MAX_PAGES - pages);
         if (lanes < 1) lanes = 1;
         var cursors = [];
         var i;
@@ -1681,6 +1787,16 @@
           pass < MAX_PASSES && passNew >= RESCAN_MIN_NEW;
         await pushComments(freshAll, (laneEnd && !willRescan) ? 0 : 1);
         await flushComments((laneEnd && !willRescan) ? 0 : 1);
+
+        // 面板「设置 → 目标条数」到了就自动收工（0 = 不限）。
+        // 只在这里判、不在补采阶段判：maxCount 是**一级评论去重条数**的目标，到量后
+        // 已收集到的线程的二级回复仍要补完再停 —— 与 DSH 插件 max 的语义保持一致
+        // （不然「设了 300 条」会变成「二级回复一条都不要」，正是 Mac 报告里那个坑）。
+        if (RS.maxCount > 0 && seen.size >= RS.maxCount) {
+          setPhase('done', '', '已达到设置的目标条数 ' + RS.maxCount + ' 条（去重后 ' + seen.size +
+            ' 条），已自动停止；再点「开始采集」会从断点继续。');
+          break;
+        }
 
         // 终点判据：某一路拿不满一页且 has_more=0（服务端列表物理触底）
         if (laneEnd) {
@@ -2140,6 +2256,184 @@
     });
   }
 
+  // ---- 面板「设置」浮层（v0.2.4） ----
+  // 为什么做在扩展面板里、而不是只放在 DSH 的「设置 → 插件」：用户反馈「按钮在哪」——
+  // 独立装的扩展（不经过 DSH）根本没有 DSH 设置页可用，设置必须跟着面板走。
+  // 存的 dts_user_settings 优先级高于 DSH 插件下发的 dts_settings（见 loadRuntimeSettings）。
+  var SETTING_FIELDS = [
+    { key: 'maxCount', label: '目标条数 max', min: 0, max: MAX_COUNT_HARD_MAX, step: 50, title: '采到这么多条一级评论就自动收工（等同 DSH 插件的 max）；0 = 不限（二级回复会补完再停）' },
+    { key: 'lanes', label: '并发路数', min: 1, max: LANES_HARD_MAX, step: 1, title: '顶层列表同时发几路请求：1~8，内置默认 4（实测甜点）' },
+    { key: 'replyLanes', label: '回复并发', min: 1, max: LANES_HARD_MAX, step: 1, title: '二级回复同时拉几条线程：1~8，内置默认 4' },
+    { key: 'replyGapMs', label: '回复间隔 ms', min: 0, max: 60000, step: 100, title: '同一线程两次回复请求之间的间隔，内置默认 600ms' },
+    { key: 'replyThrottleSec', label: '限流等待 s', min: 10, max: 600, step: 10, title: '撞上服务端限流时，最多等这么久再重试（内置 10 秒，只能放宽不能更短）' },
+  ];
+
+  function clampInt(v, lo, hi, dflt) {
+    var n = Number(v);
+    if (!isFinite(n)) return dflt;
+    return Math.max(lo, Math.min(Math.round(n), hi));
+  }
+
+  /** 存储对象 → 输入框值（缺项用当前生效值兜底，replyThrottleMaxWaitMs 换成秒显示） */
+  function settingsToInputs(st) {
+    var pick = function (k, dflt) {
+      return (st && st[k] !== undefined && st[k] !== null) ? Number(st[k]) : dflt;
+    };
+    return {
+      maxCount: pick('maxCount', RS.maxCount),
+      lanes: pick('lanes', RS.lanes),
+      replyLanes: pick('replyLanes', RS.replyLanes),
+      replyGapMs: pick('replyGapMs', RS.replyGapMs),
+      replyThrottleSec: Math.round(pick('replyThrottleMaxWaitMs', RS.replyThrottleMaxWaitMs) / 1000),
+    };
+  }
+
+  /** 输入框值 → 存储对象（逐项钳位；本键一旦存在就是「整套面板偏好」，逐项都写） */
+  function inputsToSettings(v) {
+    return {
+      maxCount: clampInt(v.maxCount, 0, MAX_COUNT_HARD_MAX, 0),
+      lanes: clampInt(v.lanes, 1, LANES_HARD_MAX, MAX_LANES),
+      replyLanes: clampInt(v.replyLanes, 1, LANES_HARD_MAX, REPLY_LANES),
+      replyGapMs: clampInt(v.replyGapMs, 0, 60000, REPLY_GAP_MS),
+      replyThrottleMaxWaitMs: clampInt(v.replyThrottleSec, 10, 600, Math.round(REPLY_THROTTLE_MAX_WAIT_MS / 1000)) * 1000,
+    };
+  }
+
+  function settingsSummaryText() {
+    return '并发 ' + RS.lanes + ' 路 · 目标 ' + (RS.maxCount > 0 ? RS.maxCount + ' 条' : '不限') +
+      (hasUserSettings ? '（面板）' : '');
+  }
+
+  function fillSettingsInputs(st) {
+    if (!ui || !ui.inputs) return;
+    var vals = settingsToInputs(st);
+    SETTING_FIELDS.forEach(function (f) {
+      var el = ui.inputs[f.key];
+      if (el) el.value = String(vals[f.key]);
+    });
+  }
+
+  function openSettings() {
+    if (!ui || !ui.settings) return;
+    if (ui.root) {
+      ui.root.classList.remove('dts-collapsed');      // 收起态点齿轮：先展开，否则浮层压着一条标题栏
+      ui.root.classList.add('dts-settings-open');     // 让面板撑高到够放 5 行设置（panel.css §9）
+    }
+    loadUserSettings(function (st) { fillSettingsInputs(st); });
+    ui.settings.classList.remove('dts-hidden');
+  }
+
+  function closeSettings() {
+    if (ui && ui.settings) ui.settings.classList.add('dts-hidden');
+    if (ui && ui.root) ui.root.classList.remove('dts-settings-open');
+  }
+
+  function readSettingsInputs() {
+    var v = {};
+    SETTING_FIELDS.forEach(function (f) {
+      var el = ui.inputs[f.key];
+      v[f.key] = el ? el.value : undefined;
+    });
+    return v;
+  }
+
+  function saveSettings() {
+    var st = inputsToSettings(readSettingsInputs());
+    try {
+      chrome.storage.local.set({ dts_user_settings: st }, function () {
+        hasUserSettings = true;
+        // 立刻反映到面板摘要与当前生效值：不用等下一次开始采集
+        RS = {
+          lanes: st.lanes,
+          maxCount: st.maxCount,
+          replyLanes: st.replyLanes,
+          replyGapMs: st.replyGapMs,
+          replyWarmupMs: RS.replyWarmupMs,
+          replyThrottleMaxWaitMs: st.replyThrottleMaxWaitMs,
+        };
+        noteText = '设置已保存：并发 ' + st.lanes + ' 路 · 目标 ' +
+          (st.maxCount > 0 ? st.maxCount + ' 条' : '不限') + ' · 回复并发 ' + st.replyLanes +
+          ' · 限流等待 ' + (st.replyThrottleMaxWaitMs / 1000) + 's（下次开始采集生效）';
+        closeSettings();
+        render();
+      });
+    } catch (e) {
+      errText = '设置保存失败：' + String(e);
+      render();
+    }
+  }
+
+  function resetSettings() {
+    try {
+      chrome.storage.local.remove(USER_SETTINGS_KEY, function () {
+        hasUserSettings = false;
+        noteText = '已恢复默认（删掉面板偏好，回到 DSH 插件设置 / 内置常量）';
+        fillSettingsInputs(null);
+        render();
+      });
+    } catch (e) {
+      errText = '恢复默认失败：' + String(e);
+      render();
+    }
+  }
+
+  function buildSettingsBox(root) {
+    var box = document.createElement('div');
+    box.className = 'dts-settings dts-hidden';
+
+    var head = document.createElement('div');
+    head.className = 'dts-row dts-settings-head';
+    var t = document.createElement('span');
+    t.textContent = '设置';
+    var tools = document.createElement('div');
+    tools.className = 'dts-tools';
+    tools.appendChild(mkBtn('×', 'dts-btn-collapse', function () { closeSettings(); }));
+    head.appendChild(t);
+    head.appendChild(tools);
+    box.appendChild(head);
+
+    // 当前生效值（原来挂在第三行按钮旁边，v0.2.5 起移进浮层，面板更干净）
+    var cur = document.createElement('div');
+    cur.className = 'dts-row dts-muted dts-settings-summary';
+    cur.setAttribute('title', '当前生效值：面板设置 > DSH 插件下发 > 内置常量');
+    box.appendChild(cur);
+
+    var inputs = {};
+    SETTING_FIELDS.forEach(function (f) {
+      var r = document.createElement('div');
+      r.className = 'dts-row dts-field';
+      r.setAttribute('title', f.title || '');
+      var l = document.createElement('span');
+      l.className = 'dts-field-label';
+      l.textContent = f.label;
+      var inp = document.createElement('input');
+      inp.type = 'number';
+      inp.className = 'dts-input';
+      inp.min = String(f.min);
+      inp.max = String(f.max);
+      inp.step = String(f.step);
+      r.appendChild(l);
+      r.appendChild(inp);
+      box.appendChild(r);
+      inputs[f.key] = inp;
+    });
+
+    var hint = document.createElement('div');
+    hint.className = 'dts-row dts-muted dts-settings-hint';
+    hint.textContent = '保存后立即生效（下一次「开始采集」用新值）。面板里设过的项优先于 DSH 插件设置；点「恢复默认」交回插件/内置值。';
+    box.appendChild(hint);
+
+    var btns = document.createElement('div');
+    btns.className = 'dts-row dts-actions';
+    btns.appendChild(mkBtn('保存', 'dts-btn-primary', function () { saveSettings(); }));
+    btns.appendChild(mkBtn('恢复默认', '', function () { resetSettings(); }));
+    btns.appendChild(mkBtn('关闭', '', function () { closeSettings(); }));
+    box.appendChild(btns);
+
+    root.appendChild(box);
+    return { box: box, inputs: inputs, cur: cur };
+  }
+
   function buildPanel() {
     if (ui || document.getElementById('dts-collector-panel')) return;
 
@@ -2158,7 +2452,15 @@
     name.insertBefore(dot, name.firstChild);
     var tools = document.createElement('div');
     tools.className = 'dts-tools';
-    tools.appendChild(mkBtn('—', 'dts-btn-collapse', function () { root.classList.toggle('dts-collapsed'); }));
+    // 齿轮（v0.2.5）：跟「—」同一行、在它左边，比原来第三行的「设置」文字按钮省地方
+    var gear = mkBtn('⚙', 'dts-btn-gear', function () { openSettings(); });
+    gear.setAttribute('title', '设置：目标条数 max / 并发路数 / 回复档位（面板 > 插件 > 内置）');
+    gear.setAttribute('aria-label', '设置');
+    tools.appendChild(gear);
+    tools.appendChild(mkBtn('—', 'dts-btn-collapse', function () {
+      closeSettings();
+      root.classList.toggle('dts-collapsed');
+    }));
     head.appendChild(name);
     head.appendChild(tools);
 
@@ -2203,19 +2505,27 @@
     r2.appendChild(mkBtn('清空', '', onClearClick));
     body.appendChild(r2);
 
+    // 设置入口在标题栏的齿轮里（buildPanel 顶部），这里不再占一行
     root.appendChild(head);
     root.appendChild(body);
+    // 设置浮层：面板内的模态层（absolute 覆盖整个面板），默认隐藏
+    var sbox = buildSettingsBox(root);
     (document.body || document.documentElement).appendChild(root);
 
     refs.root = root;
     refs.dot = dot;
     refs.head = head;
+    refs.summary = sbox.cur;
+    refs.settings = sbox.box;
+    refs.inputs = sbox.inputs;
     ui = refs;
     makeDraggable(root, head);
     render();
     // 先 render 再读位置：旧版存的是相对右下角的 {dx,dy}，换算成绝对坐标需要
     // 面板已经在默认位置上有真实 rect（异步回调，不阻塞首屏）
     loadPanelPos();
+    // 回显一次面板设置（决定摘要里显不显示「（面板）」）
+    loadUserSettings(function (st) { hasUserSettings = !!st; fillSettingsInputs(st); render(); });
   }
 
   function setPhase(p, err, note) {
@@ -2235,6 +2545,7 @@
     ui.ms.textContent = lastMs ? lastMs + ' ms' : '—';
     ui.note.textContent = noteText || '';
     ui.err.textContent = errText || '';
+    if (ui.summary) ui.summary.textContent = '当前：' + settingsSummaryText();
 
     if (total > 0) {
       var pct = Math.max(0, Math.min(100, (seen.size / total) * 100));
