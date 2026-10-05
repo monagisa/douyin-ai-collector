@@ -9,7 +9,6 @@ douyin-ai-collector/          ← 仓库根（可自行命名）
 ├─ douyin-collector/          ← Chrome MV3 扩展（主项目）
 ├─ dsh-douyin-comments/       ← 可选：DSH 插件（把采集做成 agent 工具 douyin_comments，自带扩展自动安装）
 ├─ douyin-mcp/                ← 可选：AI / MCP 控制面（控制采集）
-├─ douyin-analysis/           ← 可选：AI 分析后端（统计/检索/情感）
 ├─ docs/                       ← 面板截图（下面「界面」一节引用）
 └─ release/                    ← 打包好的发布物（含给别人用的 tgz / 扩展 zip / 使用说明）
 ```
@@ -31,10 +30,6 @@ douyin-ai-collector/          ← 仓库根（可自行命名）
 插件**自带浏览器扩展副本**，第一次调用时自动把扩展装进它启动的浏览器；只交付本次新采的数据，
 拿不到签名或没有新数据就明确失败。文档见 [dsh-douyin-comments/README.md](./dsh-douyin-comments/README.md)。
 
-**douyin-analysis**：本地分析后端（Python + FastAPI + SQLite/FTS5 + MCP）。采集下来的评论进它之后，
-AI 调的是**算好的统计**（概览 / 透视表 / 全文检索 / 抽样 / 本地词典情感），不必把几千行原文灌进上下文。
-统计口径、情感算法、接口清单见 [douyin-analysis/README.md](./douyin-analysis/README.md)。
-
 | 目录 | 文档 |
 |---|---|
 | 扩展 | [douyin-collector/README.md](./douyin-collector/README.md) |
@@ -42,7 +37,6 @@ AI 调的是**算好的统计**（概览 / 透视表 / 全文检索 / 抽样 / �
 | 内部协议 | [douyin-collector/PROTOCOL.md](./douyin-collector/PROTOCOL.md) |
 | 采集控制 MCP | [douyin-mcp/README.md](./douyin-mcp/README.md) |
 | DSH 采集插件 | [dsh-douyin-comments/README.md](./dsh-douyin-comments/README.md) |
-| 分析后端 | [douyin-analysis/README.md](./douyin-analysis/README.md) |
 
 ---
 
