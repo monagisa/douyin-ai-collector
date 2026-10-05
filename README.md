@@ -1,6 +1,6 @@
 # 抖音评论采集器 + MCP
 
-面向 GitHub 的推荐仓库结构（monorepo）：
+仓库结构 :
 
 ```text
 douyin-ai-collector/          ← 仓库根（可自行命名）
