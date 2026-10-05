@@ -9,7 +9,6 @@ douyin-ai-collector/          ← 仓库根（可自行命名）
 ├─ douyin-collector/          ← Chrome MV3 扩展（主项目）
 ├─ dsh-douyin-comments/       ← 可选：DSH 插件（把采集做成 agent 工具 douyin_comments，自带扩展自动安装）
 ├─ douyin-mcp/                ← 可选：AI / MCP 控制面（控制采集）
-├─ docs/                       ← 面板截图（下面「界面」一节引用）
 └─ release/                    ← 打包好的发布物（含给别人用的 tgz / 扩展 zip / 使用说明）
 ```
 
@@ -56,19 +55,6 @@ douyin-ai-collector/          ← 仓库根（可自行命名）
    要把这套发给别人：用 [release/dsh-douyin-comments-v0.5.3.zip](./release/dsh-douyin-comments-v0.5.3.zip)
    （单文件，解压后是 `dsh-douyin-comments-0.5.3.tgz` 插件包 + `douyin-collector-extension-v0.2.5.zip`
    单独扩展 + `使用说明.md` + `SHA256SUMS.txt`）。
-
----
-
-## 界面
-
-采集面板（标题栏右上角是设置齿轮 `⚙`，就在收起「—」左边）：
-
-![采集面板](docs/panel-v0.2.5-closed.png)
-
-点开齿轮改参数 —— 第一项就是 `max`（目标条数），另有并发路数 / 回复并发 / 回复间隔 / 限流等待；
-顶部显示当前生效值，设过的项优先于 DSH 插件下发的值和内置默认：
-
-![面板设置](docs/panel-v0.2.5-settings.png)
 
 ---
 
