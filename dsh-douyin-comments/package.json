@@ -1,0 +1,48 @@
+{
+  "name": "dsh-douyin-comments",
+  "version": "0.5.3",
+  "description": "DeepSeek Harness tool plugin: collect Douyin video comments with a bundled Chrome extension (registers the douyin_comments tool)",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./collector": "./collector.mjs",
+    "./client": "./client/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "collector.mjs",
+    "client",
+    "cordis.patch.yml",
+    "README.md",
+    "extension"
+  ],
+  "scripts": {
+    "sync-ext": "node sync-extension.mjs",
+    "verify": "node verify-tool.mjs"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  },
+  "dependencies": {
+    "playwright-core": "^1.63.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-tools": ">=0.1.5-rc.3"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}
