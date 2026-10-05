@@ -1,0 +1,526 @@
+/* =============================================================================
+ * panel.css —— 抖音「评论采集器」面板样式
+ *
+ * 设计原则（与 PROTOCOL.md §3.6 对齐）：
+ *   1. 所有选择器都带 `#dts-collector-panel` 前缀。
+ *      抖音页面有大量通用 class（.bar / .row / .btn / .title 之类），
+ *      不加前缀的裸 class 选择器会污染页面样式，反之页面样式也会干扰面板。
+ *      加 id 前缀同时把特异性拉到 (1,1,0) 以上，稳压页面同名的单类规则。
+ *   2. 不使用全局 reset、不使用 `*` 选择器、不使用 `all:` / `body` / `html` 选择器。
+ *      需要 `!important` 的地方只有两处：收起时强制隐藏内容区（必须压过任何内联/页面规则）。
+ *   3. 进度条宽度由 content.js 改 `.dts-bar-fill.style.width` 驱动，
+ *      所以这里**不给 width 加 !important**，并保留 transition 让变化可见。
+ *   4. 面板可收起：容器带 `.dts-collapsed` 时只剩标题栏。
+ *   5. **面板可拖动**：默认钉在右下角（right/bottom）；一经拖动，content.js 就会给
+ *      容器写内联 `left/top` 并把 right/bottom 置成 auto（绝对坐标），本文件不再
+ *      参与定位。拖动中容器带 `.dts-dragging`。
+ *      为什么不用「右下角 + transform 位移」：right 锚定会在视口宽度变化时横移
+ *      （抖音开评论抽屉会锁 body 滚动、滚动条消失即触发），bottom 锚定会在面板
+ *      内容变高时把**顶边**（拖动把手）顶上去 —— 两次都会让用户看到「瞬移」。
+ * ========================================================================== */
+
+/* -----------------------------------------------------------------------------
+ * 1. 面板容器
+ *    固定右下角、宽 236px（v0.1.15 起**只有这一档**：用户反馈 340px 太大，不再提供
+ *    「大/小」切换）、深色主题、z-index 拉满（2147483647 = 32 位有符号上限）。
+ * -------------------------------------------------------------------------- */
+#dts-collector-panel {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  width: 236px;
+  max-width: calc(100vw - 32px);
+  box-sizing: border-box;
+  z-index: 2147483647;
+  margin: 0;
+  padding: 8px 10px 9px;
+  background: linear-gradient(180deg, #22272e 0%, #1b1f25 100%);
+  color: #e8eaed;
+  border: 1px solid #363c45;
+  border-radius: 10px;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.04) inset,
+    0 10px 30px rgba(0, 0, 0, 0.5),
+    0 2px 6px rgba(0, 0, 0, 0.35);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-size: 11px;
+  line-height: 1.45;
+  text-align: left;
+  text-shadow: none;
+  letter-spacing: normal;
+  /* 位置默认由上面的 right/bottom 决定；拖动后 content.js 会写内联 left/top 接手 */
+  /* 面板是纯 UI，禁止选中/拖拽选中，避免干扰页面操作手感 */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 面板内部所有元素统一 border-box，避免被页面的 * { box-sizing } 或反之带偏 */
+#dts-collector-panel,
+#dts-collector-panel .dts-panel-body,
+#dts-collector-panel .dts-row,
+#dts-collector-panel .dts-header,
+#dts-collector-panel .dts-title,
+#dts-collector-panel .dts-tools,
+#dts-collector-panel .dts-dot,
+#dts-collector-panel .dts-bar {
+  box-sizing: border-box;
+}
+
+/* 拖动中：加抓取光标、关掉过渡（否则跟手感发飘） */
+#dts-collector-panel.dts-dragging {
+  cursor: grabbing;
+  transition: none;
+  will-change: left, top;
+}
+
+#dts-collector-panel.dts-dragging * {
+  cursor: grabbing;
+}
+
+/* -----------------------------------------------------------------------------
+ * 2. 标题栏（同时是拖动把手）
+ *    content.js 的实际结构是： #dts-collector-panel > [.dts-row.dts-header, .dts-panel-body]
+ *    即标题栏复用了 `.dts-row`，因此用「容器的第一个 .dts-row」精确定位标题栏。
+ *    另兼容 .dts-header / .dts-title / .dts-head 命名（命中任一即可）。
+ * -------------------------------------------------------------------------- */
+#dts-collector-panel > .dts-row:first-child {
+  padding: 0 0 6px;
+  margin: 0 0 6px;
+  border-bottom: 1px solid #30363e;
+  font-size: 12px;
+  font-weight: 600;
+  color: #ffffff;
+  cursor: move;
+}
+#dts-collector-panel .dts-header,
+#dts-collector-panel .dts-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 0 0 6px;
+  margin: 0 0 6px;
+  border-bottom: 1px solid #30363e;
+  font-size: 12px;
+  font-weight: 600;
+  color: #ffffff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* 提示该区域可作为拖动把手（PROTOCOL §3.6 允许可拖动或可收起） */
+  cursor: move;
+  touch-action: none;   /* 触屏拖动时不要被页面的滚动手势抢走 */
+}
+
+/* 标题文字（含左侧状态点） */
+#dts-collector-panel .dts-header .dts-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  letter-spacing: 0.2px;
+}
+
+/* 标题右侧的按钮组 */
+#dts-collector-panel .dts-tools,
+#dts-collector-panel .dts-header > .dts-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+/* 状态点：颜色由 content.js 按阶段切换（见 DOT_CLASS） */
+#dts-collector-panel .dts-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #6b7280;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+#dts-collector-panel .dts-dot-idle {
+  background: #6b7280;
+}
+
+#dts-collector-panel .dts-dot-busy {
+  background: #4f9cf0;
+  box-shadow: 0 0 0 3px rgba(79, 156, 240, 0.18);
+  animation: dts-dot-pulse 1.4s ease-in-out infinite;
+}
+
+#dts-collector-panel .dts-dot-warn {
+  background: #f0b34f;
+  box-shadow: 0 0 0 3px rgba(240, 179, 79, 0.18);
+  animation: dts-dot-pulse 1.4s ease-in-out infinite;
+}
+
+#dts-collector-panel .dts-dot-ok {
+  background: #45c07a;
+  box-shadow: 0 0 0 3px rgba(69, 192, 122, 0.16);
+}
+
+#dts-collector-panel .dts-dot-err {
+  background: #ff6b6b;
+  box-shadow: 0 0 0 3px rgba(255, 107, 107, 0.18);
+}
+
+@keyframes dts-dot-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
+
+/* -----------------------------------------------------------------------------
+ * 3. 内容区与行
+ * -------------------------------------------------------------------------- */
+#dts-collector-panel .dts-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0;
+  margin: 0;
+}
+
+/* 一行信息：左边标签、右边数值 */
+#dts-collector-panel .dts-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin: 0;
+  padding: 1px 0;
+  min-width: 0;
+}
+
+#dts-collector-panel .dts-row > span,
+#dts-collector-panel .dts-row > div {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 数值列右对齐、等宽，跳动时不抖（排除标题文字，它要左对齐） */
+#dts-collector-panel .dts-row > span:last-child:not(.dts-title) {
+  flex: 0 1 auto;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 按钮行允许换行 */
+#dts-collector-panel .dts-row.dts-actions {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 4px;
+  margin-top: 5px;
+}
+
+/* 信息行与按钮行之间留一点呼吸 */
+#dts-collector-panel .dts-panel-body > .dts-row + .dts-row {
+  margin-top: 0;
+}
+
+/* -----------------------------------------------------------------------------
+ * 4. 文字语义色
+ * -------------------------------------------------------------------------- */
+/* 弱化灰字：次要信息（cursor、耗时、阶段说明） */
+#dts-collector-panel .dts-muted {
+  color: #98a2b3;
+}
+
+/* 错误红字 */
+#dts-collector-panel .dts-err {
+  color: #ff7b7b;
+  word-break: break-all;
+  white-space: normal;
+}
+
+/* -----------------------------------------------------------------------------
+ * 5. 进度条
+ *    .dts-bar 是槽，.dts-bar-fill 是填充；content.js 只改 fill 的 style.width，
+ *    所以 width 不用 !important，transition 让每次更新肉眼可见。
+ * -------------------------------------------------------------------------- */
+#dts-collector-panel .dts-bar {
+  position: relative;
+  width: 100%;
+  height: 5px;
+  margin: 5px 0 2px;
+  background: #171b20;
+  border: 1px solid #2b3138;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+#dts-collector-panel .dts-bar-fill {
+  width: 0;
+  height: 100%;
+  background: linear-gradient(90deg, #2b6cb0, #57a6ff);
+  border-radius: 999px;
+  box-shadow: 0 0 8px rgba(87, 166, 255, 0.45);
+  transition: width 0.25s ease-out;
+}
+
+/* total 未知（total === 0）时的"不确定态"：由 content.js 加任一状态类即可生效 */
+#dts-collector-panel .dts-bar.dts-bar-indeterminate .dts-bar-fill,
+#dts-collector-panel .dts-bar-fill.dts-indeterminate {
+  width: 35%;
+  animation: dts-bar-slide 1.2s ease-in-out infinite alternate;
+}
+
+@keyframes dts-bar-slide {
+  from { transform: translateX(0); }
+  to   { transform: translateX(190%); }
+}
+
+/* -----------------------------------------------------------------------------
+ * 6. 按钮
+ * -------------------------------------------------------------------------- */
+#dts-collector-panel .dts-btn {
+  display: inline-block;
+  box-sizing: border-box;
+  padding: 3px 8px;
+  margin: 0;
+  background: #2b3138;
+  color: #e8eaed;
+  border: 1px solid #3a4048;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 16px;
+  text-align: center;
+  white-space: nowrap;
+  cursor: pointer;
+  outline: none;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.08s ease, box-shadow 0.15s ease;
+}
+
+#dts-collector-panel .dts-btn:hover {
+  background: #363d47;
+  border-color: #4b545f;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.28);
+}
+
+#dts-collector-panel .dts-btn:active {
+  background: #242a31;
+  transform: translateY(1px);
+  box-shadow: none;
+}
+
+#dts-collector-panel .dts-btn:focus-visible {
+  border-color: #57a6ff;
+  box-shadow: 0 0 0 2px rgba(87, 166, 255, 0.35);
+}
+
+/* 主按钮（开始采集） */
+#dts-collector-panel .dts-btn-primary {
+  background: linear-gradient(180deg, #3182ce, #2b6cb0);
+  border-color: #2f6fae;
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.12) inset, 0 2px 8px rgba(43, 108, 176, 0.35);
+}
+
+#dts-collector-panel .dts-btn-primary:hover {
+  background: linear-gradient(180deg, #3d92e0, #3182ce);
+  border-color: #3d8fd6;
+}
+
+/* 不可用态：仍可见，但不响应点击 */
+#dts-collector-panel .dts-btn:disabled,
+#dts-collector-panel .dts-btn[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+/* 收起按钮（—）通常只有一个字符，压窄一点 */
+#dts-collector-panel .dts-btn.dts-btn-collapse {
+  padding: 2px 6px;
+  min-width: 22px;
+  font-size: 12px;
+  line-height: 14px;
+  background: transparent;
+  border-color: #3a4048;
+  color: #c7ccd4;
+}
+
+/* 设置齿轮（v0.2.5）：跟「—」并排在标题栏右侧、齿轮在左。单字符按钮，压窄 */
+#dts-collector-panel .dts-btn.dts-btn-gear {
+  padding: 2px 5px;
+  min-width: 22px;
+  font-size: 13px;
+  line-height: 14px;
+  background: transparent;
+  border-color: #3a4048;
+  color: #c7ccd4;
+}
+
+#dts-collector-panel .dts-btn.dts-btn-gear:hover {
+  color: #ffffff;
+  border-color: #4b545f;
+}
+
+/* -----------------------------------------------------------------------------
+ * 6.5 尺寸（v0.1.15：**只有这一档**）
+ *     用户看过 v0.1.14 的「大/小」切换后确认只要小的（"现在不用留大的了，已经完全能用
+ *     了"），所以 340px 那档连同「大/小」按钮、尺寸 class、尺寸存储键一起删掉：
+ *     所有尺寸值直接写在上面各条基础规则里，content.js 不再切任何尺寸 class。
+ * -------------------------------------------------------------------------- */
+
+/* -----------------------------------------------------------------------------
+ * 7. 收起态
+ *    容器带 .dts-collapsed 时只保留标题栏。
+ *    注意：content.js 里标题栏本身就是容器下的第一个 `.dts-row`，所以这里
+ *    **只能隐藏内容区 .dts-panel-body**；绝不能写 `> .dts-row { display:none }`，
+ *    否则会把标题栏一起藏掉（第一版踩过，已修正）。
+ *    用 !important 是因为收起是硬性的视觉状态，必须压过页面/内联规则。
+ * -------------------------------------------------------------------------- */
+#dts-collector-panel.dts-collapsed {
+  padding: 6px 9px;
+}
+
+#dts-collector-panel.dts-collapsed .dts-panel-body,
+#dts-collector-panel.dts-collapsed .dts-hide-when-collapsed {
+  display: none !important;
+}
+
+/* 收起时标题栏的下边距/分隔线一并收掉，视觉上更紧凑 */
+#dts-collector-panel.dts-collapsed > .dts-row:first-child,
+#dts-collector-panel.dts-collapsed .dts-header,
+#dts-collector-panel.dts-collapsed .dts-head {
+  padding-bottom: 0;
+  margin-bottom: 0;
+  border-bottom: 0;
+}
+
+/* -----------------------------------------------------------------------------
+ * 9. 设置浮层（v0.2.4；入口 v0.2.5 改为标题栏齿轮 ⚙）
+ *    入口：「设置」齿轮在标题栏右侧、「—」收起按钮的左边（见 content.js 的 buildPanel）。
+ *    点开的面板内模态层：absolute 覆盖整个面板（含标题栏），
+ *    默认带 .dts-hidden。结构见 content.js 的 buildSettingsBox()。
+ *    存的是 chrome.storage.local.dts_user_settings —— 优先级高于 DSH 插件下发的
+ *    dts_settings（见 PROTOCOL.md §3.9），所以独立装的扩展也能自己调档位。
+ * -------------------------------------------------------------------------- */
+#dts-collector-panel .dts-hidden {
+  display: none !important;
+}
+
+#dts-collector-panel .dts-settings {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px 9px;
+  background: linear-gradient(180deg, #22272e 0%, #1b1f25 100%);
+  border-radius: 10px;
+  overflow-y: auto;
+  z-index: 1;
+}
+
+/* 浮层里的每一项都不许被压扁（flex 列 + overflow 会把「当前：…」压成一条 2px 的缝） */
+#dts-collector-panel .dts-settings > * {
+  flex: 0 0 auto;
+}
+
+/* 浮层打开时把面板撑到够高，免得 5 行设置还要滚动（实测内容比 276px 高 10px） */
+#dts-collector-panel.dts-settings-open {
+  min-height: 292px;
+}
+
+#dts-collector-panel .dts-settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 0 0 6px;
+  margin: 0 0 4px;
+  border-bottom: 1px solid #30363e;
+  font-size: 12px;
+  font-weight: 600;
+  color: #ffffff;
+  cursor: default;
+}
+
+/* 一行设置：左标签 + 右输入框 */
+#dts-collector-panel .dts-field {
+  justify-content: space-between;
+  gap: 6px;
+  padding: 1px 0;
+}
+
+#dts-collector-panel .dts-field-label {
+  flex: 1 1 auto;
+  color: #c7ccd4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#dts-collector-panel .dts-input {
+  flex: 0 0 78px;
+  width: 78px;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 2px 6px;
+  background: #14181d;
+  color: #e8eaed;
+  border: 1px solid #3a4048;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 16px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+}
+
+#dts-collector-panel .dts-input:focus {
+  border-color: #57a6ff;
+  box-shadow: 0 0 0 2px rgba(87, 166, 255, 0.3);
+}
+
+#dts-collector-panel .dts-settings-hint {
+  display: block;
+  margin: 4px 0 0;
+  font-size: 10px;
+  line-height: 1.4;
+  white-space: normal;
+}
+
+/* 浮层里的一行「当前：并发 N 路 · 目标 M 条/不限（面板）」
+ * （v0.2.5 起从按钮行右侧移进来：面板只留两行按钮 + 标题栏齿轮）
+ * flex 必须是 0 0 auto：这里是 flex 列里的一个普通子项，写 1 1 auto 会被压成一条缝，
+ * 而且本条规则在 §9 的 `> *` 之后，特异性相同时**后写的赢**。 */
+#dts-collector-panel .dts-settings-summary {
+  flex: 0 0 auto;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  margin: -2px 0 6px;
+}
+
+/* -----------------------------------------------------------------------------
+ * 8. 无障碍：用户系统里关了动效时，不要脉冲/滑动
+ * -------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  #dts-collector-panel .dts-dot-busy,
+  #dts-collector-panel .dts-dot-warn,
+  #dts-collector-panel .dts-bar-fill {
+    animation: none;
+  }
+}

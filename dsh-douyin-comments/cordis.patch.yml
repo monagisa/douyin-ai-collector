@@ -1,0 +1,6 @@
+# dsh-douyin-comments 的 bundle 层：把本插件插进 profile 的组合树。
+# name 必须是「发布包名」——loader 用它做 import specifier。
+- insert:
+    - id: douyin-comments
+      # 抖音公开评论采集（自带扩展副本，运行时自动装进浏览器）
+      name: "dsh-douyin-comments"
