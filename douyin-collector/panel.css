@@ -352,6 +352,22 @@
   color: #c7ccd4;
 }
 
+/* 设置齿轮（v0.2.5）：跟「—」并排在标题栏右侧、齿轮在左。单字符按钮，压窄 */
+#dts-collector-panel .dts-btn.dts-btn-gear {
+  padding: 2px 5px;
+  min-width: 22px;
+  font-size: 13px;
+  line-height: 14px;
+  background: transparent;
+  border-color: #3a4048;
+  color: #c7ccd4;
+}
+
+#dts-collector-panel .dts-btn.dts-btn-gear:hover {
+  color: #ffffff;
+  border-color: #4b545f;
+}
+
 /* -----------------------------------------------------------------------------
  * 6.5 尺寸（v0.1.15：**只有这一档**）
  *     用户看过 v0.1.14 的「大/小」切换后确认只要小的（"现在不用留大的了，已经完全能用
@@ -383,6 +399,119 @@
   padding-bottom: 0;
   margin-bottom: 0;
   border-bottom: 0;
+}
+
+/* -----------------------------------------------------------------------------
+ * 9. 设置浮层（v0.2.4；入口 v0.2.5 改为标题栏齿轮 ⚙）
+ *    入口：「设置」齿轮在标题栏右侧、「—」收起按钮的左边（见 content.js 的 buildPanel）。
+ *    点开的面板内模态层：absolute 覆盖整个面板（含标题栏），
+ *    默认带 .dts-hidden。结构见 content.js 的 buildSettingsBox()。
+ *    存的是 chrome.storage.local.dts_user_settings —— 优先级高于 DSH 插件下发的
+ *    dts_settings（见 PROTOCOL.md §3.9），所以独立装的扩展也能自己调档位。
+ * -------------------------------------------------------------------------- */
+#dts-collector-panel .dts-hidden {
+  display: none !important;
+}
+
+#dts-collector-panel .dts-settings {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px 9px;
+  background: linear-gradient(180deg, #22272e 0%, #1b1f25 100%);
+  border-radius: 10px;
+  overflow-y: auto;
+  z-index: 1;
+}
+
+/* 浮层里的每一项都不许被压扁（flex 列 + overflow 会把「当前：…」压成一条 2px 的缝） */
+#dts-collector-panel .dts-settings > * {
+  flex: 0 0 auto;
+}
+
+/* 浮层打开时把面板撑到够高，免得 5 行设置还要滚动（实测内容比 276px 高 10px） */
+#dts-collector-panel.dts-settings-open {
+  min-height: 292px;
+}
+
+#dts-collector-panel .dts-settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 0 0 6px;
+  margin: 0 0 4px;
+  border-bottom: 1px solid #30363e;
+  font-size: 12px;
+  font-weight: 600;
+  color: #ffffff;
+  cursor: default;
+}
+
+/* 一行设置：左标签 + 右输入框 */
+#dts-collector-panel .dts-field {
+  justify-content: space-between;
+  gap: 6px;
+  padding: 1px 0;
+}
+
+#dts-collector-panel .dts-field-label {
+  flex: 1 1 auto;
+  color: #c7ccd4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#dts-collector-panel .dts-input {
+  flex: 0 0 78px;
+  width: 78px;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 2px 6px;
+  background: #14181d;
+  color: #e8eaed;
+  border: 1px solid #3a4048;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 16px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+}
+
+#dts-collector-panel .dts-input:focus {
+  border-color: #57a6ff;
+  box-shadow: 0 0 0 2px rgba(87, 166, 255, 0.3);
+}
+
+#dts-collector-panel .dts-settings-hint {
+  display: block;
+  margin: 4px 0 0;
+  font-size: 10px;
+  line-height: 1.4;
+  white-space: normal;
+}
+
+/* 浮层里的一行「当前：并发 N 路 · 目标 M 条/不限（面板）」
+ * （v0.2.5 起从按钮行右侧移进来：面板只留两行按钮 + 标题栏齿轮）
+ * flex 必须是 0 0 auto：这里是 flex 列里的一个普通子项，写 1 1 auto 会被压成一条缝，
+ * 而且本条规则在 §9 的 `> *` 之后，特异性相同时**后写的赢**。 */
+#dts-collector-panel .dts-settings-summary {
+  flex: 0 0 auto;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  margin: -2px 0 6px;
 }
 
 /* -----------------------------------------------------------------------------

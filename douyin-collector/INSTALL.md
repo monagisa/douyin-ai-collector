@@ -1,11 +1,15 @@
 # 安装 · 使用 · 打包
 
-> 抖音评论采集器 **v0.2.1** — 无 npm 依赖、无构建步骤。  
+> 抖音评论采集器 **v0.2.5** — 无 npm 依赖、无构建步骤。  
 > **适用浏览器：Chrome 111+ / Edge（Chromium）**；**不支持** Firefox / Safari（详见 README「适用范围」）。  
 > v0.2.x：AI Bridge（本地 MCP，见 `../douyin-mcp/README.md`）；采集核心仍为「复用页面签名、只改 cursor」。  
 > 历史要点：v0.1.5 起采二级回复；v0.1.11 起面板绝对坐标拖动 + 开始采集时自动打开评论区；  
 > v0.1.12 起按 DOM 判页面形态（关注/朋友/我的可用）；v0.1.13 起换视频/清空后自动重取签名、  
-> `hook.js` 由 manifest 在主世界 `document_start` 注入；v0.1.15 起面板固定紧凑档（宽约 236px）。
+> `hook.js` 由 manifest 在主世界 `document_start` 注入；v0.1.15 起面板固定紧凑档（宽约 236px）；  
+> v0.2.2 起并发路数可由 `chrome.storage.local.dts_settings = {lanes}` 设置（1~8，默认 4，见 PROTOCOL §3.9）；  
+> v0.2.3 起二级回复的四档限速也能从 `dts_settings` 覆盖（`replyLanes` / `replyGapMs` / `replyWarmupMs` / `replyThrottleMaxWaitMs`，默认值不变，见 PROTOCOL §3.9）；  
+> v0.2.4 起面板自带「设置」按钮（改 目标条数/并发路数/回复并发/回复间隔/限流等待），存 `dts_user_settings`，**优先级：面板 > `dts_settings` > 内置默认**；  
+> v0.2.5 起入口改为**标题栏齿轮 ⚙**（在「—」左边，不占按钮行），浮层第一项标签就是 `max` 目标条数，当前生效值显示在浮层顶部。
 
 ---
 
@@ -22,6 +26,9 @@ content script 把裁剪后的字段交给 background，写入 `chrome.storage.l
 | `dts_videos` | `{ [videoId]: { title, total, count, hasMore, phase, signedUrlAt, … } }` |
 | `dts_c_<videoId>` | `{ [cid]: 评论对象 }` —— 按 cid 去重 |
 | `dts_ai_bridge` | 可选：MCP Hub 地址（`host/port/enabled`） |
+| `dts_settings` | v0.2.2 起：外部写进来的运行时设置（`{lanes, replyLanes, replyGapMs, replyWarmupMs, replyThrottleMaxWaitMs}`，都可选）；缺字段就用内置默认（`lanes=4`、`replyLanes=4`、`replyGapMs=600`、`replyWarmupMs=1500`、`replyThrottleMaxWaitMs=10000`） |
+| `dts_user_settings` | v0.2.4 起：**面板「设置」按钮**写进去的用户设置（`{maxCount, lanes, replyLanes, replyGapMs, replyThrottleMaxWaitMs}`）；优先级高于 `dts_settings`，删掉它就回到插件/内置值（`maxCount=0` 表示不限条数） |
+| `dts_settings_effective` | v0.2.3：本轮**实际**用的值 `{lanes, maxCount, replyLanes, replyGapMs, replyThrottleMaxWaitMs, from: 'panel'\|'plugin', at}`，回写给调用方核对 |
 
 单视频上限 `MAX_COMMENTS_PER_VIDEO = 80000`（`background.js`），超出时按 `create_time` 淘汰最早数据。  
 落库条数同步到扩展图标角标。
@@ -97,6 +104,7 @@ content script 把裁剪后的字段交给 background，写入 `chrome.storage.l
 | 现象 | 处理 |
 |---|---|
 | 面板不出现 | 确认抖音页 + 扩展加载成功；看 `chrome://extensions` 错误 |
+| 无法加载：`Filenames starting with "_" are reserved` | 扩展目录里混入了 `_xxx` 文件（或调试脚本）。Chrome **禁止** `_` 前缀文件名。把这些文件移出 `douyin-collector/`（例如放到上级 `extension-extra/`），再点「加载已解压」 |
 | `Extension context invalidated` | 在扩展页点过「重新加载」后，旧 content script 仍挂在抖音页上。**F5 刷新该页**再采集 |
 | `onAlarm` TypeError / SW registration failed | 扩展已去掉 chrome.alarms；请在扩展页点「重新加载」强制载入新 background.js |
 | CORS blocked `127.0.0.1` | 重启 douyin-mcp（新版才有 CORS）→ 扩展重新加载 → 打开本目录 `index.html` 探测 /health |

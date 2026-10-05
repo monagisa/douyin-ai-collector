@@ -374,6 +374,15 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
   尺寸完全归 CSS，两者解耦。
 - 显示：阶段、已采条数、服务端 total、当前 cursor、进度条（`count/total`，`total` 为 0 时用不确定态）、每页耗时、错误信息。
 - 按钮：`开始采集` / `暂停` / `导出 CSV` / `导出 JSON` / `清空` / `—`（收起）。
+  设置入口 **v0.2.5 起是标题栏右侧的齿轮 `⚙`**（`.dts-btn.dts-btn-gear`，排在 `—` 收起按钮**左边**，
+  同一行 `.dts-tools` 内；v0.2.4 曾是第三行 `.dts-row.dts-actions` 里的「设置」文字按钮 + 摘要，
+  v0.2.5 把这行去掉）。点齿轮弹出覆盖整个面板的浮层 `.dts-settings`（不改页面滚动），
+  结构 = `.dts-settings-head`（`设置` + `×`）→ 一行「当前：并发 N 路 · 目标 M 条/不限（面板）」
+  （`.dts-muted.dts-settings-summary`，取自 `settingsSummaryText()`）→ 5 个 `.dts-field`
+  （第一项标签是 **`目标条数 max`**，对应 `maxCount`）→ 提示行 → 「保存 / 恢复默认 / 关闭」。
+  浮层打开时 content.js 给容器加 `.dts-settings-open`（`panel.css` 据此把面板撑到 `min-height: 276px`，
+  并让浮层子项 `flex: 0 0 auto` 不被压扁）；保存写 `dts_user_settings`（见 §3.9）；`×`、`关闭`、
+  收起按钮都会先 `closeSettings()`。
 - **样式全部写在 `panel.css`**（由实现者 B 提供）。content.js 里**不要写内联 style，不要注入 `<style>`**。DOM 用稳定的 class 名（`dts-btn` / `dts-btn-primary` / `dts-panel-body` / `dts-row` / `dts-bar` / `dts-bar-fill` / `dts-muted` / `dts-err`）。
 - 面板必须可拖动或至少可收起，避免遮挡页面。**v0.1.8 起两者都有**：标题栏既是拖动把手
   （`pointerdown/move/up`，鼠标与触屏都可用），也是收起按钮所在行。
@@ -469,6 +478,53 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
 
 **为什么值得做**：实测差额的 76% 就是这些回复；剩下 ~24% 是已删除评论
 （`folded_comment_count = 0`，接口层没有「折叠评论」这回事），任何接口都拿不到。
+
+### 3.9 运行时设置（`dts_settings` v0.2.2；v0.2.3 扩充二级回复档位；v0.2.4 加入面板设置 `dts_user_settings`；v0.2.5 入口改齿轮 `⚙`）
+
+外部（DSH 插件 `dsh-douyin-comments`、脚本、DevTools）可以在 `chrome.storage.local` 里写：
+
+| 键 | 内容 |
+|---|---|
+| `dts_settings` | 外部写入的运行时设置；`startLoop()` **每轮开头**读一次 |
+| `dts_user_settings` | v0.2.4：**面板设置**（v0.2.5 起入口是标题栏齿轮 `⚙`）写入的用户设置；优先级高于 `dts_settings`（`chrome.storage.local.remove('dts_user_settings')` 即恢复插件/内置值） |
+| `dts_settings_effective` | 本轮**实际**用的值 + 时间戳（`{lanes, maxCount, replyLanes, replyGapMs, replyThrottleMaxWaitMs, from: 'panel'\|'plugin', at}`），回写给调用方核对 |
+
+**取值优先级（v0.2.4 起）**：面板 `dts_user_settings` > 外部 `dts_settings` > 内置常量。逐字段判断，
+面板里没填的字段继续用外部值 / 内置值（`loadRuntimeSettings()` 里对每个 key 先看面板那份、再看插件那份）。
+`startLoop()` 只在**每轮开头**读一次，所以改完是「下一轮生效」（面板保存时会提示这一点）。
+
+`dts_settings` 的字段（都可选；缺失/非法一律回退内置常量，也就是老行为）：
+
+| 字段 | 含义 | 内置默认 | 允许范围 |
+|---|---|---|---|
+| `maxCount` | v0.2.4：去重后达到多少条就自动收工（`0` = 不限） | `0` | `0..MAX_COUNT_HARD_MAX (= 1000000)` |
+| `lanes` | 顶层列表采集的并发路数（v0.2.2） | `MAX_LANES = 4` | `1..LANES_HARD_MAX (= 8)` |
+| `replyLanes` | 二级回复的并发线程数（v0.2.3） | `REPLY_LANES = 4` | `1..8` |
+| `replyGapMs` | 同一回复线程两页之间的间隔（v0.2.3） | `REPLY_GAP_MS = 600` | `0..60000` |
+| `replyWarmupMs` | 进入补采前的静默时间（v0.2.3） | `REPLY_WARMUP_MS = 1500` | `0..600000` |
+| `replyThrottleMaxWaitMs` | 整段「等限流窗口」的墙钟上限（v0.2.3） | `REPLY_THROTTLE_MAX_WAIT_MS = 10 * 1000` | `10000..600000` |
+
+面板设置（v0.2.4 文字按钮 → v0.2.5 标题栏齿轮 `⚙`）暴露的就是上表的前 5 项（`maxCount`（标签 `目标条数 max`） /
+`lanes` / `replyLanes` / `replyGapMs` / `replyThrottleSec`＝秒，存盘时换算成 `replyThrottleMaxWaitMs`），
+存进 `dts_user_settings`。
+
+- 读取点：`startLoop()` 进入时 `RS = await loadRuntimeSettings()`（内部 `chrome.storage.local.get([USER_SETTINGS_KEY, RUNTIME_SETTINGS_KEY])`，逐字段按上面的优先级合并），
+  之后本轮所有限速点都读 `RS.*`。同一轮内不再重读；下一轮（含暂停后续采）会再读一次 ⇒ 改完**下一轮生效**，不用刷新页面。
+- `maxCount` 到量自动收工：顶层循环里 `await flushComments(...)` 之后判
+  `if (RS.maxCount > 0 && seen.size >= RS.maxCount) { setPhase('done', …); break; }` —— 只在**顶层**判，
+  不会掐掉正在补采的二级回复（语义与 DSH 插件的 `max` 一致）。
+- 合法性：按上表范围钳位（取整）；字段缺失 / 非数字 / `<= 0` 一律回退内置默认。
+  `replyThrottleMaxWaitMs` 的下限刻意就是内置的 10 秒：放宽可以，**不允许调得比原来更早放弃**
+  （「限流十秒不行就停」是原先定的策略，放宽是给「撞上窗口、想再等等」留的口子）。
+- 一轮并发写法不变（见 3.2）：`var lanes = Math.min(lanesWanted, MAX_PAGES - pages);` +
+  `Promise.all(cursors.map(function (c) { return requestReplay(c, COUNT); }))`，
+  只是 `lanesWanted` 可能来自设置而不是常量。
+- 默认行为与老版本完全一致：没有 `dts_settings` 时等价于 `MAX_LANES = 4` / `REPLY_LANES = 4` / `REPLY_GAP_MS = 600` /
+  `REPLY_THROTTLE_MAX_WAIT_MS = 10s`（扩展单独使用时不受影响）。
+- 单一事实来源仍是 `content.js`；`MAX_LANES` / `RS` 只是兜底，不再是唯一的调节点。
+- 实战提示（2026-10-05 macOS 报告的成因之一）：刚轰完列表接口时回复接口容易被整段拒
+  （见本节前面的实测），这时把 `replyThrottleMaxWaitMs` 放宽到 60~300 秒比反复重跑更省事；
+  仍然被拒就降 `replyLanes` 到 1~2、加大 `replyGapMs`。
 
 ## 4. 测试要求（实现者 B）
 
