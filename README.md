@@ -57,6 +57,10 @@ douyin-ai-collector/          ← 仓库根（可自行命名）
    要把这套发给别人：用 [release/dsh-douyin-comments-v0.5.9.zip](./release/dsh-douyin-comments-v0.5.9.zip)
    （单文件，解压后是 `dsh-douyin-comments-0.5.9.tgz` 插件包 + `douyin-collector-extension-v0.2.11.zip`
     单独扩展 + `使用说明.md` + `SHA256SUMS.txt`）。
+   对方**不用 DSH、只要 MCP**：用
+   [release/douyin-collector-mcp-v0.3.2.zip](./release/douyin-collector-mcp-v0.3.2.zip)
+   （单文件，解压后是 `douyin-collector/` 扩展源码（v0.2.11）+ `douyin-mcp/` 本地 MCP server（v0.3.2）+
+    `使用说明.md`）。
 
 ---
 
