@@ -64,7 +64,7 @@ douyin-ai-collector/          ← 仓库根（可自行命名）
    对方**不用 DSH、只要 MCP**：下载
    [v0.5.10 里的 MCP 单文件包](https://github.com/monagisa/douyin-ai-collector/releases/download/v0.5.10/douyin-collector-mcp-v0.3.3.zip)
    （解压后是 `douyin-collector/` 扩展源码（v0.2.12）+ `douyin-mcp/` 本地 MCP server（v0.3.3）+
-    `使用说明.md`）。同页附件里还有 `SHA256SUMS.txt` 可校验。
+    `使用说明.md`）。同页附件里还有 `SHA256SUMS.txt` 可校验，单独的中文说明是附件 `USAGE-zh-CN.md`。
 
 ---
 

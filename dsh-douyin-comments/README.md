@@ -552,7 +552,7 @@ node sync-extension.mjs D:\path\to\ext
 **正式分发走 GitHub Releases**（仓库里不放二进制包，`release/` 只在本地做打包输出）：
 <https://github.com/monagisa/douyin-ai-collector/releases> —— 当前版本 [v0.5.10](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.10)，
 附件有 `dsh-douyin-comments-v0.5.10.zip`（整目录单文件）、`dsh-douyin-comments-0.5.10.tgz`、
-`douyin-collector-extension-v0.2.12.zip`、`douyin-collector-mcp-v0.3.3.zip`、`使用说明.md`、`SHA256SUMS.txt`。
+`douyin-collector-extension-v0.2.12.zip`、`douyin-collector-mcp-v0.3.3.zip`、`USAGE-zh-CN.md`（中文说明，zip 里叫 `使用说明.md`）、`SHA256SUMS.txt`。
 
 本地发布物在 `D:\dycopy\release\dsh-douyin-comments-v0.5.10\`：
 
