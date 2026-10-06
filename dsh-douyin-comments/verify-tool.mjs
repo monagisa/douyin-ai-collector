@@ -563,6 +563,42 @@ if (fs.existsSync(path.join(devExtDir, 'manifest.json'))) {
   check('clickPanel 把参数包成一个对象传给 page.evaluate',
     /page\.evaluate\(\(\{ src, a \}\)/.test(collectorSrc)
     && /\}, \{ src: re\.source, a: act \|\| '' \}\)/.test(collectorSrc));
+
+  // ---------- 3a-8) 跨视频可见性 + 导出范围（用户 2026-10-06：换视频后「上一条数据没了」） ----------
+  // 评论本来就按 videoId 分桶存着，换视频不会删；但面板计数与两个导出按钮原来都只认当前视频，
+  // 换视频后一切归零 → 用户以为数据丢了。修法：面板显示「本地已存 N 个视频 / M 条」，
+  // 并给导出加一个显式的「全部视频」范围（CSV 末尾追加 video_id 列）。
+  check('后台 dts-stats 报跨视频总量（totalAll / videoCount，用 dts_videos 的 count 元数据累加）',
+    /totalAll \+= Number\(videos\[v\] && videos\[v\]\.count\) \|\| 0;/.test(bgSrc)
+    && /sendResponse\(\{ ok: true, count, totalAll, videoCount: vkeys\.length, videos \}\)/.test(bgSrc));
+  check('后台 dts-export 支持全部视频（msg.all === true，合并各桶并标 videoId）',
+    /const wantAll = msg\.all === true;/.test(bgSrc)
+    && /Object\.assign\(\{\}, c, \{ videoId: v \}\)/.test(bgSrc)
+    && /scope: wantAll \? 'all' : 'video',/.test(bgSrc));
+  check('「全部视频」导出只在 CSV 末尾追加 video_id 列（前 17 列契约不变）',
+    /const withVideoId = !!\(opts && opts\.withVideoId\);/.test(bgSrc)
+    && /if \(withVideoId\) cols\.push\('video_id'\);/.test(bgSrc)
+    && /\.concat\(withVideoId \? \[csvCell\(c\.videoId \|\| c\.video_id \|\| ''\)\] : \[\]\)/.test(bgSrc));
+  check('「全部视频」导出文件名带上 all（不是某个 videoId，避免与单视频文件混淆）',
+    /douyin-comments-\$\{wantAll \? 'all' : videoId\}-\$\{stamp\}\.json/.test(bgSrc)
+    && /douyin-comments-\$\{wantAll \? 'all' : videoId\}-\$\{stamp\}\.csv/.test(bgSrc));
+  check('面板有「本地已存」一行 + 导出范围两个按钮（都带 data-dts-act 挂点）',
+    /refs\.local = row\(body, '本地已存'\);/.test(ctSrc)
+    && /mkBtn\('本条视频', 'dts-btn-scope dts-on', function \(\) \{ setExportScope\(false\); \}, 'export-scope-video'\)/.test(ctSrc)
+    && /mkBtn\('全部视频', 'dts-btn-scope', function \(\) \{ setExportScope\(true\); \}, 'export-scope-all'\)/.test(ctSrc));
+  check('面板读一次 dts-stats 并周期刷新（20s），换视频后也能看到旧数据还在',
+    /function refreshLocalStats\(id\)/.test(ctSrc)
+    && /chrome\.runtime\.sendMessage\(\{ type: 'dts-stats', videoId: vid \}, function \(resp\)/.test(ctSrc)
+    && /}, 20000\);/.test(ctSrc));
+  check('导出把范围传给后台（all: exportAll）+ 无视频 ID 时提示可切「全部视频」',
+    /all: exportAll \}/.test(ctSrc)
+    && /可把导出范围切到「全部视频」导出本地已存的评论/.test(ctSrc));
+  check('AI 桥的导出命令也支持 all:true（与面板同一条链路）',
+    /if \(t === 'dts-ai-export'\) \{[\s\S]{0,200}?var wantAll = !!\(msg && msg\.all === true\);/.test(ctSrc)
+    && /type: 'dts-export', videoId: vid, format: format, all: wantAll \}/.test(ctSrc)
+    && /scope: wantAll \? 'all' : 'video',/.test(ctSrc));
+  check('面板 CSS 有导出范围小按钮与选中态样式',
+    /\.dts-row\.dts-scope > \.dts-btn \{/.test(cssSrc) && /\.dts-btn-scope\.dts-on \{/.test(cssSrc));
 } else {
   console.log('ℹ️ 跳过扩展副本一致性校验（找不到开发目录 ' + devExtDir + '，非开发机上属正常）');
 }

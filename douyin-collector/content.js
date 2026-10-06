@@ -208,6 +208,13 @@
    *  全清不可恢复（所有视频的评论 + 去重表），必须防误触。 */
   var CLEAR_ALL_CONFIRM_MS = 5000;
   var clearAllArmedAt = 0;        // 0 = 未上膛；否则 = 首次点击的时间戳
+  /** v0.2.9：本地已存的规模（跨视频）。换视频后面板原来会从 0 开始显示，
+   *  用户会以为「上一条采集完的数据没了」——其实评论按 videoId 分桶存着。
+   *  这里缓存一次统计（dts-stats），在面板上如实显示「N 个视频 / M 条（本条 X 条）」。 */
+  var localStats = { videos: 0, total: 0, current: 0 };
+  var localStatsTimer = 0;        // 「本地已存」的周期刷新（20s）
+  /** 导出范围：false = 只导本条视频（默认，和旧版一致）；true = 把所有视频合成一份导出 */
+  var exportAll = false;
 
   // ================== 小工具 ==================
 
@@ -1121,6 +1128,8 @@
       });
       if (resp && resp.ok) {
         savedCount = resp.count;
+        // 落库后顺带刷新「本地已存」总量（本条视频的条数也在涨）
+        refreshLocalStats();
       } else if (resp && resp.error) {
         errText = '落库失败：' + resp.error;
       }
@@ -1976,6 +1985,10 @@
     }
 
     errText = '';
+    // v0.2.9：点「开始采集」时立刻刷新「本地已存」，让用户看到上一个视频的数据还在
+    // （savedCount/seen 会按当前视频重置，面板的「已采」归零容易被误解成数据丢了）
+    refreshLocalStats(videoId);
+    noteText = localStatsNote();
     // 清空后：无论 phase 是 idle/paused/done，都必须整体重置从 cursor=0 重扫。
     // 否则旧循环可能已把 cursor 写回高位，storage 却是空的 → 半路续采、前段丢失。
     if (justCleared) {
@@ -2090,6 +2103,8 @@
     // 而扩展存储其实一条没动（实测踩过一次：面板说已清空，桶里还是 1403 条）。
     if (extContextLost) return;
     setPhase('idle', '', '已清空本视频的本地去重表与扩展存储；下次「开始采集」将从头重扫');
+    // 清完立刻刷新「本地已存」总量（本条视频那部分已经归零）
+    refreshLocalStats(videoId);
   }
 
   /**
@@ -2124,6 +2139,9 @@
       if (extContextLost) return;
       setPhase('idle', '', '已清空全部视频的评论与本地去重表'
         + (n > 0 ? '（共 ' + n + ' 个视频）' : '') + '；下次「开始采集」将从头重扫');
+      // 全清之后「本地已存」必须立刻显示为 0
+      localStats = { videos: 0, total: 0, current: 0 };
+      refreshLocalStats(videoId);
     };
     // 先数一下有几个视频再清（清完就只剩 0 了，提示里想写清楚到底清了什么）
     try {
@@ -2137,13 +2155,57 @@
     }
   }
 
+  /** 「本地已存」一句话摘要（面板 note 与提示都用它，口径一致） */
+  function localStatsNote() {
+    return '本机已存：'
+      + (localStats.total ? (localStats.videos + ' 个视频 / ' + localStats.total + ' 条') : '暂无')
+      + '（含其它视频）；本条视频本地已有 ' + localStats.current + ' 条';
+  }
+
+  /** 读一次本地已存规模（跨视频统计）。失败/上下文失效就静默（面板还有 bgOk/bgErr 那条链路）。 */
+  function refreshLocalStats(id) {
+    if (extContextLost) return;
+    var vid = (id === undefined) ? (videoId || pageViewId() || '') : id;
+    try {
+      chrome.runtime.sendMessage({ type: 'dts-stats', videoId: vid }, function (resp) {
+        if (chrome.runtime.lastError) {
+          var le = chrome.runtime.lastError.message || '';
+          if (isExtContextInvalid(le)) onExtContextLost(le);
+          return;
+        }
+        if (!resp || !resp.ok) return;
+        localStats = {
+          videos: Number(resp.videoCount) || 0,
+          total: Number(resp.totalAll) || 0,
+          current: Number(resp.count) || 0
+        };
+        // 只在「note 还停在本地已存这句」时改写它，别覆盖采集流程刚写下的提示
+        if (typeof noteText === 'string' && noteText.indexOf('本机已存') === 0) {
+          noteText = localStatsNote();
+        }
+        render();
+      });
+    } catch (e) {
+      if (isExtContextInvalid(e)) onExtContextLost(String((e && e.message) || e));
+    }
+  }
+
+  /** 面板「导出范围」的两个小按钮：本条视频（默认，兼容旧行为）/ 全部视频 */
+  function setExportScope(all) {
+    exportAll = !!all;
+    noteText = exportAll
+      ? '导出范围：全部视频（所有视频的评论合成一份；CSV 末尾多一列 video_id）'
+      : '导出范围：本条视频（只导当前这条视频链接的评论）';
+    render();
+  }
+
   function exportAs(format) {
     // 必须用 videoId —— 本视频采到的评论就存在这个键下（background 按 videoId 分池）。
     // 不能现场重新识别：用户滚到别的视频后再点导出，重识别会得到新 ID，
     // 于是导出一个空池，看起来像「数据丢了 / 导出的是别的视频」。
     var vid = videoId || pageViewId();
-    if (!vid) {
-      errText = '未识别到视频 ID，无法导出';
+    if (!vid && !exportAll) {
+      errText = '未识别到视频 ID，无法导出本条视频；可把导出范围切到「全部视频」导出本地已存的评论';
       render();
       return;
     }
@@ -2154,10 +2216,12 @@
     // background 会等到下载真正进入终态才回包（用户可能还在「另存为」对话框里），
     // 所以先把面板切成「进行中」，否则这段等待期面板看起来像没反应。
     errText = '';
-    noteText = '正在导出…（若弹出「另存为」对话框，请选择保存位置）';
+    noteText = exportAll
+      ? '正在导出全部视频…（所有视频的评论合成一份；若弹出「另存为」对话框，请选择保存位置）'
+      : '正在导出本条视频…（若弹出「另存为」对话框，请选择保存位置）';
     render();
     try {
-      chrome.runtime.sendMessage({ type: 'dts-export', videoId: vid, format: format }, function (resp) {
+      chrome.runtime.sendMessage({ type: 'dts-export', videoId: vid, format: format, all: exportAll }, function (resp) {
         if (chrome.runtime.lastError) {
           var le = chrome.runtime.lastError.message || '';
           if (isExtContextInvalid(le)) {
@@ -2595,6 +2659,9 @@
     var refs = {};
     refs.phase = row(body, '阶段');
     refs.count = row(body, '已采（去重）');
+    // v0.2.9：换视频后这一行仍然显示「本地已存 N 个视频 / M 条（本条 X 条）」，
+    // 让用户一眼看到旧视频的评论还在本地（面板计数是按当前视频重置的，别误解成数据丢了）
+    refs.local = row(body, '本地已存');
     refs.total = row(body, '服务端 total');
     refs.cursor = row(body, 'cursor');
     refs.ms = row(body, '每页耗时');
@@ -2629,6 +2696,23 @@
     r2.appendChild(mkBtn('导出 JSON', '', function () { exportAs('json'); }));
     body.appendChild(r2);
 
+    // v0.2.9：导出范围。「本条视频」= 旧行为（当前视频那个桶）；「全部视频」= 把所有视频的评论合成一份。
+    // 用户报过「滑到下一条视频点开始采集，上一条的数据没了」——分开视频存的数据仍在，
+    // 只是导出/计数都只认当前视频，所以必须给一个显式的「全部视频」出口。
+    var rScope = document.createElement('div');
+    rScope.className = 'dts-row dts-actions dts-scope';
+    var scopeLabel = document.createElement('span');
+    scopeLabel.className = 'dts-muted dts-scope-label';
+    scopeLabel.textContent = '导出范围';
+    rScope.appendChild(scopeLabel);
+    var btnScopeVideo = mkBtn('本条视频', 'dts-btn-scope dts-on', function () { setExportScope(false); }, 'export-scope-video');
+    btnScopeVideo.title = '只导出当前这条视频链接的评论（旧行为）';
+    rScope.appendChild(btnScopeVideo);
+    var btnScopeAll = mkBtn('全部视频', 'dts-btn-scope', function () { setExportScope(true); }, 'export-scope-all');
+    btnScopeAll.title = '导出本地已存的**所有**视频的评论（合成一份；CSV 末尾多一列 video_id）';
+    rScope.appendChild(btnScopeAll);
+    body.appendChild(rScope);
+
     // 清空拆成两个按钮：范围完全不同，不能共用一个入口
     //   「清空」    —— 只清本条视频链接的评论（其它视频、面板设置都保留）
     //   「全部清空」—— 清掉所有视频的评论与本地去重表（不可恢复，两步确认）
@@ -2655,6 +2739,8 @@
     refs.summary = sbox.cur;
     refs.settings = sbox.box;
     refs.clearAll = clearAllBtn;   // render() 里同步「全部清空」的上膛文案/配色
+    refs.scopeVideo = btnScopeVideo;
+    refs.scopeAll = btnScopeAll;
     refs.inputs = sbox.inputs;
     ui = refs;
     makeDraggable(root, head);
@@ -2664,6 +2750,14 @@
     loadPanelPos();
     // 回显一次面板设置（决定摘要里显不显示「（面板）」）
     loadUserSettings(function (st) { hasUserSettings = !!st; fillSettingsInputs(st); render(); });
+    // 本地已存规模：立刻读一次，之后每 20 秒刷新（别的标签页/AI 桥在采时也能看到总量变化）
+    refreshLocalStats();
+    if (!localStatsTimer) {
+      localStatsTimer = setInterval(function () {
+        if (!ui || document.hidden || extContextLost) return;
+        refreshLocalStats();
+      }, 20000);
+    }
   }
 
   function setPhase(p, err, note) {
@@ -2677,7 +2771,13 @@
     if (!ui) return;
     ui.phase.textContent = PHASE_CN[phase] || phase;
     if (ui.dot) ui.dot.className = 'dts-dot ' + (DOT_CLASS[phase] || 'dts-dot-idle');
-    ui.count.textContent = seen.size + ' 条' + (savedCount ? '（落库 ' + savedCount + '）' : '');
+    ui.count.textContent = seen.size + ' 条' + (savedCount ? '（落库 ' + savedCount + '）' : (localStats.current ? '（本地已有 ' + localStats.current + ' 条）' : ''));
+    if (ui.local) {
+      // 跨视频口径：本条视频的历史数据也在这行里点出来，避免「换视频 = 数据没了」的误解
+      ui.local.textContent = localStats.videos
+        ? (localStats.videos + ' 个视频 / ' + localStats.total + ' 条' + (localStats.current ? '（本条 ' + localStats.current + ' 条）' : ''))
+        : '暂无';
+    }
     ui.total.textContent = total ? String(total) : '未知';
     ui.cursor.textContent = String(cursor);
     ui.ms.textContent = lastMs ? lastMs + ' ms' : '—';
@@ -2704,10 +2804,17 @@
       ui.bar.classList.add('dts-bar-indeterminate');
     }
 
+    // 导出范围按钮的选中态（两个按钮互斥）
+    if (ui.scopeVideo && ui.scopeAll) {
+      if (exportAll) { ui.scopeAll.classList.add('dts-on'); ui.scopeVideo.classList.remove('dts-on'); }
+      else { ui.scopeVideo.classList.add('dts-on'); ui.scopeAll.classList.remove('dts-on'); }
+    }
+
     // 镜像到主世界，供 __DTS_COLLECTOR__.getStatus() 读取（隔离世界的变量外部拿不到）
     down('status', {
       phase: phase, videoId: videoId, cursor: cursor, pages: pages,
       unique: seen.size, total: total, savedCount: savedCount,
+      localStats: localStats, exportAll: exportAll,
       lastMs: lastMs, failStreak: failStreak, running: running,
       signedAt: signedAt,
       error: errText, note: noteText,
@@ -2912,22 +3019,28 @@
     }
 
     if (t === 'dts-ai-export') {
+      // all:true = 导出本地所有视频（与面板「导出范围 → 全部视频」同一条链路）
+      var wantAll = !!(msg && msg.all === true);
       var vid = (msg && msg.videoId) || videoId || pageViewId();
-      if (!vid) {
-        sendResponse({ ok: false, error: '未识别到视频 ID，无法导出' });
+      if (!vid && !wantAll) {
+        sendResponse({ ok: false, error: '未识别到视频 ID，无法导出本条视频；可传 all:true 导出本地已存的全部视频' });
         return false;
       }
       var format = msg && msg.format === 'json' ? 'json' : 'csv';
       errText = '';
-      noteText = '正在导出…（AI bridge）';
+      noteText = wantAll ? '正在导出全部视频…（AI bridge）' : '正在导出本条视频…（AI bridge）';
       render();
-      chrome.runtime.sendMessage({ type: 'dts-export', videoId: vid, format: format }, function (resp) {
+      chrome.runtime.sendMessage({ type: 'dts-export', videoId: vid, format: format, all: wantAll }, function (resp) {
         if (chrome.runtime.lastError) {
           sendResponse({ ok: false, error: chrome.runtime.lastError.message, videoId: vid });
           return;
         }
         if (resp && resp.ok) {
-          sendResponse({ ok: true, videoId: vid, format: format, filename: resp.filename, bytes: resp.bytes, path: resp.path || null, downloadId: resp.downloadId || null });
+          sendResponse({
+            ok: true, videoId: wantAll ? null : vid, scope: wantAll ? 'all' : 'video',
+            format: format, filename: resp.filename, bytes: resp.bytes, path: resp.path || null,
+            downloadId: resp.downloadId || null, count: resp.count, videoCount: resp.videoCount,
+          });
         } else {
           sendResponse(Object.assign({ videoId: vid, format: format }, resp || { ok: false, error: '导出无回包' }));
         }
