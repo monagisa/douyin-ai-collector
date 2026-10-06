@@ -386,7 +386,8 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
   选中态互斥在 `render()` 里同步（`exportAll` 为真则 `scopeAll` 加 `.dts-on`、`scopeVideo` 去掉，反之亦然）。
   **状态镜像（v0.2.9 补充）**：`down('status', {...})` 新增 `localStats`（`{videos,total,current}`）与
   `exportAll`；`localStats` 由 `refreshLocalStats()` 读 `dts-stats` 后填充（面板构建时一次 + 每 20 秒
-  一次 + 落库后 + 点「清空」后）。
+  一次 + 落库后 + 点「清空」后）。**v0.2.10 起** `refreshLocalStats()` 带请求序号 `localStatsSeq`，
+  清空时作废在途的旧回包（见 §3.10），不再出现「清空后『本地已存』还显示旧数字」。
   **v0.2.8 起「清空」拆成两个按键**（用户 m04948 的原始诉求：「一个按键是全部清空，一个按键是清空（清空本条视频链接的评论）」）：
   · `清空`（`data-dts-act="clear-video"`，无 danger 类）= 只清**本条视频链接**的评论：删 `dts_c_<videoId>` 并从
   `dts_videos` 摘掉这一条，别的视频数据与 `dts_user_settings` 都不动。仍未识别到 videoId 时**不发清空**，
@@ -397,6 +398,15 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
   本地去重表（不可恢复），5 秒内有效」，**数据一条不动**；5 秒内第二次点才真清（删所有 `dts_c_*` 与 `dts_videos`，
   保留 `dts_user_settings`），提示「已清空全部视频的评论与本地去重表（共 N 个视频）…」；超过 5 秒文案自动复原，
   此时再点只重新上膛。**不受**未识别 videoId 的护栏限制（任意页面都能全清）。
+  · **v0.2.10 起两个清空按钮都不会再假报「已清空」**：`sendClear(payload, onDone)` **等后台回包**
+  （失败分三类 `SEND_FAILED:` / `CLEAR_REJECTED:` / `SEND_THREW:`，含 `EXT_CONTEXT_LOST`）；
+  回包 `{ok:true}` 之后内容脚本**仍会**调 `verifyCleared(vid, all, cb)` —— **直接读回
+  `chrome.storage.local` 自检**（`all=true` 查所有 `dts_c_*` 与 `dts_videos`；否则只查本条视频的桶
+  与它在 `dts_videos` 里的记录），**后台回包与读回自检都过才显示「已清空」**；否则 `errText` 写明
+  「清空没有生效」，并带「打开 `edge://extensions` 点『重新加载』，回到抖音页按 F5 刷新后再试」的指引。
+  新增常量 `COMMENT_KEY_PREFIX = 'dts_c_'`；单视频「清空」与「全部清空」**两条路径都走自检**。
+  语义不变：空 videoId 绝不兜底成全清、后台 `dts-clear` 仍要求显式 `all: true`、
+  `全部清空` 仍是两步确认（`CLEAR_ALL_CONFIRM_MS = 5000`）。
   · 两个按钮都在面板最后一行 `.dts-row.dts-actions`（4 个按钮一行放不下）。`data-dts-act` 是给自动化的稳定挂点
   （`collector.mjs` 的 `clearBefore` 用 `[data-dts-act="clear-video"]` 点「清空」，老版本扩展没有挂点才退回按文案
   `/^清空$/` 找）；后台 `dts-clear` 仍然**要求 `all === true` 才全清**，空 videoId 绝不兜底成全清。
@@ -554,7 +564,7 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
   （见本节前面的实测），这时把 `replyThrottleMaxWaitMs` 放宽到 60~300 秒比反复重跑更省事；
   仍然被拒就降 `replyLanes` 到 1~2、加大 `replyGapMs`。
 
-### 3.10 跨视频可见性与导出范围（v0.2.9 新增：`dts-stats` / `dts-export` 的 `all` 分支）
+### 3.10 跨视频可见性与导出范围（v0.2.9 新增：`dts-stats` / `dts-export` 的 `all` 分支；v0.2.10 起 `dts-stats` 带请求序号 `localStatsSeq`）
 
 **背景**：用户报「上一条视频采集完成，我又去下一条，点击开始采集，结果上一条采集完的数据没了」。
 **数据并没有丢** —— 评论一直按视频分桶存在 `chrome.storage.local` 的 `dts_c_<videoId>`
@@ -574,7 +584,12 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
 - 请求 `{ type:'dts-stats', videoId? }` → 回包 `{ ok:true, count, totalAll, videoCount, videos }`。
 - content.js 侧：`refreshLocalStats()` 把回包写进 `localStats = {videos, total, current}`；
   面板构建时读一次，之后每 20 秒刷新（`localStatsTimer`；`document.hidden` 或扩展上下文中断时跳过），
-  落库后与点「清空」后**立刻**再刷新一次。面板据此显示「本地已存」`N 个视频 / M 条（本条 X 条）`，
+  落库后与点「清空」后**立刻**再刷新一次。
+  **v0.2.10 起带请求序号**：`refreshLocalStats()` 进入时 `var seq = ++localStatsSeq;`，回包时
+  `if (seq !== localStatsSeq) return;`；点「清空 / 全部清空」时 `localStatsSeq++`，把在途的旧
+  `dts-stats` 回包**作废**。修的就是「清空已经生效，但清空**之前**发出的旧回包晚到、又把
+  『本地已存』写成旧数字（如 `2 个视频 / 7 条`），最长要等 20 秒周期刷新才纠正」。
+  面板据此显示「本地已存」`N 个视频 / M 条（本条 X 条）`，
   「已采（去重）」在本轮尚未落库但 `localStats.current > 0` 时补显 `（本地已有 N 条）`，
   点「开始采集」时另写一行
   `本机已存：N 个视频 / M 条（含其它视频）；本条视频本地已有 X 条`。
@@ -856,7 +871,7 @@ Hub 对 **MCP 客户端** 的内部接口（同进程 in-memory / 可选 localho
 | `get_settings` | background | 只读设置快照 `{ external, user, effective, precedence, limits }`（见 §7.9） |
 | `set_settings` | background | `{ settings, scope? }` 写设置：`scope="external"`（默认）→ `dts_settings`，`scope="panel"` → `dts_user_settings`；或 `{ clear: "external"\|"user"\|"all" }` 删键回默认；空设置 → `{ ok:false, error:"NO_SETTINGS", hint }` |
 | `pause_collect` | content.js | 等价面板「暂停」 |
-| `clear_page` | content.js | 等价面板「清空」（页面内存 + `dts-clear`）。**v0.2.8 起面板有两个清空按钮，它对应的是「清空」（只清本条视频）**，不是「全部清空」 |
+| `clear_page` | content.js | 等价面板「清空」（页面内存 + `dts-clear`）。**v0.2.8 起面板有两个清空按钮，它对应的是「清空」（只清本条视频）**，不是「全部清空」。**v0.2.10 起**桥回包 `{ok:true}` 之后内容脚本仍会读回 `chrome.storage.local` 自检（`verifyCleared`），**只有真清掉才显示「已清空」**；失败时回「清空没有生效」并带「`edge://extensions` 重新加载 + F5 刷新」指引（详见 §3.6） |
 | `list_videos` | background | `dts_videos` 列表 |
 | `get_comments` | background | 按 videoId 读评论；支持 `mode=summary\|page` |
 | `export` | background / content | 复用 `dts-export`，返回 `filename/bytes/path`；v0.2.9 起可带 `all:true` 走「全部视频」（CSV 末尾多 `video_id` 列，见 §3.10） |
@@ -873,7 +888,7 @@ Hub 对 **MCP 客户端** 的内部接口（同进程 in-memory / 可选 localho
 | `dts-ai-live-status` | 返回 `__DTS_COLLECTOR_STATUS__()` | `{ ok, status, url, at }` |
 | `dts-ai-start` | `await onStartClick()` | `{ ok, status, at }` / `{ ok:false, error }` |
 | `dts-ai-pause` | `onPauseClick()` | `{ ok, status }` |
-| `dts-ai-clear-page` | `onClearClick()` | `{ ok, status }` |
+| `dts-ai-clear-page` | `onClearClick()`（**v0.2.10 起**内部走 `sendClear()` 等后台回包，再调 `verifyCleared()` 读回 `chrome.storage.local` 自检；**两边都过才显示「已清空」**，否则回 `ok:false` 并带「清空没有生效 / 去 `edge://extensions` 重新加载 + F5」提示，不再假报成功） | `{ ok, status }` |
 | `dts-ai-export` | 等价 `exportAs(format)`，videoId 可用参数覆盖 | 与 `dts-export` 回包一致 |
 | `dts-ai-export`（`all: true`，v0.2.9 起） | 导出本地**所有**视频的评论，合成一份（与面板「导出范围 → 全部视频」走同一条 `dts-export` 链路）；此时不需要 videoId，`format` 仍可 `csv`/`json` | 成功回包多 `scope:"all"`、`videoId:null`、`count`、`videoCount`（不带 `all` 时仍是 `scope:"video"` + 具体 videoId）。CSV 末尾追加 `video_id` 列、文件名 `douyin-comments-all-<时间戳>.csv`；JSON 多 `videos` 摘要数组。无 videoId 且没传 `all` 时报 `未识别到视频 ID，无法导出本条视频；可传 all:true 导出本地已存的全部视频` |
 

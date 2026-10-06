@@ -515,7 +515,7 @@ if (fs.existsSync(path.join(devExtDir, 'manifest.json'))) {
   check('「全部清空」是两步确认（5 秒内再点一次才真的发 all:true）',
     /var CLEAR_ALL_CONFIRM_MS = 5000;/.test(ctSrc)
     && /if \(!clearAllArmedAt \|\| now - clearAllArmedAt > CLEAR_ALL_CONFIRM_MS\)/.test(ctSrc)
-    && /sendClear\(\{ all: true \}\)/.test(ctSrc));
+    && /sendClear\(\{ all: true \}, function \(err\) \{/.test(ctSrc));
   check('「全部清空」不受「未识别到视频 ID」限制（那条护栏只管单视频清空）',
     /function onClearAllClick\(\)[\s\S]{0,400}?clearAllArmedAt = now;/.test(ctSrc)
     && !/function onClearAllClick\(\)[\s\S]{0,300}?if \(!videoId\)/.test(ctSrc));
@@ -599,6 +599,34 @@ if (fs.existsSync(path.join(devExtDir, 'manifest.json'))) {
     && /scope: wantAll \? 'all' : 'video',/.test(ctSrc));
   check('面板 CSS 有导出范围小按钮与选中态样式',
     /\.dts-row\.dts-scope > \.dts-btn \{/.test(cssSrc) && /\.dts-btn-scope\.dts-on \{/.test(cssSrc));
+
+  // ---------- 3a-9) 清空必须自检、失败必须如实报错（用户 2026-10-06：「全部清空没有用，本地已存还是在」） ----------
+  // 真机复现两件事：① 存储其实清掉了，但清空前发出的 dts-stats 旧回包晚到，把「本地已存」又写成旧数字，
+  // 看起来就是「清了但没清」；② 后台没响应（扩展刚 reload / 上下文失效）时面板照样宣称「已清空」。
+  // 修法：sendClear 等后台回包 → verifyCleared 读回 storage 自检 → 只有真清掉才改口；统计请求带序号，旧回包作废。
+  check('sendClear 等后台回包并把结果交回调用方（不再「发出去就当成功」）',
+    /function sendClear\(payload, onDone\) \{/.test(ctSrc)
+    && /done\('SEND_FAILED: ' \+ le\);/.test(ctSrc)
+    && /if \(!resp \|\| !resp\.ok\) \{ done\('CLEAR_REJECTED: '/.test(ctSrc));
+  check('清空后读回 chrome.storage.local 自检（两个清空按钮都必须过这一关才敢说已清空）',
+    /function verifyCleared\(vid, all, cb\) \{/.test(ctSrc)
+    && /verifyCleared\(videoId, false, function \(gone, detail\)/.test(ctSrc)
+    && /verifyCleared\(videoId, true, function \(gone, detail\)/.test(ctSrc));
+  check('自检不通过时如实报错（带 edge://extensions 重新加载 + F5 指引）',
+    /function clearFailedText\(which, err, detail\) \{/.test(ctSrc)
+    && /「' \+ which \+ '」没有生效（/.test(ctSrc)
+    && /edge:\/\/extensions 点一下「重新加载」，回到抖音页按 F5 刷新后再试/.test(ctSrc));
+  check('统计请求带序号，清空后旧回包作废（否则「本地已存」会被旧数字写回）',
+    /var localStatsSeq = 0;/.test(ctSrc)
+    && /var seq = \+\+localStatsSeq;/.test(ctSrc)
+    && /if \(seq !== localStatsSeq\) return;/.test(ctSrc)
+    && /localStatsSeq\+\+;[\s\S]{0,60}?refreshLocalStats\(videoId\);/.test(ctSrc));
+  // 真机踩到：失败分支写成 errText=… 再 setPhase('idle','','')，而 setPhase 的第二个参数会把 errText 清空
+  // → 面板既不报「已清空」也不报「没有生效」，用户看不到任何反馈。文案必须走 setPhase 的 err 参数。
+  check('清空失败文案不会被随后的 setPhase 清掉（走 setPhase 的 err 参数）',
+    /setPhase\('error', clearFailedText\('清空', err, detail\)/.test(ctSrc)
+    && /setPhase\('error', clearFailedText\('全部清空', err, detail\)/.test(ctSrc)
+    && !/errText = clearFailedText[\s\S]{0,120}?setPhase\('idle', '', ''\)/.test(ctSrc));
 } else {
   console.log('ℹ️ 跳过扩展副本一致性校验（找不到开发目录 ' + devExtDir + '，非开发机上属正常）');
 }

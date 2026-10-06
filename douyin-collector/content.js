@@ -213,6 +213,12 @@
    *  这里缓存一次统计（dts-stats），在面板上如实显示「N 个视频 / M 条（本条 X 条）」。 */
   var localStats = { videos: 0, total: 0, current: 0 };
   var localStatsTimer = 0;        // 「本地已存」的周期刷新（20s）
+  /** v0.2.10：统计请求的序号。清空（或任何新的统计请求）会让旧回包作废——
+   *  否则「清空前发出的 dts-stats」晚到，会把已经归零的「本地已存」又写回旧数字，
+   *  看起来就像「全部清空没有用，本地已存还是在」。 */
+  var localStatsSeq = 0;
+  /** 评论桶的 key 前缀（与 background.js 的 PREFIX_COMMENTS 一致）：清空后读回存储自检用 */
+  var COMMENT_KEY_PREFIX = 'dts_c_';
   /** 导出范围：false = 只导本条视频（默认，和旧版一致）；true = 把所有视频合成一份导出 */
   var exportAll = false;
 
@@ -2070,19 +2076,62 @@
 
   /**
    * 发清空消息：给 videoId = 只清那条视频的评论；all:true = 全清所有视频。
-   * 忽略回包（清空是幂等的）；上下文失效时交给 onExtContextLost 统一提示。
+   * v0.2.10：不再「发出去就当成功」——必须等后台回包（后台可能没起来/上下文已失效），
+   * 回包后把结果交给 onDone(err)：err 为空 = 后台确认删了；否则带上失败原因。
+   * 调用方随后还要读一遍存储自检（verifyCleared），三者都过才敢说「已清空」。
    */
-  function sendClear(payload) {
-    if (extContextLost) { onExtContextLost(''); return; }
+  function sendClear(payload, onDone) {
+    var done = (typeof onDone === 'function') ? onDone : function () {};
+    if (extContextLost) { onExtContextLost(''); done('EXT_CONTEXT_LOST'); return; }
     try {
-      chrome.runtime.sendMessage(Object.assign({ type: 'dts-clear' }, payload), function () {
-        if (chrome.runtime.lastError && isExtContextInvalid(chrome.runtime.lastError.message)) {
-          onExtContextLost(chrome.runtime.lastError.message);
+      chrome.runtime.sendMessage(Object.assign({ type: 'dts-clear' }, payload), function (resp) {
+        var le = chrome.runtime.lastError && chrome.runtime.lastError.message;
+        if (le) {
+          if (isExtContextInvalid(le)) onExtContextLost(le);
+          done('SEND_FAILED: ' + le);
+          return;
         }
+        if (!resp || !resp.ok) { done('CLEAR_REJECTED: ' + ((resp && resp.error) || 'unknown')); return; }
+        done('');
       });
     } catch (e) {
-      if (isExtContextInvalid(e)) onExtContextLost(String(e && e.message || e));
+      if (isExtContextInvalid(e)) onExtContextLost(String((e && e.message) || e));
+      done('SEND_THREW: ' + String((e && e.message) || e));
     }
+  }
+
+  /**
+   * 读回 chrome.storage.local 自检清空到底有没有生效（v0.2.10）。
+   * 内容脚本能直接读存储，所以「后台没响应」这种情况再也不能被谎报成「已清空」。
+   * all=true 查所有 dts_c_* 与 dts_videos；否则只查本条视频的桶与它在 dts_videos 里的记录。
+   * cb(gone, detail)：gone=false 时 detail 是还残留的键（给用户看的证据）。
+   */
+  function verifyCleared(vid, all, cb) {
+    try {
+      chrome.storage.local.get(null, function (o) {
+        if (chrome.runtime.lastError) { cb(false, 'READ_FAILED: ' + chrome.runtime.lastError.message); return; }
+        var obj = o || {};
+        var left = [];
+        var keys = Object.keys(obj);
+        for (var i = 0; i < keys.length; i++) {
+          var k = keys[i];
+          if (k === 'dts_videos') { if (all) left.push('dts_videos'); continue; }
+          if (k.indexOf(COMMENT_KEY_PREFIX) !== 0) continue;
+          if (all || k === COMMENT_KEY_PREFIX + vid) left.push(k);
+        }
+        if (!all && vid && obj.dts_videos && obj.dts_videos[vid]) left.push('dts_videos[' + vid + ']');
+        cb(left.length === 0, left.join('、'));
+      });
+    } catch (e) {
+      cb(false, 'READ_THREW: ' + String((e && e.message) || e));
+    }
+  }
+
+  /** 清空失败时统一的提示文案：说清「没清掉」+ 怎么办（别让用户以为清过了） */
+  function clearFailedText(which, err, detail) {
+    var why = err || (detail ? ('本地还剩 ' + detail) : '未知原因');
+    return '「' + which + '」没有生效（' + why + '）。这通常是扩展后台没响应或扩展刚被重新加载过：'
+      + '请打开 edge://extensions 点一下「重新加载」，回到抖音页按 F5 刷新后再试';
   }
 
   /** 「清空」：只清**本条视频链接**的评论（其它视频的数据与面板设置都保留）。 */
@@ -2098,13 +2147,24 @@
       onExtContextLost('');
       return;
     }
-    sendClear({ videoId: videoId });
-    // 上下文已失效时绝不能宣称「已清空」：采集器看到这句话会以为清空成功，
-    // 而扩展存储其实一条没动（实测踩过一次：面板说已清空，桶里还是 1403 条）。
-    if (extContextLost) return;
-    setPhase('idle', '', '已清空本视频的本地去重表与扩展存储；下次「开始采集」将从头重扫');
-    // 清完立刻刷新「本地已存」总量（本条视频那部分已经归零）
-    refreshLocalStats(videoId);
+    sendClear({ videoId: videoId }, function (err) {
+      if (extContextLost) return;
+      // 上下文已失效时绝不能宣称「已清空」：采集器看到这句话会以为清空成功，
+      // 而扩展存储其实一条没动（实测踩过一次：面板说已清空，桶里还是 1403 条）。
+      // v0.2.10 起再加一道：后台回包之后读回存储自检，真清掉了才改口。
+      verifyCleared(videoId, false, function (gone, detail) {
+        if (!gone) {
+          // 注意：必须用 setPhase 的 err 参数落文案——写成 errText=… 再 setPhase('idle','','') 会把
+          // errText 又清成空串（踩过：面板既不报「已清空」也不报「没有生效」，用户看不到任何反馈）
+          setPhase('error', clearFailedText('清空', err, detail), '本条视频的本地数据还在，别当成清过了');
+          return;
+        }
+        setPhase('idle', '', '已清空本视频的本地去重表与扩展存储；下次「开始采集」将从头重扫');
+        // 清完立刻刷新「本地已存」总量（本条视频那部分已经归零）
+        localStatsSeq++;
+        refreshLocalStats(videoId);
+      });
+    });
   }
 
   /**
@@ -2135,13 +2195,25 @@
       return;
     }
     var finish = function (n) {
-      sendClear({ all: true });
-      if (extContextLost) return;
-      setPhase('idle', '', '已清空全部视频的评论与本地去重表'
-        + (n > 0 ? '（共 ' + n + ' 个视频）' : '') + '；下次「开始采集」将从头重扫');
-      // 全清之后「本地已存」必须立刻显示为 0
-      localStats = { videos: 0, total: 0, current: 0 };
-      refreshLocalStats(videoId);
+      // v0.2.10：等后台回包 + 读回存储自检，两者都过才敢说「已清空」并归零「本地已存」。
+      // 以前是「发出去就改口」，后台没响应时面板显示已清空、20 秒后周期刷新又把旧数字写回来，
+      // 用户看到的就是「全部清空没有用，本地已存还是在」。
+      sendClear({ all: true }, function (err) {
+        if (extContextLost) return;
+        verifyCleared(videoId, true, function (gone, detail) {
+          if (!gone) {
+            // 同上：文案必须走 setPhase 的 err 参数，否则会被自己清掉
+            setPhase('error', clearFailedText('全部清空', err, detail), '所有视频的本地数据都还在，别当成清过了');
+            return;
+          }
+          setPhase('idle', '', '已清空全部视频的评论与本地去重表'
+            + (n > 0 ? '（共 ' + n + ' 个视频）' : '') + '；下次「开始采集」将从头重扫');
+          // 全清之后「本地已存」必须立刻显示为 0；序号 +1 作废清空前发出的旧统计回包
+          localStats = { videos: 0, total: 0, current: 0 };
+          localStatsSeq++;
+          refreshLocalStats(videoId);
+        });
+      });
     };
     // 先数一下有几个视频再清（清完就只剩 0 了，提示里想写清楚到底清了什么）
     try {
@@ -2166,8 +2238,11 @@
   function refreshLocalStats(id) {
     if (extContextLost) return;
     var vid = (id === undefined) ? (videoId || pageViewId() || '') : id;
+    var seq = ++localStatsSeq;
     try {
       chrome.runtime.sendMessage({ type: 'dts-stats', videoId: vid }, function (resp) {
+        // 清空（或任何更新的请求）之后，旧回包必须丢弃，否则会把归零的数字又写回去
+        if (seq !== localStatsSeq) return;
         if (chrome.runtime.lastError) {
           var le = chrome.runtime.lastError.message || '';
           if (isExtContextInvalid(le)) onExtContextLost(le);
