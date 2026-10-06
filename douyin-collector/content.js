@@ -1031,17 +1031,65 @@
 
   var extContextLost = false;
 
+  // 扩展后台（background.js）可达性自测。null = 还没测过。
+  // 实测坑（v0.2.7 批次 1 真机）：扩展文件刚变过、清过脚本缓存的那一轮，Chrome 偶尔让页面里
+  // 的 content script 拿到一个已作废的扩展上下文 —— 面板注入正常、页面照常采集，但每次
+  // chrome.runtime.sendMessage 都回 lastError「Receiving end does not exist」：
+  // 清空无效、评论一条不落库，采集器最后只能报「交付 0 条」。
+  // 这里主动 ping 一次后台并镜像给采集器（采集器据此自愈：刷新页面重新注入脚本）。
+  var bgOk = null;
+  var bgErr = '';
+  var bgCheckedAt = 0;
+
+  function probeBackground() {
+    return new Promise(function (resolve) {
+      var done = function (ok, err) {
+        bgOk = ok; bgErr = err || ''; bgCheckedAt = Date.now();
+        render();
+        resolve(ok);
+      };
+      if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) {
+        done(false, 'chrome.runtime 不可用'); return;
+      }
+      try {
+        chrome.runtime.sendMessage({ type: 'dts-ping' }, function (resp) {
+          var le = chrome.runtime.lastError;
+          if (le && le.message) {
+            // 「Receiving end does not exist」= 本页脚本的扩展上下文已作废（后台收不到消息）
+            if (isExtContextInvalid(le.message)) onExtContextLost(le.message);
+            done(false, String(le.message)); return;
+          }
+          if (!resp || resp.ok !== true) {
+            done(false, '后台回了异常响应：' + String(JSON.stringify(resp || null)).slice(0, 120)); return;
+          }
+          done(true, '');
+        });
+      } catch (e) {
+        var m = String(e && e.message || e);
+        if (isExtContextInvalid(m)) onExtContextLost(m);
+        done(false, m);
+      }
+    });
+  }
+
   function onExtContextLost(raw) {
     if (extContextLost) return;
     extContextLost = true;
     stopFlag = true;
     needSign = false;
     running = false;
-    errText = '扩展上下文已失效（Extension context invalidated）。'
-      + '通常是刚在 chrome://extensions 里「重新加载」了本扩展。'
-      + '请 **F5 刷新本抖音页** 后再点「开始采集」。'
-      + (raw ? '（' + raw + '）' : '');
-    noteText = '本页旧脚本已作废；刷新后扩展会重新注入。';
+    // 两种死法要分开说：「Receiving end does not exist」= 后台收不到消息（多半是本页脚本的
+    // 扩展上下文刚作废），把它说成「上下文失效、去 chrome://extensions 重新加载」会让用户白折腾。
+    var dead = /Receiving end does not exist/i.test(raw || '');
+    errText = dead
+      ? '扩展后台没有响应（Receiving end does not exist）：本页脚本的扩展上下文已作废。'
+        + '请 **F5 刷新本抖音页** 后再点「开始采集」；刷新后仍这样，就关掉这个浏览器窗口重跑一次采集。'
+        + (raw ? '（' + raw + '）' : '')
+      : '扩展上下文已失效（Extension context invalidated）。'
+        + '通常是刚在 chrome://extensions 里「重新加载」了本扩展。'
+        + '请 **F5 刷新本抖音页** 后再点「开始采集」。'
+        + (raw ? '（' + raw + '）' : '');
+    noteText = dead ? '扩展后台不可达：本页采到的评论不会落库。' : '本页旧脚本已作废；刷新后扩展会重新注入。';
     setPhase('error', errText, noteText);
   }
 
@@ -1751,7 +1799,7 @@
         for (i = 0; i < reqs.length; i++) {
           var q = reqs[i];
           pages++;
-          if (q.ms > lastMs) lastMs = q.ms || 0;
+          if (q.ms) lastMs = q.ms;   // 面板标签是"上一页耗时"：显示最近值，不是历史最大值
           if (!q.ok) {
             failStreak++;
             setPhase('collecting', '第 ' + pages + ' 路失败：' + (q.error || ('status=' + q.status)) +
@@ -1969,6 +2017,12 @@
   }
 
   function onClearClick() {
+    // 护栏：未识别到视频 ID 时绝不能发清空——background 侧空 videoId 不再兜底成全清，
+    // 这里直接拦下并如实提示（以前会发空串清掉所有视频的存储，面板却谎称"已清空本视频"）
+    if (!videoId) {
+      setPhase('idle', '', '未识别到视频 ID，无法清空；请先打开具体视频页/浮层');
+      return;
+    }
     // 先作废在途采集：否则旧 startLoop 回包会把 cursor 写回高位，
     // storage 已清空、再点「开始采集」就变成「从半路续采 + 前段丢失」。
     collectEpoch++;
@@ -2003,7 +2057,7 @@
       return;
     }
     try {
-      chrome.runtime.sendMessage({ type: 'dts-clear', videoId: videoId || '' }, function () {
+      chrome.runtime.sendMessage({ type: 'dts-clear', videoId }, function () {
         // 忽略回包；清空是幂等的。若 context 失效，lastError 由 onExtContextLost 统一提示
         if (chrome.runtime.lastError && isExtContextInvalid(chrome.runtime.lastError.message)) {
           onExtContextLost(chrome.runtime.lastError.message);
@@ -2012,6 +2066,9 @@
     } catch (e) {
       if (isExtContextInvalid(e)) onExtContextLost(String(e && e.message || e));
     }
+    // 上下文已失效时绝不能宣称「已清空」：采集器看到这句话会以为清空成功，
+    // 而扩展存储其实一条没动（实测踩过一次：面板说已清空，桶里还是 1403 条）。
+    if (extContextLost) return;
     setPhase('idle', '', '已清空本视频的本地去重表与扩展存储；下次「开始采集」将从头重扫');
   }
 
@@ -2564,6 +2621,8 @@
       lastMs: lastMs, failStreak: failStreak, running: running,
       signedAt: signedAt,
       error: errText, note: noteText,
+      // 扩展后台可达性（采集器据此自愈：不可达时刷新页面重新注入脚本）
+      bgOk: bgOk, bgErr: bgErr, bgCheckedAt: bgCheckedAt,
       pass: pass, passNew: passNew, floorCursor: floorCursor,
       // 二级回复进度（协议 §3.8）
       replyTargets: replyTargets.size, replyDone: replyDoneSet.size,
@@ -2601,6 +2660,11 @@
   }
 
   whenBody(buildPanel);
+
+  // 扩展后台可达性：面板一出现就自测一次（采集器读它决定要不要刷新页面自愈），
+  // 之后每 30 秒复测（页面被放到后台很久、MV3 回收 SW 后需要知道后台还在不在）。
+  whenBody(function () { setTimeout(function () { probeBackground(); }, 200); });
+  setInterval(function () { if (!extContextLost) probeBackground(); }, 30000);
 
   // 页面切换轮询。抖音是 SPA，切视频/开浮层只改 URL 不刷新文档，而隔离世界
   // 拦不到主世界的 history.pushState，所以用低频轮询兜底。
@@ -2650,6 +2714,7 @@
       running: running,
       error: errText,
       note: noteText,
+      bgOk: bgOk, bgErr: bgErr, bgCheckedAt: bgCheckedAt,
       pass: pass,
       passNew: passNew,
       floorCursor: floorCursor,

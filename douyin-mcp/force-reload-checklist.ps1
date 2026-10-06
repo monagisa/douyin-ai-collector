@@ -1,11 +1,14 @@
 # 强制清掉旧 Service Worker 并重载扩展（按顺序执行）
 
+# 扩展开发目录：仓库里与本脚本所在目录平级的 douyin-collector/
+$extDir = Join-Path (Split-Path $PSScriptRoot -Parent) 'douyin-collector'
+
 Write-Output '== 1. 重启 Hub（新版，带 CORS） =='
-powershell -NoProfile -ExecutionPolicy Bypass -File 'D:\dycopy\douyin-mcp\restart-hub.ps1'
+powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'restart-hub.ps1')
 
 Write-Output ''
-Write-Output '== 2. 磁盘上的扩展应当是 v0.2.1 =='
-$m = Get-Content 'D:\dycopy\douyin-collector\manifest.json' -Raw -Encoding UTF8 | ConvertFrom-Json
+Write-Output '== 2. 磁盘上的扩展版本（读 manifest.json，不写死） =='
+$m = Get-Content (Join-Path $extDir 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 Write-Output "version=$($m.version)"
 Write-Output "permissions=$($m.permissions -join ',')"
 Write-Output "host=$($m.host_permissions -join ',')"
@@ -21,7 +24,7 @@ Write-Output '打开 chrome://extensions（或 edge://extensions）'
 Write-Output '找到「抖音评论采集器」'
 Write-Output '① 先点「移除」删除扩展（清掉旧 SW 缓存）'
 Write-Output '② 开发者模式 → 加载已解压的扩展程序'
-Write-Output '③ 重新选择目录: D:\dycopy\douyin-collector'
+Write-Output "③ 重新选择目录: $extDir"
 Write-Output '④ 打开抖音视频页并 F5'
 Write-Output '⑤ Service Worker 控制台：点「全部清除」，再看是否还有 onAlarm / CORS'
 Write-Output ''

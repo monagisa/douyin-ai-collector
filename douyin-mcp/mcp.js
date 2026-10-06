@@ -27,36 +27,64 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 
-const VERSION = '0.3.0';
+const VERSION = '0.3.1';
 const HUB_NAME = 'douyin-collector-mcp';
 
 const argv = process.argv.slice(2);
 function argVal(name, def) {
+  // 支持 --port 1234 与 --port=1234 两种形式；后一个参数是另一个 flag 时不得吞掉
   const i = argv.indexOf(name);
-  if (i >= 0 && argv[i + 1] !== undefined) return argv[i + 1];
+  if (i >= 0 && argv[i + 1] !== undefined && !argv[i + 1].startsWith('--')) return argv[i + 1];
+  const eq = argv.find((a) => a.startsWith(name + '='));
+  if (eq) return eq.slice(name.length + 1);
   return def;
 }
 
 const configPath = path.join(__dirname, 'config.json');
 let fileCfg = {};
 if (fs.existsSync(configPath)) {
-  try { fileCfg = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch (e) { /* keep defaults */ }
+  try {
+    fileCfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch (e) {
+    // 静默回退默认会让"改了端口却不生效"极难排查，必须吱声
+    process.stderr.write(`[douyin-mcp] config.json 解析失败，已用默认配置: ${e.message}\n`);
+  }
+}
+
+/** 数值配置校验：非法值回退默认并告警，避免 server.listen(NaN) 直接 crash */
+function numCfg(val, def, name, min, max) {
+  const n = Number(val);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < min || n > max) {
+    process.stderr.write(`[douyin-mcp] 配置项 ${name} 值非法（${JSON.stringify(val)}），已回退默认 ${def}\n`);
+    return def;
+  }
+  return n;
 }
 
 const CFG = {
   host: argVal('--host', fileCfg.host || '127.0.0.1'),
-  port: Number(argVal('--port', fileCfg.port || 18765)),
+  port: numCfg(argVal('--port', fileCfg.port || 18765), 18765, 'port', 1, 65535),
   hubPath: fileCfg.hubPath || '/api/v1',
-  commandTimeoutMs: Number(argVal('--timeout', fileCfg.commandTimeoutMs || 90000)),
+  commandTimeoutMs: numCfg(argVal('--timeout', fileCfg.commandTimeoutMs || 90000), 90000, 'commandTimeoutMs', 1000, 600000),
   hubOnly: argv.includes('--hub-only')
 };
+
+/**
+ * 拼本进程的 HTTP 源站。
+ * IPv6 字面量必须加方括号：`new URL('/x', 'http://::1:18765')` 会直接抛
+ * `Invalid URL`（实测），于是一个能用于 listen('::1') 的 host 会让每个请求都 500。
+ */
+function originBase() {
+  const h = String(CFG.host || '127.0.0.1');
+  return `http://${h.includes(':') ? `[${h}]` : h}:${CFG.port}`;
+}
 
 // ---------------- Hub state ----------------
 
 const pending = []; // [{ id, type, args, at }]
 const waiters = new Map(); // id -> { resolve, reject, timer, cmd }
+const MAX_PENDING = 500; // 队列上限：满了直接拒绝入队，绝不静默丢（见 enqueue）
 let lastExtensionAt = 0;
 let lastResultAt = 0;
 let cmdSeq = 0;
@@ -67,11 +95,22 @@ function nextId() {
 }
 
 function enqueue(type, args) {
+  // 队列上限：扩展长期离线时无界增长是内存泄漏；满了显式报错而不是静默丢
+  if (pending.length >= MAX_PENDING) {
+    throw Object.assign(
+      new Error(`HUB_QUEUE_FULL: 待执行命令队列已满（${MAX_PENDING}），扩展可能长期不在线`),
+      { code: 'HUB_QUEUE_FULL' }
+    );
+  }
   const cmd = { id: nextId(), type, args: args || {}, at: Date.now() };
   pending.push(cmd);
   const p = new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       waiters.delete(cmd.id);
+      // 关键：超时后必须把命令本体也从 pending 移除——否则扩展稍后轮询会取走并
+      // "幽灵执行"这条调用方早已放弃的命令（clear_storage 之类的副作用操作）
+      const i = pending.indexOf(cmd);
+      if (i >= 0) pending.splice(i, 1);
       reject(Object.assign(new Error('HUB_TIMEOUT: 扩展未在超时内回包'), {
         code: 'HUB_TIMEOUT',
         cmd
@@ -84,7 +123,26 @@ function enqueue(type, args) {
 
 function takePending() {
   const batch = pending.splice(0, pending.length);
-  return batch;
+  // 双保险：丢弃超龄命令（理论上超时回调已移除，这里兜住"时钟回拨/未来改逻辑"的情形），
+  // 并让其调用方立即拿到失败，而不是干等到自己的超时点
+  const now = Date.now();
+  const fresh = [];
+  for (const cmd of batch) {
+    if (now - cmd.at > CFG.commandTimeoutMs) {
+      const w = waiters.get(cmd.id);
+      if (w) {
+        waiters.delete(cmd.id);
+        clearTimeout(w.timer);
+        w.reject(Object.assign(new Error('HUB_CMD_EXPIRED: 命令已超龄，不再下发扩展'), {
+          code: 'HUB_CMD_EXPIRED',
+          cmd
+        }));
+      }
+      continue;
+    }
+    fresh.push(cmd);
+  }
+  return fresh;
 }
 
 function resolveCommand(body) {
@@ -123,9 +181,122 @@ function healthPayload() {
   };
 }
 
+// ---------------- C2 转发模式 ----------------
+// Hub 端口被占用时：先 GET /health 认领。是本 Hub（hub 字段匹配）→ callExtension 切换为
+// HTTP 转发（POST /enqueue 给已在跑的实例，真正"复用"）；不是本 Hub / 认领失败 →
+// 扩展命令快速失败（NO_HUB），绝不让调用方干等 commandTimeoutMs。
+// 注意：转发依赖对端实例的修复水平——对端版本旧于本进程时会在启动时警告
+// （幽灵执行/丢帧等修复只对重启后的新进程生效）。
+
+let hubMode = 'starting'; // 'starting' | 'own' | 'forward' | 'unavailable'
+let hubReadyResolve;
+const hubReady = new Promise((r) => { hubReadyResolve = r; });
+
+function httpJson(method, urlStr, body, headers, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let req;
+    try {
+      req = http.request(urlStr, { method, headers: Object.assign({}, headers) }, (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          let json = null;
+          try { json = JSON.parse(text); } catch (e) { /* 保留原文 */ }
+          resolve({ status: res.statusCode, json, text });
+        });
+      });
+    } catch (e) {
+      reject(e);
+      return;
+    }
+    req.on('error', reject);
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(Object.assign(new Error('HTTP_CLIENT_TIMEOUT'), { code: 'HTTP_CLIENT_TIMEOUT' }));
+    });
+    if (body !== undefined) req.write(JSON.stringify(body));
+    req.end();
+  });
+}
+
+function noHubError(detail) {
+  return Object.assign(
+    new Error(`NO_HUB: ${detail}（Hub 端口 ${CFG.port} 被占用且无法复用；请关掉占用进程后重启本进程）`),
+    { code: 'NO_HUB' }
+  );
+}
+
 async function callExtension(type, args) {
+  await hubReady; // 等 Hub 模式定型（own / forward / unavailable），通常早已就绪
+  if (hubMode === 'unavailable') {
+    throw noHubError('端口被非本 Hub 程序占用或旧实例不可达');
+  }
+  if (hubMode === 'forward') {
+    return forwardCommand(type, args);
+  }
   const { cmd, promise } = enqueue(type, args);
   return promise;
+}
+
+/** 转发模式：把命令 POST 给已在跑的 Hub 实例（其 /enqueue 是阻塞式的，等扩展回包后才返回） */
+async function forwardCommand(type, args) {
+  const url = `${originBase()}${CFG.hubPath}/enqueue`;
+  let r;
+  try {
+    // 客户端超时略宽于对端的命令超时，让对端的 HUB_TIMEOUT 有机会先回来
+    r = await httpJson('POST', url, { type, args: args || {} }, { [BRIDGE_HEADER]: '1' }, CFG.commandTimeoutMs + 5000);
+  } catch (e) {
+    if (e && e.code === 'HTTP_CLIENT_TIMEOUT') {
+      throw Object.assign(new Error('HUB_TIMEOUT: 转发至旧 Hub 后未在超时内回包'), { code: 'HUB_TIMEOUT' });
+    }
+    throw noHubError(`旧 Hub 连接失败（${(e && e.code) || (e && e.message) || e}），它可能刚退出`);
+  }
+  if (r.status === 404 || r.status === 405) {
+    throw noHubError(`旧 Hub 返回 ${r.status}（缺少 /enqueue，版本过旧），请重启旧 Hub 实例`);
+  }
+  if (r.status === 403) {
+    throw noHubError('旧 Hub 拒绝了桥接头（403），占用端口的很可能不是本 Hub');
+  }
+  if (r.json && typeof r.json === 'object') return r.json;
+  throw noHubError(`旧 Hub 返回了非 JSON 响应（HTTP ${r.status}）`);
+}
+
+/** EADDRINUSE 时认领已在跑的 Hub：验明正身 + 版本比对，然后切转发模式 */
+async function claimExistingHub() {
+  const url = `${originBase()}${CFG.hubPath}/health`;
+  let health = null;
+  try {
+    const r = await httpJson('GET', url, undefined, {}, 3000);
+    if (r.status === 200 && r.json) health = r.json;
+  } catch (e) { /* 认领失败按不可用处理 */ }
+  if (!health || health.hub !== HUB_NAME) {
+    hubMode = 'unavailable';
+    process.stderr.write(
+      `[douyin-mcp] Hub 端口 ${CFG.port} 被占用，且占用方不是本 Hub（${HUB_NAME}）。\n`
+      + `[douyin-mcp] 扩展命令将快速失败（NO_HUB）；请确认占用进程后重启。\n`
+    );
+    return;
+  }
+  hubMode = 'forward';
+  const verCmp = compareVersions(health.version, VERSION);
+  process.stderr.write(
+    `[douyin-mcp] Hub 端口 ${CFG.port} 由已在跑的实例提供（version=${health.version || 'unknown'}），本进程切换为转发模式。\n`
+  );
+  if (verCmp < 0) {
+    process.stderr.write(
+      `[douyin-mcp] 警告：旧 Hub 版本 ${health.version} 低于本进程 ${VERSION}，`
+      + `幽灵执行/丢帧等修复在旧进程上不生效，建议尽快重启旧 Hub。\n`
+    );
+  }
+}
+
+function compareVersions(a, b) {
+  const pa = String(a || '0').split('.').map((x) => parseInt(x, 10) || 0);
+  const pb = String(b || '0').split('.').map((x) => parseInt(x, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) < (pb[i] || 0) ? -1 : 1;
+  }
+  return 0;
 }
 
 // ---------------- HTTP Hub ----------------
@@ -200,6 +371,24 @@ function forbidden() {
   };
 }
 
+/**
+ * 门 ③：Host 头白名单 —— 防 DNS Rebinding。
+ * 恶意域名先解析到攻击者 IP、页面加载后再改解析到 127.0.0.1 时，浏览器视为同源，
+ * 门 ①（CORS）与门 ②（自定义头）会同时失效。但 rebinding 请求的 Host 头是那个
+ * 恶意域名，不是 127.0.0.1/localhost —— 在入口校验 Host 即可把这类请求整体 403。
+ */
+function hostAllowed(req) {
+  const h = ((req && req.headers && req.headers.host) || '').trim().toLowerCase();
+  if (!h) return false;
+  const allowed = new Set([
+    `127.0.0.1:${CFG.port}`,
+    `localhost:${CFG.port}`,
+    `[::1]:${CFG.port}`,
+    `${String(CFG.host).toLowerCase()}:${CFG.port}`
+  ]);
+  return allowed.has(h);
+}
+
 function sendJson(res, code, obj, req, openToAll) {
   const s = JSON.stringify(obj);
   applyCors(res, req, openToAll);
@@ -214,7 +403,15 @@ function sendJson(res, code, obj, req, openToAll) {
 function createHubServer() {
   const server = http.createServer(async (req, res) => {
     try {
-      const url = new URL(req.url, `http://${CFG.host}:${CFG.port}`);
+      // 门 ③：DNS Rebinding 防护（见 hostAllowed 注释），最先执行
+      if (!hostAllowed(req)) {
+        return sendJson(res, 403, {
+          ok: false,
+          error: 'BAD_HOST',
+          hint: 'Host 头必须是 127.0.0.1/localhost，本服务不接受域名访问（防 DNS Rebinding）。'
+        }, req);
+      }
+      const url = new URL(req.url, originBase());
       const p = url.pathname;
 
       if (req.method === 'OPTIONS') {
@@ -515,6 +712,16 @@ function createMcpSession() {
     if (source === 'ndjson') mcpOutMode = 'ndjson';
     const { id, method, params } = msg;
 
+    // JSON-RPC notification（没有 id）：按协议执行但**绝不回包**。
+    // 以前只有 tools/call 判了 id，ping/hub/health/initialize 在无 id 时照样 writeMcpMessage，
+    // 序列化时 id:undefined 被丢掉 → 客户端收到一个没有 id 的「响应」，严格实现会判协议错。
+    if (id === undefined) {
+      if (method === 'tools/call') {
+        callTool(params && params.name, (params && params.arguments) || {}).catch(() => {});
+      }
+      return;
+    }
+
     if (method === 'initialize') {
       writeMcpMessage({
         jsonrpc: '2.0',
@@ -541,6 +748,11 @@ function createMcpSession() {
     if (method === 'tools/call') {
       const name = params && params.name;
       const args = (params && params.arguments) || {};
+      // JSON-RPC notification（无 id）：按规定执行但不回包
+      if (id === undefined) {
+        callTool(name, args).catch(() => {});
+        return;
+      }
       callTool(name, args).then((r) => {
         writeMcpMessage({ jsonrpc: '2.0', id, result: r });
       }).catch((e) => {
@@ -594,8 +806,18 @@ function createMcpSession() {
             try { handleMessage(JSON.parse(body), 'content-length'); } catch (e) { /* skip */ }
             continue;
           }
+          // body 未到齐（chunk 边界落在 body 中间）：必须等更多数据。
+          // 绝不能落进下面的 NDJSON 分支——它会把 "Content-Length: N" 头行当垃圾吞掉，
+          // 之后所有帧永久错位且无任何报错。
+          break;
         }
       }
+
+      // 头块本身被切开：缓冲里已经有一行 `Content-Length: N`，但空行还没到。
+      // 必须继续等 —— 否则下面的 NDJSON 分支会把这一行头当「一行 JSON」吃掉，
+      // 滞留的 body 会在下一条帧到达时被 slice() 静默丢弃（丢帧，无任何报错）。
+      const firstNl = buffer.indexOf(0x0a);
+      if (firstNl >= 0 && /^content-length:\s*\d+/i.test(buffer.slice(0, firstNl).toString('utf8'))) break;
 
       // NDJSON fallback
       const nl = buffer.indexOf(0x0a);
@@ -622,8 +844,8 @@ function createMcpSession() {
 
 // ---------------- entry ----------------
 // 顺序很重要：必须先挂 MCP stdio，再尝试听 Hub。
-// 若端口被占，只警告并继续（复用已在跑的 Hub），绝不能 exit，
-// 否则 MiMo 侧 initialize 会 30s 超时。
+// 若端口被占，不退出（否则 MiMo 侧 initialize 会 30s 超时），而是认领旧实例：
+// 是本 Hub → 转发模式复用它；不是 → 扩展命令快速失败（NO_HUB）。
 
 function startMcpOrDie() {
   if (!CFG.hubOnly) {
@@ -641,15 +863,18 @@ function tryStartHub() {
   const server = createHubServer();
   server.on('error', (e) => {
     if (e && e.code === 'EADDRINUSE') {
-      process.stderr.write(
-        `[douyin-mcp] Hub 端口 ${CFG.port} 已被占用 —— 不退出，继续用 MCP；请确认占用方是本 Hub。\n`
-        + `[douyin-mcp] 若占用的是旧实例，请先关掉终端里正在跑的 node mcp.js。\n`
-      );
+      // 不退出（否则 MiMo 侧 initialize 会 30s 超时），但也不能让命令烂在
+      // 本进程内存队列里——认领旧实例并切转发模式，认领不了就快速失败
+      claimExistingHub().finally(() => hubReadyResolve());
       return;
     }
     process.stderr.write('[douyin-mcp] hub error: ' + String((e && e.message) || e) + '\n');
+    hubMode = 'unavailable';
+    hubReadyResolve();
   });
   server.listen(CFG.port, CFG.host, () => {
+    hubMode = 'own';
+    hubReadyResolve();
     process.stderr.write(
       `[douyin-mcp] Hub listening on http://${CFG.host}:${CFG.port}${CFG.hubPath}\n`
     );

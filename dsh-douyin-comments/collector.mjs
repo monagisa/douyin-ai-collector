@@ -352,12 +352,17 @@ export function resolveOutDir({ explicit, exec, fallback } = {}) {
 
 export function videoIdFromUrl(u) {
   const s = String(u || '');
+  // ① 只认 /video/<id> 与 modal_id= 两级（上下文明确，不会误伤）
   let m = /\/video\/(\d{15,25})/.exec(s);
   if (m) return m[1];
   m = /[?&]modal_id=(\d{15,25})/.exec(s);
   if (m) return m[1];
-  m = /(\d{15,25})/.exec(s);
-  return m ? m[1] : null;
+  // ② 兜底仅在 URL 里恰好只有一个 15~25 位数字串时采用。
+  //    分享文案常带 19 位时间戳（如 1760000000000000000）等干扰数字，正则层面
+  //    无法与视频 id 区分；有多个候选说明无法确定，宁可返回 null（上层用原 URL
+  //    继续，由页面签名侧识别真实 id），也不静默采错目标。
+  const uniq = [...new Set(s.match(/\d{15,25}/g) || [])];
+  return uniq.length === 1 ? uniq[0] : null;
 }
 
 // ---------- 扩展：定位 + 自动安装 ----------
@@ -394,13 +399,14 @@ function dirSignature(dir) {
   return { version: (manifest && manifest.version) || '0', name: (manifest && manifest.name) || '', files, hash: h.digest('hex').slice(0, 16) };
 }
 
-/** 按优先级找扩展源目录：显式指定 → 插件自带 → 已安装副本 → 开发目录 */
+/** 按优先级找扩展源目录：显式指定 → 插件自带 → 已安装副本 → 开发目录（仓库布局的相对路径） */
 export function findExtensionSource() {
   const cands = [];
   if (DEFAULTS.extDir) cands.push({ dir: DEFAULTS.extDir, why: 'DOUYIN_EXT_DIR / 插件配置' });
   cands.push({ dir: path.join(PLUGIN_DIR, 'extension'), why: '插件自带（随包分发）' });
   cands.push({ dir: path.join(DEFAULTS.home, 'extension'), why: '上次安装的副本' });
-  cands.push({ dir: 'D:\\dycopy\\douyin-collector', why: '开发目录' });
+  // 开发兜底：仓库里 douyin-collector/ 与 dsh-douyin-comments/ 是平级目录，相对定位不写死盘符
+  cands.push({ dir: path.resolve(PLUGIN_DIR, '..', 'douyin-collector'), why: '开发目录（仓库平级）' });
   for (const c of cands) {
     if (fs.existsSync(path.join(c.dir, 'manifest.json'))) return c;
   }
@@ -431,7 +437,8 @@ export function installExtension({ log = () => {} } = {}) {
   const src = findExtensionSource();
   if (!src) {
     throw new Error('找不到抖音评论采集扩展（manifest.json）：'
-      + '插件自带副本缺失，也没在 ' + path.join(DEFAULTS.home, 'extension') + ' 或 D:\\dycopy\\douyin-collector 找到。');
+      + '插件自带副本缺失，也没在 ' + path.join(DEFAULTS.home, 'extension')
+      + ' 或开发目录（仓库平级的 douyin-collector/）找到。可用 DOUYIN_EXT_DIR 显式指定。');
   }
   const target = path.join(DEFAULTS.home, 'extension');
   const sSrc = dirSignature(src.dir);
@@ -483,7 +490,13 @@ export function writeLaunchState(next) {
 export function clearStaleScriptCaches(profileDir, { log = () => {} } = {}) {
   const targets = [
     path.join(profileDir, 'Default', 'Code Cache'),
-    path.join(profileDir, 'Default', 'Service Worker', 'ScriptCache'),
+    // 整个 Service Worker 目录一起删（不只是里面的 ScriptCache）：
+    // 只删脚本缓存会留下指向已删脚本的注册记录（同目录的 Database/），Chrome 下次启动
+    // 可能起不来扩展后台 —— 实测表现是面板注入正常、页面照常采集，但页面里每次
+    // chrome.runtime.sendMessage 都回「Receiving end does not exist」：清空无效、
+    // 评论一条不落库，采集器最后只能报「交付 0 条」（2026-10-06 真机踩过一次）。
+    // 整个删掉让 Chrome 按 manifest 重新注册，代价只是首次启动多几十毫秒。
+    path.join(profileDir, 'Default', 'Service Worker'),
   ];
   const cleared = [];
   for (const t of targets) {
@@ -498,9 +511,13 @@ export function clearStaleScriptCaches(profileDir, { log = () => {} } = {}) {
 
 // ---------- CSV（列契约抄自扩展 background.js，顺序不变） ----------
 
+// 与扩展 background.js 的 csvCell 必须保持同源（verify-tool.mjs 有一致性断言）：
+// 评论文本完全由他人控制，以 = + - @ \t \r 开头时 Excel/WPS 会当公式执行
+// （=HYPERLINK / DDE），前置单引号挡掉。本表无合法负数字段，误伤面为零。
 function csvCell(v) {
   if (v === null || v === undefined) return '';
-  const s = String(v);
+  let s = String(v);
+  if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
   if (/[",\r\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
   return s;
 }
@@ -614,58 +631,68 @@ export async function collectDouyinComments(o = {}) {
   // 而不是都去接同一个浏览器窗口互相踩。
   const releaseLock = acquireRunLock({ log, url });
 
-  // 上一次为了等扫码把窗口留着了？那就接上去：同一个 profile 目录不能再开第二个进程。
-  let running = await attachRunningBrowser(chromium, log);
-
-  // 扩展文件变过（或第一次记录）→ profile 里的旧脚本缓存会让新窗口继续跑旧代码。
-  // 接了旧窗口也一样（它的扩展代码是启动那一刻的），先关掉它再重开。
-  const launchState = readLaunchState();
-  const extChanged = launchState.hash !== ext.hash;
-  if (running && extChanged) {
-    log('扩展文件跟上次启动时不一样（' + (launchState.hash || '没有记录') + ' → ' + ext.hash + '）：'
-      + '旧窗口里跑的还是旧扩展代码，关掉它重新开一个');
-    await running.browser.close().catch(() => {});
-    running = null;
-  }
-  const adopted = running ? running.browser : null;
-  if (!running) {
-    if (extChanged) {
-      const cleared = clearStaleScriptCaches(profile, { log });
-      if (cleared.length) {
-        log('清掉浏览器里缓存的旧扩展脚本（扩展更新过，不清的话新窗口还在跑旧代码）：'
-          + cleared.map((p) => path.relative(profile, p) || p).join('、'));
-      }
-    }
-    log('启动 Chromium（已装入扩展 v' + ext.version + '）…');
-  }
+  // 护栏：拿锁之后、进入主 try/finally 之前的每一步都必须兜住——任何一步抛错
+  // （接管失败、磁盘错误等）都要泄锁，否则锁文件里留着一个活 pid，后续调用永远拿不到锁。
+  let running = null;
+  let adopted = null;
   let ctx;
   try {
-    ctx = running ? running.ctx : await chromium.launchPersistentContext(profile, {
-      headless: false,
-      executablePath: chrome,
-      // playwright 默认会加 --disable-extensions，那会盖掉我们的 --disable-extensions-except
-      ignoreDefaultArgs: ['--disable-extensions'],
-      args: [
-        `--disable-extensions-except=${ext.dir}`,
-        `--load-extension=${ext.dir}`,
-        `--remote-debugging-port=${DEFAULTS.port}`,
-        '--no-first-run', '--no-default-browser-check',
-        '--autoplay-policy=no-user-gesture-required',
-        '--disable-features=ExtensionManifestV2Disabled,DisableLoadExtensionCommandLineSwitch',
-      ],
-      viewport: { width: 1440, height: 900 },
-      acceptDownloads: true,
+    // 上一次为了等扫码把窗口留着了？那就接上去：同一个 profile 目录不能再开第二个进程。
+    running = await attachRunningBrowser(chromium, log);
+
+    // 扩展文件变过（或第一次记录）→ profile 里的旧脚本缓存会让新窗口继续跑旧代码。
+    // 接了旧窗口也一样（它的扩展代码是启动那一刻的），先关掉它再重开。
+    const launchState = readLaunchState();
+    const extChanged = launchState.hash !== ext.hash;
+    if (running && extChanged) {
+      log('扩展文件跟上次启动时不一样（' + (launchState.hash || '没有记录') + ' → ' + ext.hash + '）：'
+        + '旧窗口里跑的还是旧扩展代码，关掉它重新开一个');
+      await running.browser.close().catch(() => {});
+      running = null;
+    }
+    adopted = running ? running.browser : null;
+    if (!running) {
+      if (extChanged) {
+        const cleared = clearStaleScriptCaches(profile, { log });
+        if (cleared.length) {
+          log('清掉浏览器里缓存的旧扩展脚本（扩展更新过，不清的话新窗口还在跑旧代码）：'
+            + cleared.map((p) => path.relative(profile, p) || p).join('、'));
+        }
+      }
+      log('启动 Chromium（已装入扩展 v' + ext.version + '）…');
+    }
+    try {
+      ctx = running ? running.ctx : await chromium.launchPersistentContext(profile, {
+        headless: false,
+        executablePath: chrome,
+        // playwright 默认会加 --disable-extensions，那会盖掉我们的 --disable-extensions-except
+        ignoreDefaultArgs: ['--disable-extensions'],
+        args: [
+          `--disable-extensions-except=${ext.dir}`,
+          `--load-extension=${ext.dir}`,
+          `--remote-debugging-port=${DEFAULTS.port}`,
+          '--no-first-run', '--no-default-browser-check',
+          '--autoplay-policy=no-user-gesture-required',
+          '--disable-features=ExtensionManifestV2Disabled,DisableLoadExtensionCommandLineSwitch',
+        ],
+        viewport: { width: 1440, height: 900 },
+        acceptDownloads: true,
+      });
+    } catch (e) {
+      throw new Error('打开浏览器失败：' + (e && e.message)
+        + '（如果上一次采集留了个窗口没关，先关掉它，或用 DOUYIN_PROFILE 换一个 profile 目录）');
+    }
+    // 记下这次启动用的扩展 hash：下次扩展一变，就先清 profile 里的旧脚本缓存
+    writeLaunchState({
+      hash: ext.hash, version: ext.version, profile,
+      adopted: !!running, launchedAt: new Date().toISOString(),
     });
   } catch (e) {
     releaseLock();
-    throw new Error('打开浏览器失败：' + (e && e.message)
-      + '（如果上一次采集留了个窗口没关，先关掉它，或用 DOUYIN_PROFILE 换一个 profile 目录）');
+    // 本次新拉起的浏览器一并关掉（沿用的旧窗口不动——它可能开着用户的东西）
+    if (ctx && !running) await ctx.close().catch(() => {});
+    throw e;
   }
-  // 记下这次启动用的扩展 hash：下次扩展一变，就先清 profile 里的旧脚本缓存
-  writeLaunchState({
-    hash: ext.hash, version: ext.version, profile,
-    adopted: !!running, launchedAt: new Date().toISOString(),
-  });
 
   let closed = false;
   let keepForLogin = false;      // 「没登录，窗口留给你扫码」时不许关窗口
@@ -724,6 +751,50 @@ export async function collectDouyinComments(o = {}) {
         + '；可试 DOUYIN_PROFILE 换一个 profile 目录重来。');
     }
     log('扩展已在浏览器里生效（面板已注入）');
+
+    // ③.5 扩展后台可达性预检（v0.2.7 批次 1 真机踩坑，2026-10-06）
+    // Chrome 偶尔让页面里的 content script 拿到一个**已作废的扩展上下文**：面板注入正常、
+    // 页面照常采集，但每次 chrome.runtime.sendMessage 都回 lastError
+    // 「Receiving end does not exist」—— 于是「清空」点了没反应、评论一条不落库，
+    // 采集器最后只能报「交付 0 条」，还误导用户以为是限流。
+    // 自愈：刷新页面（新文档会重新注入脚本）→ 复测；两次都不行就把启动状态标脏并明确报错。
+    const bgProbe = () => page.evaluate(() => {
+      try {
+        const c = window.__DTS_COLLECTOR__;
+        const s = (c && c.getStatus) ? c.getStatus() : null;
+        return { bgOk: s ? s.bgOk : null, bgErr: s ? s.bgErr : '' };
+      } catch (e) { return { bgOk: null, bgErr: String(e && e.message || e) }; }
+    }).catch(() => null);
+    const bgDead = (t) => !!t && t.bgOk === false
+      && /Receiving end does not exist|Extension context invalidated/i.test(String(t.bgErr || ''));
+    const awaitBgProbe = async () => {                 // 等页面脚本自测出结果（旧脚本永远没有 → 放弃）
+      let t = null;
+      for (let i = 0; i < 15; i++) {
+        t = await bgProbe();
+        if (t && t.bgOk !== null && t.bgOk !== undefined) return t;
+        await sleep(400);
+      }
+      return t;
+    };
+    let pre = await awaitBgProbe();
+    for (let i = 0; i < 2 && bgDead(pre); i++) {
+      log('扩展后台不可达（' + pre.bgErr + '）：刷新页面重新注入脚本后复测（第 ' + (i + 1) + ' 次）…');
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 }).catch((e) => log('reload: ' + e.message));
+      await page.waitForSelector('#dts-collector-panel', { timeout: 30000 }).catch(() => null);
+      await sleep(600);
+      pre = await awaitBgProbe();
+    }
+    if (bgDead(pre)) {
+      // 标脏启动状态：下次运行会重装扩展并清掉扩展脚本缓存（含 SW 注册库），而不是照样再跑一遍
+      writeLaunchState({ hash: '', version: ext.version, profile, adopted: false, launchedAt: new Date().toISOString(), bgDead: true });
+      throw new Error('扩展后台没有响应（' + pre.bgErr + '）：面板能注入，但扩展收不到页面消息，'
+        + '本轮采到的评论不会落库（历史表现：页面采到几百条，最后「交付 0 条」）。'
+        + '已刷新页面重试仍不通 —— 请重跑一次（下次会自动清掉扩展脚本缓存并重装扩展），或关掉浏览器窗口后重跑。'
+        + '；扩展=' + ext.dir + '；用的浏览器=' + chrome);
+    }
+    if (pre && pre.bgOk === true) log('扩展后台可达（bgOk=true）');
+    else if (pre && pre.bgOk === false) log('⚠️ 扩展后台探针异常（bgOk=false：' + pre.bgErr + '），继续跑；结束若空手会给出真实原因');
+    else log('（扩展脚本没有后台探针字段，跳过预检：装进浏览器的还是旧脚本？）');
 
     // ④ 登录闸门：**没登录就不开始采集**。
     //    未登录时抖音对评论接口限流很凶，硬采只会拿到残缺数据，还提前把限流额度耗掉。
@@ -818,6 +889,8 @@ export async function collectDouyinComments(o = {}) {
         error: s && s.error, liveVideoId: s && s.liveVideoId,
         autoOpen: s && s.autoOpen, commentAreaOpen: s && s.commentAreaOpen, hint: s && s.hint,
         hasSig: !!(sig && sig.url), sigAweme,
+        // 扩展后台可达性（页面脚本自测后镜像过来）；undefined = 页面跑的还是没有这个探针的旧脚本
+        bgOk: s && s.bgOk, bgErr: s && s.bgErr,
         panel: p ? p.innerText.replace(/\s+/g, ' ') : '',
       };
     });
@@ -909,19 +982,56 @@ export async function collectDouyinComments(o = {}) {
     const beforeCids = new Set(before.keys);
     if (clearBefore) {
       if (beforeCids.size > 0) log('扩展里已有上一轮残留 ' + beforeCids.size + ' 条，按要求先清空（这会丢掉断点续采进度）…');
-      const cleared = await clickPanel(/清空/);
-      if (cleared) {
+      // 清空只能靠点面板按钮。点了却没清有两种已知原因：
+      // ① 扩展刚被重新加载（页面里还是旧脚本）——点击既不报错也什么都不做；
+      // ② 首次点击撞上扩展的异步串扰。所以第一次没清掉就再点一次，
+      //    并把面板自己的文案（note/error/phase）带进日志，别再让用户对着「交付 0 条」猜。
+      const clickAndCheck = async () => {
+        if (!(await clickPanel(/清空/))) return { clicked: false, left: -1 };
         await sleep(1800);
         const after = await readBucket(s.videoId || s.liveVideoId || vid);
-        if (after.keys.length > 0) {
-          log('清空后仍有 ' + after.keys.length + ' 条（扩展清空没生效），结束时按 cid 差集剔除旧数据');
-        } else {
-          beforeCids.clear();   // 清空成功：开始前不存在任何数据，结束时的任何数据都是本轮新采
-        }
-        s = await st();
-      } else {
-        log('面板上没有「清空」按钮，改用 cid 差集保证只交付本轮新采');
+        return { clicked: true, left: after.keys.length };
+      };
+      let cl = await clickAndCheck();
+      if (cl.clicked && cl.left > 0) {
+        log('清空后仍有 ' + cl.left + ' 条，再点一次「清空」…');
+        cl = await clickAndCheck();
       }
+      if (cl.clicked && cl.left > 0) {
+        // 点了两次都没清掉 → 页面脚本与扩展后台之间多半断了（sendMessage 回
+        // 「Receiving end does not exist」时，点击既不报错也什么都不做）。
+        // 绝不能「记一句日志接着跑」：页面照采但评论一条不落库，用户最后只看到「交付 0 条」。
+        const why1 = await st();
+        log('清空后仍有 ' + cl.left + ' 条（扩展清空没生效）：面板 phase=' + why1.phase
+          + (why1.note ? '，提示「' + why1.note + '」' : '')
+          + (why1.error ? '，错误「' + why1.error + '」' : '')
+          + '；刷新页面自愈后重试…');
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 }).catch((e) => log('reload: ' + e.message));
+        await page.waitForSelector('#dts-collector-panel', { timeout: 30000 }).catch(() => null);
+        await sleep(1200);
+        cl = await clickAndCheck();
+        if (cl.clicked && cl.left > 0) {
+          const why2 = await st();
+          throw new Error('面板的「清空」没生效（点了 3 次，扩展里仍有 ' + cl.left + ' 条）：'
+            + '扩展后台收不到页面消息，本轮采到的评论也不会落库。'
+            + '面板 phase=' + why2.phase
+            + (why2.error ? '，错误「' + why2.error + '」' : '')
+            + (why2.note ? '，提示「' + why2.note + '」' : '')
+            + '。请重跑一次（会自动清扩展脚本缓存并重装扩展），或关掉浏览器窗口后重跑。');
+        }
+      }
+      if (!cl.clicked) {
+        log('面板上没有「清空」按钮，改用 cid 差集保证只交付本轮新采');
+      } else if (cl.left > 0) {
+        const why = await st();
+        log('清空后仍有 ' + cl.left + ' 条（扩展清空没生效）：面板 phase=' + why.phase
+          + (why.note ? '，提示「' + why.note + '」' : '')
+          + (why.error ? '，错误「' + why.error + '」' : '')
+          + '；结束时按 cid 差集剔除旧数据');
+      } else {
+        beforeCids.clear();   // 清空成功：开始前不存在任何数据，结束时的任何数据都是本轮新采
+      }
+      s = await st();
     } else if (beforeCids.size > 0) {
       log('扩展里已有上一轮 ' + beforeCids.size + ' 条：不清空（保留断点续采进度），结束时按 cid 差集只交付本轮新采');
     }
@@ -1103,12 +1213,24 @@ export async function collectDouyinComments(o = {}) {
     }
 
     if (fresh.length === 0) {
-      const why = '拿到了签名但没采到任何新评论（可能该视频评论已全部采过、或评论接口返回空）';
+      // 区分「真没新评论」和「评论没落库」：后者是扩展后台不可达（页面照采、一条不进库），
+      // 早先被错报成「抖音正在限流」，用户看到「交付 0 条」根本不知道发生了什么。
+      const pageSaw = Number(finalStatus.unique) || 0;
+      const bgTold = finalStatus.bgOk === false
+        || /Receiving end does not exist|Extension context invalidated/i.test(String(finalStatus.error || ''));
+      const stalled = (pageSaw > 0 && all.length <= beforeCids.size) || bgTold;
+      const why = stalled
+        ? '页面采到 ' + pageSaw + ' 条，但扩展存储没有增加（落库失败）：'
+          + (finalStatus.error || finalStatus.note || '扩展后台没有响应')
+          + (finalStatus.bgErr ? '（后台探针：' + finalStatus.bgErr + '）' : '')
+          + '。这是扩展后台不可达，不是「视频没有新评论」——请重跑一次（下次会自动清扩展脚本缓存并重装扩展），或关掉浏览器窗口后重跑。'
+        : '拿到了签名但没采到任何新评论（可能该视频评论已全部采过、或评论接口返回空）';
       log('❌ 没有本轮新数据：' + why);
       return {
         ok: false, error: why, videoId: videoId || '', title, count: 0,
         csvPath: '', jsonPath: '', phase: String(finalStatus.phase || ''),
-        note: String(finalStatus.note || ''), durationSec: Number(((Date.now() - started) / 1000).toFixed(1)),
+        note: stalled ? why : String(finalStatus.note || ''),
+        durationSec: Number(((Date.now() - started) / 1000).toFixed(1)),
         outDir, url: target, sample: [], extension: ext, paused,
         extLanes: effLanes ? Number(effLanes.lanes) || 0 : 0,
       };

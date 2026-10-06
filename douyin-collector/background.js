@@ -219,6 +219,13 @@ if (chrome && chrome.runtime && chrome.runtime.onMessage && chrome.runtime.onMes
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || !msg.type) return;
 
+  // 扩展后台可达性探针（内容脚本自测用；采集器会读这个结果判断要不要刷新页面自愈）。
+  // 必须无副作用：早先用 dts-status 探活会给 updateVideoMeta 写一条 videoId=undefined 的记录。
+  if (msg.type === 'dts-ping') {
+    sendResponse({ ok: true, pong: true, at: Date.now() });
+    return false;
+  }
+
   // AI Bridge 保活（协议 §7.5）：内容脚本周期 ping，不承载采集逻辑
   if (msg.type === 'dts-ai-keepalive') {
     sendResponse({ ok: true, keepalive: true, at: Date.now() });
@@ -299,10 +306,15 @@ if (chrome && chrome.runtime && chrome.runtime.onMessage && chrome.runtime.onMes
             const videos = await getVideos();
             delete videos[videoId];
             await chrome.storage.local.set({ [KEY_VIDEOS]: videos });
-          } else {
+          } else if (msg.all === true) {
+            // 全清是高危操作，必须显式 all:true —— 空 videoId 绝不兜底成全清
+            // （content.js 未识别到视频时以前会发空串，面板却提示"已清空本视频"）
             const all = await chrome.storage.local.get(null);
             const keys = Object.keys(all).filter((k) => k === KEY_VIDEOS || k.startsWith(PREFIX_COMMENTS));
             await chrome.storage.local.remove(keys);
+          } else {
+            sendResponse({ ok: false, error: 'NO_VIDEO_ID', hint: '清空需要显式 videoId，或 all:true 全清' });
+            break;
           }
           await setBadge(0);
           sendResponse({ ok: true });
@@ -344,7 +356,6 @@ const AI_BRIDGE_DEFAULT = {
 // 扩展侧零配置、用户无感知，即插即用不变。
 const AI_BRIDGE_HEADERS = { 'X-DTS-Bridge': '1' };
 
-let aiTimer = null;
 let aiLastLive = null;          // 最近一次 content 状态快照
 let aiLastCommandAt = 0;
 let aiLastResultAt = 0;
@@ -734,6 +745,8 @@ async function executeAiCommand(cmd) {
 
     case 'set_bridge_config': {
       const next = await setAiConfig(args || {});
+      // intervalMs / host / port 变更立即重建轮询定时器（否则改配置不生效）
+      ensureAiPoller().catch(() => {});
       return { ok: true, result: { config: next } };
     }
 
@@ -824,8 +837,14 @@ async function aiPollOnce() {
   }
 }
 
-function ensureAiPoller() {
-  if (aiTimer) return;
+let aiTimer = null;
+let aiTimerInterval = 0;   // 当前定时器实际使用的间隔；set_bridge_config 改了 intervalMs 要重建
+
+async function ensureAiPoller() {
+  const cfg = await getAiConfig();
+  const want = Math.max(200, Number(cfg.intervalMs) || AI_BRIDGE_DEFAULT.intervalMs);
+  if (aiTimer && aiTimerInterval === want) return;
+  if (aiTimer) { clearInterval(aiTimer); aiTimer = null; }
   const tick = () => {
     try {
       aiPollOnce().catch(() => {});
@@ -833,7 +852,8 @@ function ensureAiPoller() {
   };
   // 不用 chrome.alarms：权限缺失或 SW 缓存会导致 onAlarm TypeError / 注册失败。
   // setInterval + content keepalive 足够；Hub 不在时静默失败。
-  aiTimer = setInterval(tick, 800);
+  aiTimerInterval = want;
+  aiTimer = setInterval(tick, want);
   tick();
 }
 
