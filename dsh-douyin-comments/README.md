@@ -299,15 +299,22 @@ dsh plugin --profile web add file:D:\dycopy\dsh-douyin-comments
 dsh plugin --profile web add file:C:\path\to\dsh-douyin-comments-0.5.9.tgz
 ```
 
-装完必须**重启 dsh web**：模块解析表在进程启动时冻结，新插件的工具要重启后才可见。
-重启后工具名是 `douyin_comments`（不带 `mcp__` 前缀，这是原生插件而不是 MCP server）。
+装完**不用重启**。桌面端（DSH Desktop）这类由启动器提供 `profileContext` 的宿主默认启用
+`@deepseek-ai/dsh-hmr`（`root: []` 表示只监听 profile 配置、不监听源码模块），安装**新**插件会即时
+重新组合并挂载，插件管理器把这种结果报成 `applied`。工具名是 `douyin_comments`
+（不带 `mcp__` 前缀，这是原生插件而不是 MCP server）。
+
+唯一要重启的情况是**覆盖安装同一个包**（0.5.8 → 0.5.9 这种换版本）：Node 的模块缓存里还是旧代码，
+而 HMR 默认不监听源码模块，插件管理器会报 `restart-required`（界面提示「更改将在下次启动生效」），
+这时候重启 DSH 才会用上新版本。没有 `profileContext` 的宿主（headless / SDK / ACP 组合包，HMR 被禁用）
+一律是重启后生效。
 
 更新插件代码后：
 
 ```powershell
 Remove-Item C:\Users\mo\.dsh\profiles\web\node_modules\dsh-douyin-comments -Recurse -Force
 dsh plugin --profile web add file:D:\dycopy\dsh-douyin-comments
-# 再重启 dsh web
+# 覆盖安装同名包：重启 DSH 才会加载新版本代码
 ```
 
 （`file:` 依赖是**真实拷贝**，不删旧拷贝时 pnpm 可能认为「已是最新」而不覆盖。）

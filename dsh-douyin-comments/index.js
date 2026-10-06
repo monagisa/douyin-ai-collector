@@ -7,7 +7,8 @@
 //   · 只交付「本次新采」的数据，拿不到签名/没新数据就明确失败。
 //
 // 安装：dsh plugin --profile web add file:D:\dycopy\dsh-douyin-comments
-//       （package.json 的 dsh.bundle.patch 让它成为 profile 的一个 bundle 层；装完重启 dsh）
+//       （package.json 的 dsh.bundle.patch 让它成为 profile 的一个 bundle 层；装「新」插件
+//        由宿主 HMR 即时挂载、不用重启；只有覆盖安装同名包换版本时才要重启 dsh 加载新代码）
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
