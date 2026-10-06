@@ -57,7 +57,7 @@ export const DEFAULTS = {
    * （1 路 698ms / 2 路 561ms / 4 路 366ms / 6 路 515ms：6 路服务端开始排队，更慢且有风控风险）。
    * 运行时写进扩展的 chrome.storage.local.dts_settings，扩展侧还会再钳到 1..8。
    */
-  lanes: Number(process.env.DOUYIN_LANES || 0) || 4,
+  lanes: Number(process.env.DOUYIN_LANES || 0) || 1,   // 顶层列表已固定单路（扩展 0.2.12 起），此项仅保留兼容
   /**
    * 单次采集总超时（工具参数 timeoutMs 优先）。默认 30 分钟：max 默认 8 万，
    * 原先的 4 分钟根本采不到，会让人误以为已经「采到底」。
@@ -565,7 +565,7 @@ export function toCsv(comments) {
  * @param {number} [o.max]      目标条数上限（默认 DEFAULTS.max = 80000，到量即暂停）
  * @param {boolean} [o.replies] 是否等二级回复补采（默认 true）
  * @param {number} [o.timeoutMs] 总超时（默认 DEFAULTS.timeoutMs = 1800000）
- * @param {number} [o.lanes]    并发路数（默认 DEFAULTS.lanes = 4；1..8，写进扩展设置）
+ * @param {number} [o.lanes]    并发路数（已停用：扩展 0.2.12 起顶层列表固定单路；这里仍会写进扩展设置，但不影响采集）
  * @param {number} [o.waitLoginSec] 检测到未登录时等使用者扫码的秒数（不传用 DEFAULTS.waitLoginSec，默认 180；显式 0 = 不等）
  * @param {string} [o.outDir]   输出目录
  * @param {boolean} [o.keep]    采完不关浏览器（调试用）
@@ -581,9 +581,9 @@ export async function collectDouyinComments(o = {}) {
   const timeoutMs = Number(o.timeoutMs) > 0
     ? Number(o.timeoutMs)
     : (Number(DEFAULTS.timeoutMs) > 0 ? Number(DEFAULTS.timeoutMs) : 1800000);
-  // 并发路数：工具参数 > 插件设置（DEFAULTS.lanes）> 4；这里先钳到 1..8，扩展侧还会再钳一次
+  // 并发路数：工具参数 > 插件设置（DEFAULTS.lanes）> 1；已停用（顶层固定单路），保留只为兼容老配置
   const lanes = Math.max(1, Math.min(8, Math.round(
-    Number(o.lanes) > 0 ? Number(o.lanes) : (Number(DEFAULTS.lanes) > 0 ? Number(DEFAULTS.lanes) : 4),
+    Number(o.lanes) > 0 ? Number(o.lanes) : (Number(DEFAULTS.lanes) > 0 ? Number(DEFAULTS.lanes) : 1),
   )));
   // 采集前清空扩展缓存：默认不清（清空会毁掉扩展的断点续采进度）
   const clearBefore = o.clearBefore === undefined ? !!DEFAULTS.clearBefore : !!o.clearBefore;
@@ -1200,8 +1200,13 @@ export async function collectDouyinComments(o = {}) {
     const videoId = finalStatus.videoId || finalStatus.liveVideoId || vid;
 
     // 扩展侧实际用了几路（content.js 每次开始采集都会把 dts_settings_effective 写回 storage）
+    // v0.2.12 起顶层列表固定单路：lanes 恒为 1，请求里的路数落在 lanesWanted，已停用。
     const effLanes = await readEffectiveLanes();
-    if (effLanes) log('扩展实际并发路数：' + effLanes.lanes + '（本次请求 ' + lanes + ' 路）');
+    if (effLanes) {
+      const wanted = Number(effLanes.lanesWanted) > 0 ? Number(effLanes.lanesWanted) : lanes;
+      log('顶层列表实际路数：' + effLanes.lanes
+        + '（本次请求 ' + lanes + ' 路' + (wanted > 1 ? '；并发路数设置已停用，扩展按单路采' : '') + '）');
+    }
 
     // ⑧ 取数据 + 剔除「开始前就有」的 cid（只交付本轮新采）
     const got = await readComments(videoId);

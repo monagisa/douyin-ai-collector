@@ -28,7 +28,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-const VERSION = '0.3.2';
+const VERSION = '0.3.3';
 const HUB_NAME = 'douyin-collector-mcp';
 
 const argv = process.argv.slice(2);
@@ -498,7 +498,7 @@ function createHubServer() {
 const SETTINGS_PROPS = {
   max: { type: 'number', description: '目标条数上限（一级评论），0=不限；等价面板齿轮里的「目标条数 max」' },
   maxCount: { type: 'number', description: '同 max（扩展里的原始字段名），两者都传时以 max 为准' },
-  lanes: { type: 'number', description: '顶层扫描并发路数 1~8（默认 4）。只作用于「拉评论列表」这一段，对二级回复阶段没有约束' },
+  lanes: { type: 'number', description: '【已停用】顶层扫描并发路数。扩展 0.2.12 起顶层列表固定单路：实测同一签名下同时发多个分页请求会被服务端合并成同一页，4 路并发反而少采约 30%。此键保留兼容（仍可下发、仍会落进 dts_settings_effective），但不影响采集' },
   replyLanes: { type: 'number', description: '二级回复并发路数 1~8（默认 4）。实测（2026-10-06，RTT≈245ms）：每路恒定约 4 次/秒（=1/RTT），'
     + '总速率≈路数×4 次/秒（4 路≈16 次/秒、2 路≈8 次/秒，是两倍关系）；4 路连跑两组后回复接口会限流（回 0 字节，'
     + '报 EMPTY_BODY），端点惩罚态可持续数分钟。建议 1~2' },
