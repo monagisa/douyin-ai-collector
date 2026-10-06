@@ -8,11 +8,13 @@ douyin-ai-collector/          ← 仓库根（可自行命名）
 ├─ .gitignore
 ├─ douyin-collector/          ← Chrome MV3 扩展（主项目）
 ├─ dsh-douyin-comments/       ← 可选：DSH 插件（把采集做成 agent 工具 douyin_comments，自带扩展自动安装）
-├─ douyin-mcp/                ← 可选：AI / MCP 控制面（控制采集）
-└─ release/                    ← 打包好的发布物（含给别人用的 tgz / 扩展 zip / 使用说明）
+└─ douyin-mcp/                ← 可选：AI / MCP 控制面（控制采集）
 ```
 
 若只上传扩展，可单独使用 `douyin-collector/` 目录；AI 调用请同时带上 `douyin-mcp/`。
+
+**下载发布物**（打包好的 tgz / 扩展 zip / 使用说明 / SHA256SUMS）走 **GitHub Releases**，不放在仓库里：
+<https://github.com/monagisa/douyin-ai-collector/releases>（最新版直接看 [releases/latest](https://github.com/monagisa/douyin-ai-collector/releases/latest)）。
 
 ---
 
@@ -56,13 +58,13 @@ douyin-ai-collector/          ← 仓库根（可自行命名）
    （优先级：面板齿轮 > AI 下发 > 内置默认）。
    装完**不用重启**：桌面端这类宿主默认开着 HMR（只监听 profile 配置，`@deepseek-ai/dsh-hmr` 的 `root: []`），
    新装插件会即时重新组合并挂载；只有**覆盖安装同一个包换版本**时才需要重启 DSH 才会加载新代码。
-   要把这套发给别人：用 [release/dsh-douyin-comments-v0.5.10.zip](./release/dsh-douyin-comments-v0.5.10.zip)
-   （单文件，解压后是 `dsh-douyin-comments-0.5.10.tgz` 插件包 + `douyin-collector-extension-v0.2.12.zip`
+   要把这套发给别人：下载 [v0.5.10 的单文件包](https://github.com/monagisa/douyin-ai-collector/releases/download/v0.5.10/dsh-douyin-comments-v0.5.10.zip)
+   （解压后是 `dsh-douyin-comments-0.5.10.tgz` 插件包 + `douyin-collector-extension-v0.2.12.zip`
     单独扩展 + `使用说明.md` + `SHA256SUMS.txt`）。
-   对方**不用 DSH、只要 MCP**：用
-   [release/douyin-collector-mcp-v0.3.3.zip](./release/douyin-collector-mcp-v0.3.3.zip)
-   （单文件，解压后是 `douyin-collector/` 扩展源码（v0.2.12）+ `douyin-mcp/` 本地 MCP server（v0.3.3）+
-    `使用说明.md`）。
+   对方**不用 DSH、只要 MCP**：下载
+   [v0.5.10 里的 MCP 单文件包](https://github.com/monagisa/douyin-ai-collector/releases/download/v0.5.10/douyin-collector-mcp-v0.3.3.zip)
+   （解压后是 `douyin-collector/` 扩展源码（v0.2.12）+ `douyin-mcp/` 本地 MCP server（v0.3.3）+
+    `使用说明.md`）。同页附件里还有 `SHA256SUMS.txt` 可校验。
 
 ---
 
