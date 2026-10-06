@@ -15,6 +15,7 @@ douyin-ai-collector/          ← 仓库根（可自行命名）
 
 **下载发布物**（打包好的 tgz / 扩展 zip / 使用说明 / SHA256SUMS）走 **GitHub Releases**，不放在仓库里：
 <https://github.com/monagisa/douyin-ai-collector/releases>（最新版直接看 [releases/latest](https://github.com/monagisa/douyin-ai-collector/releases/latest)）。
+本仓库是 **private**，这些链接要用有权限的 GitHub 账号打开；要发给没有权限的人，请下载附件后直接传文件。
 
 ---
 
