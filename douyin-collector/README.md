@@ -24,6 +24,17 @@
   可带 `settings`（写 `dts_settings` 后立即生效）；配套 MCP `douyin-mcp` **0.3.0** 新增
   `ai_get_settings` / `ai_set_settings`，`ai_start_collect` 支持 `max` / `lanes` / `replyLanes` /
   `replyGapMs` / `replyWarmupMs` / `replyThrottleMaxWaitMs`（协议 §7.9）
+- v0.2.7：**采集不再「静默 0 条」**——① 后台新增零副作用探针 `dts-ping`（只回
+  `{ok:true,pong:true,at}`；用 `dts-status` 探活会给 `updateVideoMeta` 写一条 `videoId=undefined` 的脏记录）；
+  ② 内容脚本新增 `probeBackground()` 主动探活（启动 200ms 后一次、之后每 30 秒一次），状态镜像与面板文案
+  新增 `bgOk` / `bgErr` / `bgCheckedAt`，扩展后台不可达（`Could not establish connection. Receiving end
+  does not exist.` / `Extension context invalidated`）时面板**不再谎称「已清空」**；③ 配套 DSH 插件
+  `dsh-douyin-comments` 0.5.5 改清 `Default/Code Cache` + **整个** `Default/Service Worker`
+  （只清 `…/ScriptCache` 会留下指向已删脚本的 `…/Service Worker/Database`，这正是「面板还在、
+  后台起不来、最后交付 0 条」的成因），并先做「扩展后台可达性」预检，不通就刷新页面重试（最多 2 次），
+  仍不通则把这次启动标脏、下次强制清缓存重开；④ 页面采到 N 条但扩展存储没增加时，明确报
+  **「落库失败（扩展后台不可达）」**，不再把锅甩给「抖音限流 / 视频没有新评论」；⑤ `clearBefore` 时
+  点「清空」两次仍不空 → 刷新页面重试 → 仍不空则报错（点了 3 次仍剩 N 条），不再当成功继续
 - 可选：配套 **MCP** 让 AI 代理调用采集能力（见下文）
 
 > ⚠️ 使用本工具可能违反抖音用户协议，**账号风险自负**。请仅用于自有账号、公开数据与合规研究。

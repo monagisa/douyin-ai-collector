@@ -8,7 +8,19 @@
 | 不改 | 扩展的签名语义、限速、落库逻辑 |
 | 传输 | AI ↔ 本进程：**stdio**（JSON-RPC）；扩展 ↔ Hub：**HTTP 127.0.0.1** |
 | 依赖 | Node ≥ 18，**无 npm 包** |
-| 版本 | `0.3.0`（新增 `ai_get_settings` / `ai_set_settings`，`ai_start_collect` 可带设置） |
+| 版本 | `0.3.1`（修 IPv6 `host`、NDJSON 丢帧、无 `id` 回包、写死的 node 路径；`ai_get_settings` / `ai_set_settings` 与可带设置的 `ai_start_collect` 沿用 0.3.0） |
+
+**0.3.1 修复**：
+
+1. `host` 支持 IPv6：扩展填 `::1` 时拼成 `http://[::1]:18765`（以前拼成 `http://::1:18765`，
+   每个请求都 500 → 永远 `NO_HUB`）。
+2. HTTP 头块被 TCP 切开时，不再把头行当 NDJSON 解析吃掉（丢帧）。
+3. 无 `id` 的请求（`initialize` / `tools/list` / `ping` / `hub/health`）不再回一个没有 `id` 的对象。
+4. 清掉写死的 `D:\node-v22.23.1\node.exe`：`douyin-mcp.cmd`、`restart-hub.ps1` 改用
+   `%DTS_NODE_EXE%` 或 PATH 兜底；`force-reload-checklist.ps1` 不再写死「扩展应当是 v0.2.1」。
+5. 配套插件脚本：`sync-extension.mjs` 同步后反向清理白名单外的旧文件，`verify-tool.mjs` 增加
+   「插件自带 `extension/` 没有多余文件」硬校验；本目录三个冒烟（`test-hub.js` /
+   `test-mcp-handshake.js` / `test-settings.js`）全过。
 
 > 采集协议见 `../douyin-collector/PROTOCOL.md` §7（AI Bridge）。  
 > 前提：**Chrome / Edge（Chromium）** 已装扩展、**已登录抖音**、已打开具体视频页。  
@@ -55,7 +67,7 @@ node mcp.js
 ```
 
 - 日志在 **stderr**；stdout 留给 MCP  
-- Hub：`http://127.0.0.1:18765/api/v1`（仅 `127.0.0.1`）  
+- Hub：`http://127.0.0.1:18765/api/v1`（仅 `127.0.0.1`；扩展的 `host` 填 IPv6 `::1` 也可，拼出来是 `http://[::1]:18765`）  
 - Windows 可用：`douyin-mcp.cmd`
 
 只开 Hub 调试：

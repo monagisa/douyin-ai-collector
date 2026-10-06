@@ -1,15 +1,17 @@
 # 重启 douyin-mcp Hub（带 CORS 的新版）
 $ErrorActionPreference = 'Stop'
-$node = 'D:\node-v22.23.1\node.exe'
-if (-not (Test-Path $node)) { $node = 'node' }
-$mcp = 'D:\dycopy\douyin-mcp\mcp.js'
+# 优先用 PATH 里的 node；可用环境变量 DTS_NODE_EXE 覆盖
+$node = $env:DTS_NODE_EXE
+if (-not $node) { $node = (Get-Command node -ErrorAction SilentlyContinue).Source }
+if (-not $node) { $node = 'node' }
+$mcp = Join-Path $PSScriptRoot 'mcp.js'
 
 Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
   Where-Object { $_.CommandLine -match 'douyin-mcp\\mcp\.js' } |
   ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 
 Start-Sleep -Milliseconds 300
-$p = Start-Process -FilePath $node -ArgumentList $mcp -WorkingDirectory 'D:\dycopy\douyin-mcp' -WindowStyle Hidden -PassThru
+$p = Start-Process -FilePath $node -ArgumentList $mcp -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -PassThru
 Start-Sleep -Milliseconds 600
 
 $origin = 'chrome-extension://mjneoakihhpeefdjlandcombjgnhmfcg'

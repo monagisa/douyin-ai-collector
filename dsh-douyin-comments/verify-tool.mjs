@@ -122,6 +122,23 @@ check('没配过也能开（validate(undefined) 落到默认值）', !('issues' 
 const cfgBad = Cfg['~standard'].validate({ lanes: 99 });
 check('越界值被 schema 挡下（表单有 min/max）', 'issues' in cfgBad, 'issues' in cfgBad ? cfgBad.issues[0].message : '居然放过 99');
 
+// 2d-1) 回归护栏（2026-10-06 发布验收踩过）：全新 profile 里 pnpm 可能给这个插件装一份**旧版**
+// @deepseek-ai/schemastery（实测 3.18.2，没有 Schema.prototype.volatile）。若 Config 直接链式
+// .volatile()，插件 import 会整个抛 TypeError: ...volatile is not a function，dsh 只打印
+// 「1 entry did not activate / failed to import」，工具直接消失（用户看到的是「插件装了但没工具」）。
+// 所以两件事都要保住：① 字段走 vol() 兜底；② loadSchema() 先拿宿主那份、裸说明符放最后。
+const indexSrc = fs.readFileSync(new URL('./index.js', import.meta.url), 'utf8');
+const indexCode = indexSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+const directVolatile = indexCode.match(/\.volatile\(\)/g) || [];
+check('Config 走 vol() 兜底，不直接链式 .volatile()（旧版 schemastery 会让插件 import 崩）',
+  directVolatile.length === 1 && /if \(schema && typeof schema\.volatile === 'function'\) return schema\.volatile\(\);/.test(indexCode),
+  `非注释代码里 .volatile() 出现 ${directVolatile.length} 次（应只在 vol() 兜底里 1 次）`);
+const hostCandAt = indexSrc.indexOf("'profiles', 'node_modules'");
+const bareImportAt = indexSrc.indexOf("await import('@deepseek-ai/schemastery')");
+check('loadSchema 先试宿主副本、最后才裸说明符（插件自己的 node_modules 里可能是旧版）',
+  hostCandAt > 0 && bareImportAt > hostCandAt,
+  `宿主候选@${hostCandAt} / 裸说明符@${bareImportAt}`);
+
 // volatile 字段会被 cordis 包成「只有 get」的只读引用：execute() 必须现读，不能缓存快照。
 const VOLATILE_WRITE = Symbol.for('cosmokit.volatile.write');
 const vbox = (v) => ({ get: () => v, [VOLATILE_WRITE]: (next) => { v = next; } });
@@ -306,17 +323,18 @@ check('导出 clearStaleScriptCaches / readLaunchState / writeLaunchState',
   typeof clearStaleScriptCaches === 'function' && typeof readLaunchState === 'function' && typeof writeLaunchState === 'function');
 const tmpProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'dts-cache-'));
 fs.mkdirSync(path.join(tmpProfile, 'Default', 'Code Cache', 'js'), { recursive: true });
-fs.mkdirSync(path.join(tmpProfile, 'Default', 'Service Worker', 'ScriptCache'), { recursive: true });
+fs.mkdirSync(path.join(tmpProfile, 'Default', 'Service Worker', 'Database'), { recursive: true });
 fs.writeFileSync(path.join(tmpProfile, 'Default', 'Code Cache', 'js', 'x'), 'x');
-fs.writeFileSync(path.join(tmpProfile, 'Default', 'Service Worker', 'ScriptCache', 'y'), 'y');
+fs.writeFileSync(path.join(tmpProfile, 'Default', 'Service Worker', 'Database', 'y'), 'y');
+fs.writeFileSync(path.join(tmpProfile, 'Default', 'Cookies'), 'login-state');
 const clearedDirs = clearStaleScriptCaches(tmpProfile);
-check('清缓存真的删掉 Code Cache 与 Service Worker/ScriptCache',
+check('清缓存真的删掉 Code Cache 与整个 Service Worker（含注册库 Database）',
   clearedDirs.length === 2
   && !fs.existsSync(path.join(tmpProfile, 'Default', 'Code Cache'))
-  && !fs.existsSync(path.join(tmpProfile, 'Default', 'Service Worker', 'ScriptCache')),
+  && !fs.existsSync(path.join(tmpProfile, 'Default', 'Service Worker')),
   clearedDirs.map((p) => path.relative(tmpProfile, p)).join('、'));
-check('清缓存不碰登录态（只删这两个缓存目录）',
-  fs.readdirSync(path.join(tmpProfile, 'Default', 'Service Worker')).length === 0);
+check('清缓存不碰登录态（Cookies 还在）',
+  fs.existsSync(path.join(tmpProfile, 'Default', 'Cookies')));
 fs.rmSync(tmpProfile, { recursive: true, force: true });
 check('扩展 hash 变了就判定 extChanged（没记录也算变）',
   /const launchState = readLaunchState\(\);/.test(collectorSrc)
@@ -434,6 +452,59 @@ try {
 } finally {
   if (savedLock === null) fs.rmSync(lockPath, { force: true });
   else fs.writeFileSync(lockPath, savedLock);
+}
+
+// ---------- 3d) 跨副本一致性（防 drift：历史上 csvCell 两处实现就 drift 出过一个 Critical） ----------
+// ① 插件 collector.mjs 与扩展 background.js 的 csvCell 公式注入守卫必须同源：
+//    评论文本由他人控制，= 开头会被 Excel 当公式执行；两处导出通路防护必须一致。
+const CSV_GUARD = "if (/^[=+\\-@\\t\\r]/.test(s)) s = \"'\" + s;";
+check('collector.mjs 的 csvCell 有公式注入守卫（与扩展同源）',
+  collectorSrc.includes(CSV_GUARD), '缺失则插件导出的 CSV 可被 =HYPERLINK 注入');
+check('扩展 background.js 的 csvCell 有公式注入守卫',
+  bgSrc.includes(CSV_GUARD), '');
+// ② douyin-collector/ 与 dsh-douyin-comments/extension/ 是同一份扩展的两份拷贝，
+//    靠手动 sync-extension.mjs 同步 —— 这里做硬校验，drift 直接判失败。
+const devExtDir = path.resolve(here, '..', 'douyin-collector');
+const bundledExtDir = path.resolve(here, 'extension');
+if (fs.existsSync(path.join(devExtDir, 'manifest.json'))) {
+  const SYNC_FILES = ['manifest.json', 'hook.js', 'content.js', 'background.js', 'panel.css', 'app.js', 'index.html', 'style.css'];
+  const drifted = SYNC_FILES.filter((f) => {
+    const a = path.join(devExtDir, f);
+    const b = path.join(bundledExtDir, f);
+    if (!fs.existsSync(a) || !fs.existsSync(b)) return true;
+    return !fs.readFileSync(a).equals(fs.readFileSync(b));
+  });
+  check('扩展两份副本逐字节一致（douyin-collector/ vs 插件自带 extension/）',
+    drifted.length === 0, drifted.length ? 'drift: ' + drifted.join('、') + '（跑 sync-extension.mjs 同步）' : SYNC_FILES.length + ' 个文件一致');
+  // ③ 反向检查：插件自带 extension/ 里不能有白名单之外的文件。
+  //    只比 8 个名字的话，旧版本遗留的多余文件永远发现不了（会被一起装进浏览器）。
+  const extra = fs.readdirSync(bundledExtDir).filter((f) => !SYNC_FILES.includes(f));
+  check('插件自带 extension/ 没有多余文件', extra.length === 0,
+    extra.length ? '多余文件: ' + extra.join('、') + '（跑 sync-extension.mjs 会清掉）' : '8 个文件，无多余');
+
+  // ---------- 3a-6) 扩展后台可达性（2026-10-06 真机踩坑） ----------
+  // 实测：扩展文件刚变过、清过脚本缓存的那一轮，面板注入正常、页面照常采集，但页面里每次
+  // chrome.runtime.sendMessage 都回「Receiving end does not exist」→ 清空无效、评论一条
+  // 不落库、最后「交付 0 条」还被错报成「抖音正在限流」。修法：后台加零副作用探针 dts-ping，
+  // 内容脚本自测并镜像 bgOk/bgErr，采集器预检 + 刷新页面自愈 + 如实归因。
+  const bgSrc = fs.readFileSync(path.join(devExtDir, 'background.js'), 'utf8');
+  const ctSrc = fs.readFileSync(path.join(devExtDir, 'content.js'), 'utf8');
+  check('扩展后台有零副作用探针 dts-ping（不回落到 dts-status 以免写脏 videoId=undefined）',
+    /msg\.type === 'dts-ping'[\s\S]{0,200}?sendResponse\(\{ ok: true, pong: true/.test(bgSrc));
+  check('内容脚本自测后台可达性并镜像 bgOk/bgErr',
+    /function probeBackground\(\)/.test(ctSrc)
+    && /chrome\.runtime\.sendMessage\(\{ type: 'dts-ping' \}/.test(ctSrc)
+    && /bgOk: bgOk, bgErr: bgErr, bgCheckedAt: bgCheckedAt/.test(ctSrc));
+  check('采集器读 bgOk 预检 + 刷新页面自愈 + 仍不可达就标脏启动状态并报错',
+    /const bgDead = \(t\) => !!t && t\.bgOk === false/.test(collectorSrc)
+    && /for \(let i = 0; i < 2 && bgDead\(pre\); i\+\+\)/.test(collectorSrc)
+    && /writeLaunchState\(\{ hash: '', version: ext\.version/.test(collectorSrc));
+  check('「清空」点了 3 次仍未生效 → 直接报错（不再只记日志然后照样跑）',
+    /面板的「清空」没生效（点了 3 次/.test(collectorSrc));
+  check('「交付 0 条」如实归因（区分落库失败 vs 真没新评论）',
+    /const stalled = \(pageSaw > 0 && all\.length <= beforeCids\.size\) \|\| bgTold;/.test(collectorSrc));
+} else {
+  console.log('ℹ️ 跳过扩展副本一致性校验（找不到开发目录 ' + devExtDir + '，非开发机上属正常）');
 }
 
 // ---------- 4) 可选：真跑一次 ----------

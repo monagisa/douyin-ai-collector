@@ -9,77 +9,26 @@ function frame(obj) {
   return 'Content-Length: ' + Buffer.byteLength(s) + '\r\n\r\n' + s;
 }
 
-function run(label, port, mode, extraArgs) {
+/** 轮询等 holder 的 Hub 就绪（固定 sleep 在慢机器上会测不到真端口冲突） */
+function waitHubUp(port, ms) {
+  const http = require('http');
+  const t0 = Date.now();
   return new Promise((resolve) => {
-    const args = [MCP, '--port', String(port)].concat(extraArgs || []);
-    const child = spawn(process.execPath, args, { stdio: ['pipe', 'pipe', 'pipe'] });
-    let out = '';
-    let err = '';
-    let settled = false;
-    const finish = (payload) => {
-      if (settled) return;
-      settled = true;
-      try { child.kill(); } catch (e) {}
-      resolve(payload);
-    };
-    const timer = setTimeout(() => {
-      const ok = out.includes('douyin-collector-mcp') && out.includes('"id":1');
-      finish({
-        label,
-        ok,
-        reason: ok ? 'got-response' : 'timeout-no-response',
-        out: out.slice(0, 600),
-        err: err.slice(0, 600)
+    const probe = () => {
+      const r = http.get(`http://127.0.0.1:${port}/api/v1/health`, (res) => {
+        res.resume();
+        resolve(res.statusCode === 200);
       });
-    }, 2500);
-    child.stdout.on('data', (c) => {
-      out += c;
-      if (out.includes('"id":1') && out.includes('douyin-collector-mcp')) {
-        // 给 tools/list 一点时间
-        setTimeout(() => {
-          const hasTools = out.includes('ai_status');
-          finish({
-            label,
-            ok: true,
-            hasTools,
-            out: out.slice(0, 400),
-            err: err.slice(0, 400)
-          });
-        }, 400);
-      }
-    });
-    child.stderr.on('data', (c) => { err += c; });
-    setTimeout(() => {
-      if (mode === 'cl') {
-        child.stdin.write(frame({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'initialize',
-          params: {
-            protocolVersion: '2024-11-05',
-            capabilities: {},
-            clientInfo: { name: 'mimo-sim', version: '1' }
-          }
-        }));
-        child.stdin.write(frame({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }));
-      } else {
-        child.stdin.write(JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'initialize',
-          params: {
-            protocolVersion: '2025-03-26',
-            capabilities: {},
-            clientInfo: { name: 'ndjson-sim', version: '1' }
-          }
-        }) + '\n');
-      }
-    }, 200);
-    clearTimeout(timer); // reset after start? keep simple: use 2500 from start
+      r.on('error', () => {
+        if (Date.now() - t0 > ms) return resolve(false);
+        setTimeout(probe, 60);
+      });
+    };
+    probe();
   });
 }
 
-// simpler explicit runner
+// explicit runner
 function handshake(label, port, mode) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [MCP, '--port', String(port)], {
@@ -144,7 +93,12 @@ function handshake(label, port, mode) {
   const holder = spawn(process.execPath, [MCP, '--hub-only', '--port', '18803'], {
     stdio: ['ignore', 'ignore', 'pipe']
   });
-  await new Promise((r) => setTimeout(r, 400));
+  const holderUp = await waitHubUp(18803, 5000);
+  if (!holderUp) {
+    try { holder.kill(); } catch (e) {}
+    console.error('holder Hub 未就绪，CL-port-conflict 用例无意义');
+    process.exit(1);
+  }
   const results = [
     await handshake('CL-fresh', 18811, 'cl'),
     await handshake('NDJSON-fresh', 18812, 'ndjson'),

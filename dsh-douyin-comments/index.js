@@ -41,7 +41,10 @@ async function loadDefineTool() {
     const dshRoot = path.resolve(path.dirname(process.argv[1]), '..');
     candidates.push(path.join(dshRoot, 'node_modules', '@deepseek-ai', 'dsh-tools', 'lib', 'index.js'));
   }
-  candidates.push('D:/node-v22.23.1/node_global/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-tools/lib/index.js');
+  // 开发机兜底：便携 node 的全局目录（用 DTS_NODE_GLOBAL 指明，如 D:\node-v22.23.1\node_global；不设就跳过）
+  if (process.env.DTS_NODE_GLOBAL) {
+    candidates.push(path.join(process.env.DTS_NODE_GLOBAL, 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai', 'dsh-tools', 'lib', 'index.js'));
+  }
 
   const tried = [];
   for (const file of candidates) {
@@ -59,16 +62,15 @@ const defineTool = await loadDefineTool();
 
 /**
  * 取 `Schema`（schemastery）：和 defineTool 同理，必须拿宿主那一份。
- * 1) 裸说明符（插件被拷进 profile 时，<DSH_HOME>/profiles/node_modules 是拦截层）；
- * 2) 退回 profile 的拦截层；3) 再退回 dsh 安装目录自带的副本。
+ * 顺序：1) profile 的「拦截层」`<DSH_HOME>/profiles/node_modules`；2) dsh 安装目录自带副本；
+ *       3) 开发机全局 dsh 副本（DTS_NODE_GLOBAL）；4) 最后才试裸说明符。
+ * 为什么裸说明符放最后：全新 profile 里 pnpm 会把 **旧版** `@deepseek-ai/schemastery`
+ * （实测 3.18.2）装进插件自己的 node_modules，那份没有 `Schema.prototype.volatile`（3.18.3+ 才有）
+ * —— 裸说明符会命中它，Config 里的链式 `.volatile()` 直接抛
+ * `TypeError: ... .volatile is not a function`，整个插件 import 失败
+ * （dsh 只打印「1 entry did not activate / failed to import」，工具就没了）。
  */
 async function loadSchema() {
-  try {
-    const mod = await import('@deepseek-ai/schemastery');
-    const S = mod && (mod.default || mod);
-    if (typeof S === 'function' && typeof S.object === 'function') return S;
-  } catch { /* 继续试下面的绝对路径 */ }
-
   const home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
   const candidates = [
     path.join(home, 'profiles', 'node_modules', '@deepseek-ai', 'schemastery', 'lib', 'index.mjs'),
@@ -77,20 +79,43 @@ async function loadSchema() {
     const dshRoot = path.resolve(path.dirname(process.argv[1]), '..');
     candidates.push(path.join(dshRoot, 'node_modules', '@deepseek-ai', 'schemastery', 'lib', 'index.mjs'));
   }
-  candidates.push('D:/node-v22.23.1/node_global/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/schemastery/lib/index.mjs');
+  if (process.env.DTS_NODE_GLOBAL) {
+    candidates.push(path.join(process.env.DTS_NODE_GLOBAL, 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai', 'schemastery', 'lib', 'index.mjs'));
+  }
+
+  const usable = (mod) => {
+    const S = mod && (mod.default || mod);
+    return (typeof S === 'function' && typeof S.object === 'function' && typeof S.number === 'function') ? S : undefined;
+  };
 
   for (const file of candidates) {
     try {
       if (!fs.existsSync(file)) continue;
-      const mod = await import(pathToFileURL(file).href);
-      const S = mod && (mod.default || mod);
-      if (typeof S === 'function' && typeof S.object === 'function') return S;
+      const S = usable(await import(pathToFileURL(file).href));
+      if (S) return S;
     } catch { /* 继续 */ }
   }
+
+  try {
+    const S = usable(await import('@deepseek-ai/schemastery'));
+    if (S) return S;
+  } catch { /* 没有就退回没有表单 */ }
   return undefined;
 }
 
 const Schema = await loadSchema();
+
+/**
+ * `.volatile()` 是 3.18.3+ 才有的链式方法。拿不到就原样返回 —— 降级后果只是
+ * 「DSH 设置表单里这几个字段不能改（不是 volatile）」，插件本身照常加载；
+ * 绝不能因为一个可选的链式方法让整个插件 import 失败。
+ */
+function vol(schema) {
+  try {
+    if (schema && typeof schema.volatile === 'function') return schema.volatile();
+  } catch { /* 有 volatile 但抛错也退回原样 */ }
+  return schema;
+}
 
 /**
  * 导出给自检用：verify-tool.mjs 要复刻 dsh-settings 的 `new Schema(schema.toJSON())`
@@ -102,35 +127,36 @@ export { Schema };
 /**
  * 插件设置：声明成 cordis 的 Config 后，DSH 的「设置 → 插件 → dsh-douyin-comments」
  * 会自动生成这张表单（dsh-settings 的 schema(entry) 取 fiber.runtime.Config，要求能 toJSON）。
- * 四个字段都标了 volatile：DSH 只允许表单改 volatile 字段，好处是改完**立即生效**——
- * execute() 里每次都现读一遍，不用重启 dsh、也不用重装插件。
+ * 八个字段都经 vol() 标了 volatile：DSH 只允许表单改 volatile 字段，好处是改完**立即生效**——
+ * execute() 里每次都现读一遍，不用重启 dsh、也不用重装插件。（旧版 schemastery 没有 .volatile()
+ * 时 vol() 原样返回，插件照常加载，只是这几个字段在表单里不能改。）
  * 加载不到 schemastery 时不导出 Config（cordis 会跳过校验），插件照常工作，只是没有表单。
  */
 export const Config = Schema ? Schema.object({
-  max: Schema.number()
+  max: vol(Schema.number()
     .description('一级评论的目标条数：采到这么多就继续补二级回复（默认 80000 = 扩展单视频评论池的防御上限）')
-    .default(80000).min(1).max(1000000).step(1).volatile(),
-  lanes: Schema.number()
+    .default(80000).min(1).max(1000000).step(1)),
+  lanes: vol(Schema.number()
     .description('并发路数：一轮同时发几路分页请求（1~8，默认 4）。实测 4 路最快，6 路服务端开始排队、更慢且有风控风险')
-    .default(4).min(1).max(8).step(1).volatile(),
-  timeoutMs: Schema.number()
+    .default(4).min(1).max(8).step(1)),
+  timeoutMs: vol(Schema.number()
     .description('单次采集总超时毫秒（默认 1800000 = 30 分钟）；到点也会把已采到的评论落盘')
-    .default(1800000).min(60000).max(14400000).step(1000).volatile(),
-  waitLoginSec: Schema.number()
+    .default(1800000).min(60000).max(14400000).step(1000)),
+  waitLoginSec: vol(Schema.number()
     .description('检测到未登录时，等你在浏览器窗口里扫码的秒数（默认 180；0 = 不等，直接返回 need-login 并把窗口留着）')
-    .default(180).min(0).max(1800).step(1).volatile(),
-  clearBefore: Schema.boolean()
+    .default(180).min(0).max(1800).step(1)),
+  clearBefore: vol(Schema.boolean()
     .description('采集前是否清空扩展缓存（默认 false）。清空会重置去重表和游标、毁掉「断点续采」进度，所以默认不清；不清空时靠 cid 差集保证只交付本轮新采')
-    .default(false).volatile(),
-  replyLanes: Schema.number()
+    .default(false)),
+  replyLanes: vol(Schema.number()
     .description('二级回复阶段的并发线程数 1~8（默认 4）。回复接口比列表接口更容易被限流，撞限流可降到 1~2 再重跑')
-    .default(4).min(1).max(8).step(1).volatile(),
-  replyThrottleSec: Schema.number()
+    .default(4).min(1).max(8).step(1)),
+  replyThrottleSec: vol(Schema.number()
     .description('二级回复被限流时，最多等多少秒（默认 10，扩展内置值）。限流窗口实测几秒才开，10 秒常整轮白跑，可放宽到 60~300 后用「再点一次」断点续采')
-    .default(10).min(10).max(600).step(1).volatile(),
-  replyNoProgressSec: Schema.number()
+    .default(10).min(10).max(600).step(1)),
+  replyNoProgressSec: vol(Schema.number()
     .description('二级回复阶段多久没有新数据就收工（秒，默认 900 = 15 分钟）。退避重试期间条数本来就长时间不动，太小会导致回复采不到就收工')
-    .default(900).min(60).max(7200).step(10).volatile(),
+    .default(900).min(60).max(7200).step(10)),
 }).default({}) : undefined;
 
 /** 原始 config（保留 volatile 引用本身，而不是快照值）。 */

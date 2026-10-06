@@ -1,7 +1,47 @@
 # dsh-douyin-comments
 
 DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**，注册一个工具 `douyin_comments`。
-（插件版本 0.5.4，内置扩展「抖音评论采集器」v0.2.6。）
+（插件版本 0.5.5，内置扩展「抖音评论采集器」v0.2.7。）
+
+**0.5.5 新增**：
+
+1. **内置扩展升级到 0.2.7，并修掉「脚本缓存清错地方」**（重要）：以前只清 `Default/Code Cache` 与
+   `Default/Service Worker/ScriptCache`，会留下指向已删脚本的注册库 `Default/Service Worker/Database`，
+   Chrome 因此起不来扩展后台 —— 面板照样注入，但页面每次 `sendMessage` 都回
+   `Could not establish connection. Receiving end does not exist.`，表现就是「点清空没反应 /
+   面板谎称已清空、评论一条不落库、最后交付 0 条」。真机对照实测：只清 ScriptCache 跑 2 轮
+   （1 轮正常、1 轮扩展 SW 数=0 且探活失败）；改成清掉整个 `Default/Service Worker` 后 **2/2 正常**。
+   现在清 `Default/Code Cache` + 整个 `Default/Service Worker`。
+2. **采集器新增「扩展后台可达性」预检 + 自愈**：面板就绪后读页面自测的 `bgOk`/`bgErr`，命中
+   `Receiving end does not exist|Extension context invalidated` 就 `page.reload()` 重试（最多 2 次），
+   仍不通就把这次启动标脏（`~/.dsh/douyin-collector/extension.launched.json` 的 hash 置空，
+   下次强制清缓存重开）并明确报错「扩展后台没有响应……本轮采到的评论不会落库」，**不再静默交付 0 条**。
+3. **内容脚本主动探活**：新增 `probeBackground()`（发 `{type:'dts-ping'}`，启动 200ms 后一次、
+   之后每 30 秒一次），状态镜像与面板文案新增 `bgOk`/`bgErr`/`bgCheckedAt`；扩展上下文中断时
+   面板不再谎称「已清空」。
+4. **后台新增零副作用探针 `dts-ping`**：只回 `{ok:true,pong:true,at}`；用 `dts-status` 探活会给
+   `updateVideoMeta` 写一条 `videoId=undefined` 的脏记录。
+5. **「交付 0 条」如实归因**：页面采到 N 条但扩展存储没增加时，明确报「落库失败（扩展后台不可达）」，
+   不再把锅甩给「抖音限流 / 视频没有新评论」。
+6. **清空没生效会明确报错**：`clearBefore` 时点「清空」两次仍不空 → 刷新页面重试 → 仍不空则报错
+   （点了 3 次仍剩 N 条），不再当成功继续。
+7. **配套 MCP `douyin-mcp` 0.3.1**：① `host` 支持 IPv6（拼 `http://[::1]:18765`；以前拼成
+   `http://::1:18765` 会让每个请求 500 → 永远 `NO_HUB`）；② HTTP 头块被切开时不再把头行当 NDJSON
+   吃掉（丢帧）；③ 无 `id` 的请求（`initialize`/`tools/list`/`ping`/`hub/health`）不再回无 `id` 的对象；
+   ④ 清掉写死的 `D:\node-v22.23.1\node.exe`（`douyin-mcp.cmd`、`restart-hub.ps1` 改为
+   `%DTS_NODE_EXE%` / PATH 兜底），`force-reload-checklist.ps1` 不再写死「扩展应当是 v0.2.1」；
+   ⑤ `sync-extension.mjs` 同步后反向清理白名单外的旧文件，`verify-tool.mjs` 增加
+   「插件自带 `extension/` 没有多余文件」硬校验。
+8. **自测**：`verify-tool.mjs` 全绿 **113/113**（原 106 + 新增 7 条：`dts-ping` 零副作用、
+   内容脚本探活+镜像、采集器 bgDead/自愈/标脏、清空 3 次报错、交付 0 条归因、
+   `Config` 不直接链式 `.volatile()`、`loadSchema` 先取宿主副本）；
+   MCP 三个冒烟（`test-hub.js`、`test-mcp-handshake.js`、`test-settings.js`）全过。
+9. **全新 profile 里也能加载**（发布验收发现）：有些 profile 里 pnpm 会给插件装一份**旧版**
+   `@deepseek-ai/schemastery`（实测 3.18.2，没有 `Schema.prototype.volatile`），`Config` 直接链式
+   `.volatile()` 会抛 `TypeError: ...volatile is not a function` —— dsh 只打印
+   「1 entry did not activate / failed to import」，**插件装了却没有 `douyin_comments` 工具**。
+   现在 `loadSchema()` 先取宿主那份 schemastery（裸说明符放最后），字段一律走 `vol()` 兜底：
+   旧版没有 `.volatile()` 时插件照常加载（只是那几个字段在设置表单里不能改），不会再整个 import 失败。
 
 **0.5.4 新增**：
 
@@ -69,7 +109,7 @@ DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**
 
 特点：
 
-- **自带 Chrome 扩展**（抖音评论采集器 v0.2.6）。第一次调用时会自动把扩展装进它启动的浏览器，
+- **自带 Chrome 扩展**（抖音评论采集器 v0.2.7）。第一次调用时会自动把扩展装进它启动的浏览器，
   不需要使用者手动「加载已解压的扩展程序」；扩展面板标题栏自带设置齿轮 `⚙`（0.2.5 起，在「—」左边）。
 - **只交付本次新采的数据**：结束时按 `cid` 差集剔除旧数据，只交付本轮新增的；
   一条新数据都没有就返回失败并说明原因，绝不把上一轮残留当成本轮结果。
@@ -94,8 +134,8 @@ dsh plugin --profile web add file:D:\dycopy\dsh-douyin-comments
 方式二：tarball 安装（把包发给别人时用）
 
 ```powershell
-# 对方收到 dsh-douyin-comments-0.5.3.tgz 后：
-dsh plugin --profile web add file:C:\path\to\dsh-douyin-comments-0.5.3.tgz
+# 对方收到 dsh-douyin-comments-0.5.5.tgz 后：
+dsh plugin --profile web add file:C:\path\to\dsh-douyin-comments-0.5.5.tgz
 ```
 
 装完必须**重启 dsh web**：模块解析表在进程启动时冻结，新插件的工具要重启后才可见。
@@ -282,30 +322,30 @@ node sync-extension.mjs D:\path\to\ext
 
 ## 打包 / 发布
 
-发布物在 `D:\dycopy\release\dsh-douyin-comments-v0.5.4\`：
+发布物在 `D:\dycopy\release\dsh-douyin-comments-v0.5.5\`：
 
 | 文件 | 说明 |
 | --- | --- |
-| `dsh-douyin-comments-0.5.4.tgz` | 插件本体，15 个文件（`index.js`/`collector.mjs`/`cordis.patch.yml`/`README.md`/`package.json` + `client/client.js` + `extension/` 8 个） |
-| `douyin-collector-extension-v0.2.6.zip` | 单独的扩展 zip，顶层目录 `douyin-collector/`（8 个文件），供 `chrome://extensions` 手动「加载已解压的扩展程序」 |
+| `dsh-douyin-comments-0.5.5.tgz` | 插件本体，14 个文件（`index.js`/`collector.mjs`/`cordis.patch.yml`/`README.md`/`package.json` + `client/client.js` + `extension/` 8 个） |
+| `douyin-collector-extension-v0.2.7.zip` | 单独的扩展 zip，顶层目录 `douyin-collector/`（8 个文件），供 `chrome://extensions` 手动「加载已解压的扩展程序」 |
 | `使用说明.md` | 给收件人看的中文说明（安装/扫码/两处设置/参数/FAQ/macOS） |
 | `SHA256SUMS.txt` | 三个文件的 SHA256 |
 
-再外面还有 `D:\dycopy\release\dsh-douyin-comments-v0.5.4.zip`（把上面整目录打成一个单文件，方便直接发给人）。
+再外面还有 `D:\dycopy\release\dsh-douyin-comments-v0.5.5.zip`（把上面整目录打成一个单文件，方便直接发给人）。
 
-草稿目录 `D:\dycopy\release\dsh-douyin-comments-v0.5.3\` 是上一版，保留作对照。
+草稿目录 `D:\dycopy\release\dsh-douyin-comments-v0.5.4\` 是上一版，保留作对照。
 
 重新打包：
 
 ```powershell
 cd D:\dycopy\dsh-douyin-comments
-npm pack --pack-destination D:\dycopy\release\dsh-douyin-comments-v0.5.4
+npm pack --pack-destination D:\dycopy\release\dsh-douyin-comments-v0.5.5
 
 # 扩展开 zip（顶层目录名必须是 douyin-collector；只装 8 个运行文件，别把 md 打进去）。
 # 用 .NET ZipFile 逐个 CreateEntry 造，避免 Compress-Archive 多套一层目录：
-$rel = 'D:\dycopy\release\dsh-douyin-comments-v0.5.4'
+$rel = 'D:\dycopy\release\dsh-douyin-comments-v0.5.5'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-$zip = [IO.Compression.ZipFile]::Open("$rel\douyin-collector-extension-v0.2.6.zip", 'Create')
+$zip = [IO.Compression.ZipFile]::Open("$rel\douyin-collector-extension-v0.2.7.zip", 'Create')
 Get-ChildItem D:\dycopy\douyin-collector -File |
   Where-Object { $_.Extension -in '.js','.json','.css','.html' } |
   ForEach-Object { [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $_.FullName, "douyin-collector/$($_.Name)") | Out-Null }
@@ -319,7 +359,7 @@ $zip.Dispose()
 
 ```powershell
 mkdir C:\Users\mo\.dsh\profiles\pkgtest     # package.json：dsh.profile.bundles = ["@deepseek-ai/dsh-base","@deepseek-ai/dsh-headless"]
-dsh plugin --profile pkgtest add file:D:\dycopy\release\dsh-douyin-comments-v0.5.4\dsh-douyin-comments-0.5.4.tgz
+dsh plugin --profile pkgtest add file:D:\dycopy\release\dsh-douyin-comments-v0.5.5\dsh-douyin-comments-0.5.5.tgz
 dsh --profile pkgtest --dump-config | Select-String dsh-douyin-comments
 dsh --profile pkgtest headless '用 douyin_comments 工具采集 https://www.douyin.com/video/7660328050596371819 （max=20）。工具返回后只回复三行：ok=、count=、csvPath=。'
 # ⇒ ok=true，CSV 落在 ~\.dsh\douyin-collector\out\（实测两轮：194 条 / 227 条——按页落库，条数每轮不同）
@@ -331,11 +371,17 @@ dsh --profile pkgtest headless '用 douyin_comments 工具采集 https://www.dou
 
 ## 与其他组件的关系
 
-- 浏览器里跑的扩展本体在 `D:\dycopy\douyin-collector\`（权威开发目录，v0.2.6）；插件里的 `extension/`
-  由 `node sync-extension.mjs` 单向同步过去（别再手动复制）。插件每次启动都会把扩展 hash 记进
-  `~/.dsh/douyin-collector/extension.launched.json`，一变就清掉 profile 里的旧脚本缓存
-  （`Default/Code Cache`、`Default/Service Worker/ScriptCache`）再开浏览器——手工换扩展文件后
-  若发现浏览器还在跑旧代码（AI 桥回 `UNKNOWN_COMMAND`），就是因为漏了这两处缓存。
+- 浏览器里跑的扩展本体在 `D:\dycopy\douyin-collector\`（权威开发目录，v0.2.7）；插件里的 `extension/`
+  由 `node sync-extension.mjs` 单向同步过去（同步后会反向清理白名单外的旧文件；别再手动复制）。
+  插件每次启动都会把扩展 hash 记进 `~/.dsh/douyin-collector/extension.launched.json`，一变就清掉
+  profile 里的旧脚本缓存再开浏览器。**注意清的范围**：要清 `Default/Code Cache` + **整个**
+  `Default/Service Worker` 目录——只清 `Default/Service Worker/ScriptCache` 会留下
+  `Default/Service Worker/Database` 里指向已删脚本的注册库，Chrome 起不来扩展后台：面板照样注入，
+  但页面 `sendMessage` 一直回 `Could not establish connection. Receiving end does not exist.`，
+  表现是「点清空没反应、面板谎称已清空、评论一条不落库、最后交付 0 条」。真机对照实测：
+  只清 ScriptCache 跑 2 轮（1 轮正常、1 轮扩展 SW 数=0 且探活失败），清掉整个
+  `Default/Service Worker` 后 **2/2 正常**。手工换扩展文件后若发现浏览器还在跑旧代码
+  （AI 桥回 `UNKNOWN_COMMAND`），也是同一处缓存没清干净。
 - 采集结果想接着做统计/情感/检索，用分析后端 `D:\dycopy\douyin-analysis\`：
   `python -m douyin_analysis ingest`（自动扫 `~/Downloads` 与 `~/.dsh/douyin-collector/out`），
   或让 agent 直接调 MCP 工具 `mcp__douyin__ingest_paths`。

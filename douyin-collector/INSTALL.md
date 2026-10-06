@@ -1,6 +1,6 @@
 # 安装 · 使用 · 打包
 
-> 抖音评论采集器 **v0.2.6** — 无 npm 依赖、无构建步骤。  
+> 抖音评论采集器 **v0.2.7** — 无 npm 依赖、无构建步骤。  
 > **适用浏览器：Chrome 111+ / Edge（Chromium）**；**不支持** Firefox / Safari（详见 README「适用范围」）。  
 > v0.2.x：AI Bridge（本地 MCP，见 `../douyin-mcp/README.md`）；采集核心仍为「复用页面签名、只改 cursor」。  
 > 历史要点：v0.1.5 起采二级回复；v0.1.11 起面板绝对坐标拖动 + 开始采集时自动打开评论区；  
@@ -10,7 +10,10 @@
 > v0.2.3 起二级回复的四档限速也能从 `dts_settings` 覆盖（`replyLanes` / `replyGapMs` / `replyWarmupMs` / `replyThrottleMaxWaitMs`，默认值不变，见 PROTOCOL §3.9）；  
 > v0.2.4 起面板自带「设置」按钮（改 目标条数/并发路数/回复并发/回复间隔/限流等待），存 `dts_user_settings`，**优先级：面板 > `dts_settings` > 内置默认**；  
 > v0.2.5 起入口改为**标题栏齿轮 ⚙**（在「—」左边，不占按钮行），浮层第一项标签就是 `max` 目标条数，当前生效值显示在浮层顶部；  
-> v0.2.6 起 AI 桥可**读写设置**（`get_settings` / `set_settings`，`start_collect` 可带 `settings`），配套 MCP `douyin-mcp` 0.3.0 的 `ai_get_settings` / `ai_set_settings`（见 PROTOCOL §7.9）。
+> v0.2.6 起 AI 桥可**读写设置**（`get_settings` / `set_settings`，`start_collect` 可带 `settings`），配套 MCP `douyin-mcp` 0.3.0 的 `ai_get_settings` / `ai_set_settings`（见 PROTOCOL §7.9）。  
+> v0.2.7 起新增**后台探活**：后台多了零副作用探针 `dts-ping`，内容脚本 `probeBackground()` 会主动探活
+> （状态镜像与面板文案含 `bgOk` / `bgErr` / `bgCheckedAt`）；扩展后台不可达时面板不再谎称「已清空」，
+> 配套插件也会明确报「落库失败（扩展后台不可达）」而不是静默交付 0 条。
 
 ---
 
@@ -69,10 +72,14 @@ content script 把裁剪后的字段交给 background，写入 `chrome.storage.l
 
 > 只用 `chrome://extensions` 换文件、不点「重新加载」的话，浏览器可能仍在跑**上一次的脚本**
 > （Chrome 把未打包扩展的脚本缓存在 profile 的 `Default/Code Cache` 与
-> `Default/Service Worker/ScriptCache` 里）：现象是 `manifest.json` 已经是新版本号，
+> `Default/Service Worker/` 里）：现象是 `manifest.json` 已经是新版本号，
 > 但新加的命令/功能不生效（例如 AI 桥回 `UNKNOWN_COMMAND:get_settings`）。
-> 点一次「重新加载」即可；实在不行就关掉浏览器，把这两个缓存目录删掉再开。
-> 由 DSH 插件 `dsh-douyin-comments` 启动的浏览器不用手动做——它发现扩展变了会自己清。
+> 点一次「重新加载」即可；实在不行就关掉浏览器，**把 `Default/Code Cache` 与整个
+> `Default/Service Worker` 目录删掉**再开 —— 只删 `Default/Service Worker/ScriptCache`
+> 是不够的：留下的 `Default/Service Worker/Database` 存着指向已删脚本的注册库，会让扩展后台
+> 起不来（面板还在，但页面 `sendMessage` 一直回
+> `Could not establish connection. Receiving end does not exist.`，点清空没反应、评论一条不落库）。
+> 由 DSH 插件 `dsh-douyin-comments` 启动的浏览器不用手动做——它发现扩展变了会自己清这两个位置。
 
 ---
 
@@ -117,6 +124,7 @@ content script 把裁剪后的字段交给 background，写入 `chrome.storage.l
 | `onAlarm` TypeError / SW registration failed | 扩展已去掉 chrome.alarms；请在扩展页点「重新加载」强制载入新 background.js |
 | CORS blocked `127.0.0.1` | 重启 douyin-mcp（新版才有 CORS）→ 扩展重新加载 → 打开本目录 `index.html` 探测 /health |
 | 采集秒停 / 0 条 | 刷新页面，让评论区发出请求后再点开始 |
+| 面板说「已清空」但一条不落库 / 工具报「落库失败（扩展后台不可达）」 | 扩展后台（Service Worker）没起来，常见于只清了 `ScriptCache`、留下 `Default/Service Worker/Database`：关掉浏览器，删掉 `Default/Code Cache` 与**整个** `Default/Service Worker` 目录再开。DSH 插件 0.5.5 会自动清并做「后台可达性」预检 |
 | 停在少量条数 | 登录态被作废：重新登录抖音并刷新 |
 | 条数远小于页面「X.X万」 | 正常：`total` 含回复/已删除计数，列表接口可翻页集合更小 |
 | 导出无反应 | 查 `chrome://downloads` 与 Service Worker 控制台 |

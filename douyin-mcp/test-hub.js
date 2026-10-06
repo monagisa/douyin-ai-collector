@@ -64,17 +64,6 @@ async function main() {
     const health = await req('GET', '/health');
     if (health.hub !== 'douyin-collector-mcp') throw new Error('health.hub 异常');
 
-    // 模拟扩展轮询：取一条命令并回包
-    const resultPromise = new Promise((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error('等结果超时')), 5000);
-      // 后台：enqueue 后消费 pending
-      (async () => {
-        try {
-          // 用进程内无法直接调用，走 HTTP enqueue + 另一协程 pending
-        } catch (e) { reject(e); } finally { clearTimeout(t); }
-      })();
-    });
-
     // enqueue 会阻塞等 result —— 先起一个 pending 消费循环
     const pendingLoop = (async () => {
       for (let i = 0; i < 40; i++) {
