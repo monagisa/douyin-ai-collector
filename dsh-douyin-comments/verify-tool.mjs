@@ -113,8 +113,8 @@ check('toJSON 往返后字段不丢（设置表单就是这么重建的）',
   !!rebuiltCfg && Object.keys(rebuiltCfg.dict || {}).length === cfgKeys.length,
   rebuiltErr || Object.keys((rebuiltCfg && rebuiltCfg.dict) || {}).join(','));
 const setDefaults = { max: Cfg.dict.max.meta.default, lanes: Cfg.dict.lanes.meta.default, timeoutMs: Cfg.dict.timeoutMs.meta.default, waitLoginSec: Cfg.dict.waitLoginSec.meta.default };
-check('设置里的出厂默认值 = 80000 / 4 / 1800000 / 180',
-  setDefaults.max === 80000 && setDefaults.lanes === 4 && setDefaults.timeoutMs === 1800000 && setDefaults.waitLoginSec === 180,
+check('设置里的出厂默认值 = 80000 / 1（顶层已固定单路，lanes 仅兼容）/ 1800000 / 180',
+  setDefaults.max === 80000 && setDefaults.lanes === 1 && setDefaults.timeoutMs === 1800000 && setDefaults.waitLoginSec === 180,
   JSON.stringify(setDefaults));
 const cfgValid = Cfg['~standard'].validate(undefined);
 check('没配过也能开（validate(undefined) 落到默认值）', !('issues' in cfgValid) && !!cfgValid.value && 'lanes' in cfgValid.value,
@@ -153,7 +153,7 @@ check('readSettings 把路数钳在 1..8', mod.readSettings({ lanes: vbox(99) })
 check('插件描述里交代了设置入口', /设置/.test(String(def.description || '')) && /lanes|并发路数/.test(String(def.description || '')));
 check('输出 schema 里有 lanes（能看出实际用了几路）', schemaProps.includes('lanes'), schemaProps.join(','));
 check('出厂默认 max = 80000（= 扩展评论池上限）', DEFAULTS.max === 80000, String(DEFAULTS.max));
-check('出厂默认并发路数 = 4（实测甜点）', DEFAULTS.lanes === 4, String(DEFAULTS.lanes));
+check('出厂默认并发路数 = 1（顶层已固定单路；lanes 只作历史兼容项）', DEFAULTS.lanes === 1, String(DEFAULTS.lanes));
 check('出厂默认超时 = 30 分钟（够采几万条）', DEFAULTS.timeoutMs === 1800000, String(DEFAULTS.timeoutMs));
 check('出厂默认不清空（保住扩展的断点续采）', DEFAULTS.clearBefore === false, String(DEFAULTS.clearBefore));
 check('回复类出厂默认：并发 0=跟扩展内置、限流 0=跟内置、无进展 900s',
@@ -175,6 +175,8 @@ check('品牌版 Chrome 会被识别（137+ 忽略 --load-extension，要提前�
   /function isBrandedBrowser/.test(collSrc) && /load-extension/.test(collSrc), '');
 check('命令行扩展兜底：忽略 Playwright 默认的 --disable-extensions',
   /ignoreDefaultArgs: \['--disable-extensions'\]/.test(collSrc), '');
+check('collector 日志如实报「顶层列表实际路数」并说明并发路数设置已停用',
+  /顶层列表实际路数/.test(collSrc) && /并发路数设置已停用/.test(collSrc), '');
 check('扩展缓存目录跨平台（mac ~/Library/Caches/ms-playwright、linux ~/.cache）',
   /Library', 'Caches', 'ms-playwright'/.test(collSrc) && /\.cache/.test(collSrc), '');
 check('playwright-core 的查找覆盖各平台全局目录（含便携 node 的 node_global、nvm、NODE_PATH）',
@@ -273,12 +275,25 @@ const stamp = path.join(DEFAULTS.home, 'extension.installed.json');
 check('写了安装戳', fs.existsSync(stamp), stamp);
 check('哈希 16 位', /^[0-9a-f]{16}$/.test(ext.hash), ext.hash);
 
-// ---------- 3a) 扩展侧：真的会读「并发路数」设置 ----------
+// ---------- 3a) 扩展侧：顶层列表固定单路（v0.2.12），「并发路数」设置仅保留兼容 ----------
+// 2026-10-06 真机实测（视频 7692405235813272867，登录态正常）：单路串行 18 步 → 714~744 条唯一
+// 一级评论；4 路并发（同签名同时发 cursor,+50,+100,+150）只有 492 条，且 c50/c100/c150 三个
+// 请求拿到的是**同一页**（服务端把并发的同签名请求合并了）；错峰 200ms 发就恢复正常。
+// 所以顶层扫描固定单路。实测同一视频：修复前 768 条（一级 586），修复后 945 条（一级 753）。
 const contentSrc = fs.readFileSync(path.join(ext.dir, 'content.js'), 'utf8');
 check('扩展读运行时设置 dts_settings 且保留内置 MAX_LANES 兜底',
   /loadRuntimeSettings/.test(contentSrc) && /dts_settings/.test(contentSrc) && /MAX_LANES/.test(contentSrc));
-check('一轮并发用运行时路数（lanesWanted），不是写死的常量',
-  /lanes = Math\.min\(lanesWanted, MAX_PAGES - pages\)/.test(contentSrc));
+check('顶层列表固定单路：一轮只有一个 cursor（旧的 lanes 并发已删掉）',
+  /var lanes = 1;\s*\n\s*var cursors = \[cursor\];/.test(contentSrc)
+  && !/lanes = Math\.min\(lanesWanted, MAX_PAGES - pages\)/.test(contentSrc),
+  (contentSrc.match(/var lanes = [^\n]*/) || [''])[0]);
+check('源码里留着实测依据（探针脚本名 + 492 vs 714/744 + 错峰 200ms）',
+  contentSrc.includes('_scan_probe3.mjs') && contentSrc.includes('492') && contentSrc.includes('714')
+  && contentSrc.includes('错峰'));
+check('「并发路数」设置保留兼容但仍读：dts_settings_effective 里如实写 lanes=1 / lanesWanted / 说明',
+  /lanes: 1,\s*\n\s*lanesWanted: lanesWanted,/.test(contentSrc) && contentSrc.includes('lanesNote'));
+check('面板设置摘要如实写「顶层单路」，不再显示骗人的路数',
+  contentSrc.includes("'顶层单路'") && contentSrc.includes('并发路数（已停用）'));
 check('扩展把实际用的路数写回 dts_settings_effective（插件据此回报）', contentSrc.includes('dts_settings_effective'));
 // 报告问题二·缺陷4: 回复限流预算写死 10s，撞上「刚轰完列表接口」的拒绝窗口
 check('回复限流预算、并发、间隔都能被 dts_settings 覆盖（不再写死）',

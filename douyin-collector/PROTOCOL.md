@@ -517,7 +517,7 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
 **为什么值得做**：实测差额的 76% 就是这些回复；剩下 ~24% 是已删除评论
 （`folded_comment_count = 0`，接口层没有「折叠评论」这回事），任何接口都拿不到。
 
-### 3.9 运行时设置（`dts_settings` v0.2.2；v0.2.3 扩充二级回复档位；v0.2.4 加入面板设置 `dts_user_settings`；v0.2.5 入口改齿轮 `⚙`）
+### 3.9 运行时设置（`dts_settings` v0.2.2；v0.2.3 扩充二级回复档位；v0.2.4 加入面板设置 `dts_user_settings`；v0.2.5 入口改齿轮 `⚙`；**v0.2.12 起顶层列表固定单路，`lanes` 已停用、仅保留兼容**）
 
 外部（DSH 插件 `dsh-douyin-comments`、脚本、DevTools）可以在 `chrome.storage.local` 里写：
 
@@ -525,7 +525,7 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
 |---|---|
 | `dts_settings` | 外部写入的运行时设置；`startLoop()` **每轮开头**读一次 |
 | `dts_user_settings` | v0.2.4：**面板设置**（v0.2.5 起入口是标题栏齿轮 `⚙`）写入的用户设置；优先级高于 `dts_settings`（`chrome.storage.local.remove('dts_user_settings')` 即恢复插件/内置值） |
-| `dts_settings_effective` | 本轮**实际**用的值 + 时间戳（`{lanes, maxCount, replyLanes, replyGapMs, replyThrottleMaxWaitMs, from: 'panel'\|'plugin', at}`），回写给调用方核对 |
+| `dts_settings_effective` | 本轮**实际**用的值 + 时间戳（`{lanes, lanesWanted, lanesNote, maxCount, replyLanes, replyGapMs, replyThrottleMaxWaitMs, from: 'panel'\|'plugin', at}`），回写给调用方核对。**v0.2.12 起**：`lanes` **恒为 1**（顶层列表固定单路）、`lanesWanted` 是本次请求的原始值（1~8，没写就是内置 4）、`lanesNote` 是停用说明字符串（形如「顶层列表固定单路：多路并发会被服务端合并成同一响应，lanes 已停用」） |
 
 **取值优先级（v0.2.4 起）**：面板 `dts_user_settings` > 外部 `dts_settings` > 内置常量。逐字段判断，
 面板里没填的字段继续用外部值 / 内置值（`loadRuntimeSettings()` 里对每个 key 先看面板那份、再看插件那份）。
@@ -536,7 +536,7 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
 | 字段 | 含义 | 内置默认 | 允许范围 |
 |---|---|---|---|
 | `maxCount` | v0.2.4：去重后达到多少条就自动收工（`0` = 不限） | `0` | `0..MAX_COUNT_HARD_MAX (= 1000000)` |
-| `lanes` | 顶层列表采集的并发路数（v0.2.2） | `MAX_LANES = 4` | `1..LANES_HARD_MAX (= 8)` |
+| `lanes` | 顶层列表采集的并发路数（v0.2.2）——**v0.2.12 起已停用**：顶层列表固定单路，该键仍可读写、仍会下发给扩展，但**不再影响采集**（仅保留兼容；详见本节后面的实测原因） | `MAX_LANES = 4`（已不再被使用） | `1..LANES_HARD_MAX (= 8)`（钳位保留兼容） |
 | `replyLanes` | 二级回复的并发线程数（v0.2.3） | `REPLY_LANES = 4` | `1..8` |
 | `replyGapMs` | 同一回复线程两页之间的间隔（v0.2.3） | `REPLY_GAP_MS = 600` | `0..60000` |
 | `replyWarmupMs` | 进入补采前的静默时间（v0.2.3） | `REPLY_WARMUP_MS = 1500` | `0..600000` |
@@ -544,7 +544,8 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
 
 面板设置（v0.2.4 文字按钮 → v0.2.5 标题栏齿轮 `⚙`）暴露的就是上表的前 5 项（`maxCount`（标签 `目标条数 max`） /
 `lanes` / `replyLanes` / `replyGapMs` / `replyThrottleSec`＝秒，存盘时换算成 `replyThrottleMaxWaitMs`），
-存进 `dts_user_settings`。
+存进 `dts_user_settings`。其中 `lanes` 这一项**自 v0.2.12 起已停用**（顶层列表固定单路）：界面里仍能改、
+也仍会存进 `dts_user_settings`，但采集不再读它，仅保留兼容。
 
 - 读取点：`startLoop()` 进入时 `RS = await loadRuntimeSettings()`（内部 `chrome.storage.local.get([USER_SETTINGS_KEY, RUNTIME_SETTINGS_KEY])`，逐字段按上面的优先级合并），
   之后本轮所有限速点都读 `RS.*`。同一轮内不再重读；下一轮（含暂停后续采）会再读一次 ⇒ 改完**下一轮生效**，不用刷新页面。
@@ -554,12 +555,19 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
 - 合法性：按上表范围钳位（取整）；字段缺失 / 非数字 / `<= 0` 一律回退内置默认。
   `replyThrottleMaxWaitMs` 的下限刻意就是内置的 10 秒：放宽可以，**不允许调得比原来更早放弃**
   （「限流十秒不行就停」是原先定的策略，放宽是给「撞上窗口、想再等等」留的口子）。
-- 一轮并发写法不变（见 3.2）：`var lanes = Math.min(lanesWanted, MAX_PAGES - pages);` +
-  `Promise.all(cursors.map(function (c) { return requestReplay(c, COUNT); }))`，
-  只是 `lanesWanted` 可能来自设置而不是常量。
-- 默认行为与老版本完全一致：没有 `dts_settings` 时等价于 `MAX_LANES = 4` / `REPLY_LANES = 4` / `REPLY_GAP_MS = 600` /
-  `REPLY_THROTTLE_MAX_WAIT_MS = 10s`（扩展单独使用时不受影响）。
-- 单一事实来源仍是 `content.js`；`MAX_LANES` / `RS` 只是兜底，不再是唯一的调节点。
+- **v0.2.12 起顶层列表固定单路（见 3.2）**：列表扫描一次只发一个 `requestReplay(c, COUNT)`，用服务端返回的
+  `next` 推进；`lanesWanted` 不再参与 `Math.min(...)`，只用于回写 `dts_settings_effective.lanesWanted`。
+  原因：真机实测（2026-10-06，视频 `7692405235813272867`）同一个签名在同一时刻发多路分页请求会被服务端
+  **合并成同一响应**（4 路 5 轮只有 **492 条**、且 **0 个失败请求**；单路串行 18 步 **714~744 条**；
+  每路**错峰 200ms** 才恢复正常，4 页 = 200 条唯一），并发越高反而越少采。
+- 默认行为与老版本**在数据上不再一致**：没有 `dts_settings` 时顶层同样是单路（等价于旧 `MAX_LANES = 1`），
+  `REPLY_LANES = 4` / `REPLY_GAP_MS = 600` / `REPLY_THROTTLE_MAX_WAIT_MS = 10s` 不变
+  （扩展单独使用时也固定单路）。代价是慢：同一视频 4 路 **20.1s** → 单路 **70.4s**，
+  换来 **768 → 945 条**（一级 586 → 753、二级 182 → 192）。
+- 单一事实来源仍是 `content.js`；`MAX_LANES` 常量保留但**已不再被使用**（`LANES_HARD_MAX` 只用于
+  `clampSettings()` 钳位以兼容老调用方），`RS` 只是兜底。
+- 服务端列表本身也有上限：`cursor=850` 时只回 8 条且 `has_more=0`，`cursor≥900` 回字面量 `null`
+  （上述视频列表接口最多约 **850 条**，服务端 `total=1709` 里的差额是二级回复 + 已删除/被过滤评论）。
 - 实战提示（2026-10-05 macOS 报告的成因之一）：刚轰完列表接口时回复接口容易被整段拒
   （见本节前面的实测），这时把 `replyThrottleMaxWaitMs` 放宽到 60~300 秒比反复重跑更省事；
   仍然被拒就降 `replyLanes` 到 1~2、加大 `replyGapMs`。
@@ -916,7 +924,7 @@ Hub 对 **MCP 客户端** 的内部接口（同进程 in-memory / 可选 localho
 | `ai_export` | `videoId?`, `all?`, `format=csv\|json` | 文件名/路径；`all:true`（需扩展 ≥ 0.2.11）不传 `videoId` 也能导出本地全部视频合成一份（CSV 末列 `video_id`、回包带 `videoCount`）；两者都不传时 MCP 自己就拒（`videoId 必填`，不发桥命令），旧扩展回 `MISSING_VIDEO_ID` 时补一句「扩展可能太旧（< 0.2.11）」。回包已把 Hub 的 `result` **拍平**（`scope / videoCount / count / topLevelCount / replyCount / format / filename / bytes / path`） |
 | `ai_clear_storage` | `videoId?` | 清空（可选） |
 
-**设置参数**（`ai_start_collect` / `ai_set_settings` 通用）: `max`（AI 别名，等价面板齿轮的「目标条数 max」）、`maxCount`、`lanes`、`replyLanes`、`replyGapMs`、`replyWarmupMs`、`replyThrottleMaxWaitMs`。`max` 与 `maxCount` 同时给时以 `max` 为准。
+**设置参数**（`ai_start_collect` / `ai_set_settings` 通用）: `max`（AI 别名，等价面板齿轮的「目标条数 max」）、`maxCount`、`lanes`、`replyLanes`、`replyGapMs`、`replyWarmupMs`、`replyThrottleMaxWaitMs`。`max` 与 `maxCount` 同时给时以 `max` 为准。其中 `lanes` **自 v0.2.12 起已停用**（顶层列表固定单路，多路并发会被服务端合并成同一响应）：传了不报错、也会写进 `dts_settings`，但采集不再用它，只在 `dts_settings_effective.lanesWanted` / `lanesNote` 里回显。
 
 ### 7.9 设置（AI 可调）与优先级
 
@@ -924,7 +932,7 @@ Hub 对 **MCP 客户端** 的内部接口（同进程 in-memory / 可选 localho
 **内置常量 < `dts_settings`（external，AI 经桥下发） < `dts_user_settings`（panel，面板齿轮里保存的值）**。
 
 - `get_settings` / `ai_get_settings` 返回 `{ external, user, effective, precedence, limits }`；`effective` = 上次采集实际生效的 `dts_settings_effective`（含 `from: 'panel'|'plugin'`）。
-- `set_settings` / `ai_set_settings` 只写一层；写值都过 `clampSettings()` 钳位（`lanes 1..8`、`maxCount 0..1000000`、`replyLanes 1..8`、`replyGapMs 0..60000`、`replyWarmupMs 0..600000`、`replyThrottleMaxWaitMs 10000..600000`），未知键与非法值在回包 `unknown` 里列出。
+- `set_settings` / `ai_set_settings` 只写一层；写值都过 `clampSettings()` 钳位（`lanes 1..8`（v0.2.12 起已停用，钳位只为兼容老调用方）、`maxCount 0..1000000`、`replyLanes 1..8`、`replyGapMs 0..60000`、`replyWarmupMs 0..600000`、`replyThrottleMaxWaitMs 10000..600000`），未知键与非法值在回包 `unknown` 里列出。
 - 想「一键恢复默认」用 `clear: 'all'`（同时删两层的键）；面板里按「恢复默认」只删 `dts_user_settings`。
 
 

@@ -1,12 +1,12 @@
 # 安装 · 使用 · 打包
 
-> 抖音评论采集器 **v0.2.11** — 无 npm 依赖、无构建步骤。  
+> 抖音评论采集器 **v0.2.12** — 无 npm 依赖、无构建步骤。  
 > **适用浏览器：Chrome 111+ / Edge（Chromium）**；**不支持** Firefox / Safari（详见 README「适用范围」）。  
 > v0.2.x：AI Bridge（本地 MCP，见 `../douyin-mcp/README.md`）；采集核心仍为「复用页面签名、只改 cursor」。  
 > 历史要点：v0.1.5 起采二级回复；v0.1.11 起面板绝对坐标拖动 + 开始采集时自动打开评论区；  
 > v0.1.12 起按 DOM 判页面形态（关注/朋友/我的可用）；v0.1.13 起换视频/清空后自动重取签名、  
 > `hook.js` 由 manifest 在主世界 `document_start` 注入；v0.1.15 起面板固定紧凑档（宽约 236px）；  
-> v0.2.2 起并发路数可由 `chrome.storage.local.dts_settings = {lanes}` 设置（1~8，默认 4，见 PROTOCOL §3.9）；  
+> v0.2.2 起并发路数可由 `chrome.storage.local.dts_settings = {lanes}` 设置（1~8，默认 4，见 PROTOCOL §3.9；**v0.2.12 起该设置已停用，顶层列表固定单路**）；  
 > v0.2.3 起二级回复的四档限速也能从 `dts_settings` 覆盖（`replyLanes` / `replyGapMs` / `replyWarmupMs` / `replyThrottleMaxWaitMs`，默认值不变，见 PROTOCOL §3.9）；  
 > v0.2.4 起面板自带「设置」按钮（改 目标条数/并发路数/回复并发/回复间隔/限流等待），存 `dts_user_settings`，**优先级：面板 > `dts_settings` > 内置默认**；  
 > v0.2.5 起入口改为**标题栏齿轮 ⚙**（在「—」左边，不占按钮行），浮层第一项标签就是 `max` 目标条数，当前生效值显示在浮层顶部；  
@@ -19,6 +19,11 @@
 > **两步确认**——第一次点只把按钮「上膛」成 `确认全部清空？`、数据一条不动，5 秒内再点一次才真清掉
 > 所有视频的评论与去重表（`dts_user_settings` 保留），超时自动复原；全清不受 video ID 护栏限制。
 > 装上新扩展后 **F5 刷新抖音页**（在扩展页点过「重新加载」的旧 content script 会作废）即可看到两个按钮。  
+> v0.2.12 起**顶层列表扫描固定单路**（`lanes` 并发路数设置**已停用**——仍可读写、仍会下发给扩展，仅保留兼容）：
+> 真机实测（2026-10-06）同一个签名在同一时刻发多路分页请求会被服务端**合并成同一响应**，4 路 5 轮只拿到 492 条
+> 一级评论**且 0 个失败请求**；单路串行 18 步拿到 **714~744 条**，每路错峰 200ms 则恢复正常。
+> 同一视频实测：修复前（0.2.11 / 4 路）**768 条**、20.1s → 修复后（0.2.12 / 单路）**945 条**、70.4s
+> （一级 586→753、二级 182→192）；离线自测 **141/141 全绿**。  
 > v0.2.11 起**导出只有一份实现、AI/MCP 也能「全部视频」导出**：面板「导出 CSV/JSON」按钮与
 > Hub(AI/MCP) 的 `export` 命令现在共用 `background.js` 的 `exportComments(opts)`，行为完全一致；
 > `export` 新增 `all:true`——不传 `videoId` 也能把本地所有视频合成一份导出（每条评论标 `videoId`，
@@ -65,9 +70,9 @@ content script 把裁剪后的字段交给 background，写入 `chrome.storage.l
 | `dts_videos` | `{ [videoId]: { title, total, count, hasMore, phase, signedUrlAt, … } }` |
 | `dts_c_<videoId>` | `{ [cid]: 评论对象 }` —— 按 cid 去重 |
 | `dts_ai_bridge` | 可选：MCP Hub 地址（`host/port/enabled`） |
-| `dts_settings` | v0.2.2 起：外部写进来的运行时设置（`{lanes, replyLanes, replyGapMs, replyWarmupMs, replyThrottleMaxWaitMs}`，都可选）；缺字段就用内置默认（`lanes=4`、`replyLanes=4`、`replyGapMs=600`、`replyWarmupMs=1500`、`replyThrottleMaxWaitMs=10000`）。v0.2.6 起 AI 经 MCP 的 `ai_set_settings` / `ai_start_collect` 写的就是它 |
+| `dts_settings` | v0.2.2 起：外部写进来的运行时设置（`{lanes, replyLanes, replyGapMs, replyWarmupMs, replyThrottleMaxWaitMs}`，都可选）；缺字段就用内置默认（`lanes=4`、`replyLanes=4`、`replyGapMs=600`、`replyWarmupMs=1500`、`replyThrottleMaxWaitMs=10000`）。**v0.2.12 起 `lanes` 已停用**：顶层列表固定单路，`lanes` 仍可读写、仅保留兼容，不影响采集。v0.2.6 起 AI 经 MCP 的 `ai_set_settings` / `ai_start_collect` 写的就是它 |
 | `dts_user_settings` | v0.2.4 起：**面板「设置」按钮**写进去的用户设置（`{maxCount, lanes, replyLanes, replyGapMs, replyThrottleMaxWaitMs}`）；优先级高于 `dts_settings`，删掉它就回到插件/内置值（`maxCount=0` 表示不限条数） |
-| `dts_settings_effective` | v0.2.3：本轮**实际**用的值 `{lanes, maxCount, replyLanes, replyGapMs, replyThrottleMaxWaitMs, from: 'panel'\|'plugin', at}`，回写给调用方核对 |
+| `dts_settings_effective` | v0.2.3：本轮**实际**用的值 `{lanes, lanesWanted, lanesNote, maxCount, replyLanes, replyGapMs, replyThrottleMaxWaitMs, from: 'panel'\|'plugin', at}`，回写给调用方核对；**v0.2.12 起 `lanes` 恒为 1（顶层固定单路）、`lanesWanted` 是请求值、`lanesNote` 是停用说明** |
 
 单视频上限 `MAX_COMMENTS_PER_VIDEO = 80000`（`background.js`），超出时按 `create_time` 淘汰最早数据。  
 落库条数同步到扩展图标角标。

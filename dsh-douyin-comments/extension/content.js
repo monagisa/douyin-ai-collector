@@ -96,7 +96,10 @@
   //   各 cursor 独立返回，next == cursor+count 全部成立 → 可安全并发
   //   每路平均：1 路 698ms → 4 路 92ms（7.63x）
   //   全量 206 页：串行 2.9 分钟 → 4 路 0.4 分钟
-  const MAX_LANES = 4;                  // 内置默认：实测甜点；6 路更慢且有风控风险
+  // ⚠️ 0.2.12 起顶层列表扫描**固定单路**（主循环里有实测说明）：同一签名下同时发多个
+  // cursor 会被服务端合并成同一页，4 路并发反而少采 ~30%。MAX_LANES 只作为
+  // 「并发路数」这个历史设置项的默认值保留（该设置已停用，读写都还在，只是不再影响采集）。
+  const MAX_LANES = 4;                  // 历史默认值（已停用）
   // DSH 插件（dsh-douyin-comments）可以在自己的「设置 → 插件」里调并发路数：它把
   // { lanes } 写进 chrome.storage.local.dts_settings，扩展每次开始采集时读一次。
   // LANES_HARD_MAX 是兜底硬上限（6 路起服务端开始排队，再多只是白挨风控）；
@@ -1668,7 +1671,7 @@
             if (s && s[key] !== undefined && s[key] !== null) return clamp(s[key], lo, hi, dflt);
             return dflt;
           };
-          out.lanes = pick('lanes', 1, LANES_HARD_MAX, MAX_LANES);
+          out.lanes = pick('lanes', 1, LANES_HARD_MAX, 1);   // 已停用（顶层固定单路），默认给 1
           out.maxCount = pick('maxCount', 0, MAX_COUNT_HARD_MAX, 0);
           out.replyLanes = pick('replyLanes', 1, LANES_HARD_MAX, REPLY_LANES);
           out.replyGapMs = pick('replyGapMs', 0, 60000, REPLY_GAP_MS);
@@ -1702,11 +1705,17 @@
     // 设置每次「开始采集」都重读一次：DSH 插件改完立即生效，不用重开浏览器。
     RS = await loadRuntimeSettings();
     var lanesWanted = RS.lanes;
+    // 顶层列表固定单路（见主循环那段实测说明）。DSH 插件/MCP/面板里的「并发路数」保留兼容：
+    // 仍可读写、仍会落进 dts_settings_effective，但不再影响采集 —— 如实标出来，别让排查的人以为它生效了。
     // 把「实际用了几路」落进 storage，供 DSH 插件/排查时核对（读不回来也不影响采集）
     try {
       chrome.storage.local.set({
         dts_settings_effective: {
-          lanes: lanesWanted,
+          lanes: 1,
+          lanesWanted: lanesWanted,
+          lanesNote: lanesWanted > 1
+            ? '顶层列表已固定单路：实测同签名并发会被服务端合并成同一页，4 路少采约 30%（v0.2.12）'
+            : '',
           maxCount: RS.maxCount,
           replyLanes: RS.replyLanes,
           replyGapMs: RS.replyGapMs,
@@ -1771,12 +1780,20 @@
           break;
         }
 
-        // ---- 一轮：并发 N 路（内置 4，可由 DSH 插件调），每路一个 cursor ----
-        var lanes = Math.min(lanesWanted, MAX_PAGES - pages);
-        if (lanes < 1) lanes = 1;
-        var cursors = [];
+        // ---- 一轮：顶层列表**单路**推进（每次用服务端给的 next） ----
+        //
+        // 0.2.11 及以前这里是并发 N 路：cursor, cursor+COUNT, cursor+2*COUNT … 同时发。
+        // 2026-10-06 真机实测（_scan_probe2.mjs / _scan_probe3.mjs，视频 7692405235813272867，
+        // 登录态正常，服务端列表在 offset 850 触底、total=1704）：
+        //   · 单路串行 18 步 → 714 条唯一一级评论（多轮累加 744）；
+        //   · 4 路并发 5 轮 → 只有 492 条，且**一个失败请求都没有**；
+        //   · 并发那一轮里 c50/c100/c150 三个请求拿到的是**同一页**（两两重合 50/50，
+        //     而且这一页不在任何串行页里）→ 服务端把同签名的并发请求合并了；
+        //   · 同样 4 路、每路之间错峰 200ms → 恢复正常（4 页 = 200 条唯一）。
+        // 结论：并发既少采 ~30%，又不比单路快（列表上限只有 ~18 页），所以固定单路。
+        var lanes = 1;
+        var cursors = [cursor];
         var i;
-        for (i = 0; i < lanes; i++) cursors.push(cursor + i * COUNT);
         var reqs = await Promise.all(cursors.map(function (cur) {
           return requestReplay(cur, COUNT);
         }));
@@ -2527,7 +2544,9 @@
   // 存的 dts_user_settings 优先级高于 DSH 插件下发的 dts_settings（见 loadRuntimeSettings）。
   var SETTING_FIELDS = [
     { key: 'maxCount', label: '目标条数 max', min: 0, max: MAX_COUNT_HARD_MAX, step: 50, title: '采到这么多条一级评论就自动收工（等同 DSH 插件的 max）；0 = 不限（二级回复会补完再停）' },
-    { key: 'lanes', label: '并发路数', min: 1, max: LANES_HARD_MAX, step: 1, title: '顶层列表同时发几路请求：1~8，内置默认 4（实测甜点）' },
+    // 0.2.12 起顶层列表固定单路：这项设置保留兼容（仍可读写），但不再影响采集。
+    // 别删 —— 老配置、DSH 插件、MCP 都还在传这个键；删了反而要处理「未知键」。
+    { key: 'lanes', label: '并发路数（已停用）', min: 1, max: LANES_HARD_MAX, step: 1, title: '顶层列表已固定单路：实测同签名并发会被服务端合并成同一页，4 路并发反而少采约 30%。此设置保留兼容，不再影响采集。' },
     { key: 'replyLanes', label: '回复并发', min: 1, max: LANES_HARD_MAX, step: 1, title: '二级回复同时拉几条线程：1~8，内置默认 4' },
     { key: 'replyGapMs', label: '回复间隔 ms', min: 0, max: 60000, step: 100, title: '同一线程两次回复请求之间的间隔，内置默认 600ms' },
     { key: 'replyThrottleSec', label: '限流等待 s', min: 10, max: 600, step: 10, title: '撞上服务端限流时，最多等这么久再重试（内置 10 秒，只能放宽不能更短）' },
@@ -2565,7 +2584,9 @@
   }
 
   function settingsSummaryText() {
-    return '并发 ' + RS.lanes + ' 路 · 目标 ' + (RS.maxCount > 0 ? RS.maxCount + ' 条' : '不限') +
+    // 顶层固定单路后「并发路数」不再生效 —— 摘要里如实写，别显示一个骗人的路数
+    return '顶层单路' + (RS.lanes > 1 ? '（并发路数 ' + RS.lanes + ' 已停用）' : '') +
+      ' · 目标 ' + (RS.maxCount > 0 ? RS.maxCount + ' 条' : '不限') +
       (hasUserSettings ? '（面板）' : '');
   }
 
