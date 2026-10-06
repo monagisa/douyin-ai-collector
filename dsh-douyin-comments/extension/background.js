@@ -216,6 +216,79 @@ async function download(text, filename, mime) {
   return { ok: false, error: '下载中断：' + (final.error || final.state) };
 }
 
+// 导出实现（面板 dts-export 与 Hub(AI/MCP) 命令 export 共用一份，v0.2.11 起）：
+//   scope=video（默认）：只导 opts.videoId 这一个桶；
+//   scope=all（opts.all === true）：把本地所有视频的评论合成一份，每条评论标上 videoId，
+//     CSV 末尾追加 video_id 列（前 17 列契约不变），JSON 里给 per-video 摘要。
+// 失败口径统一：既没 videoId 又没 all → MISSING_VIDEO_ID；本地确实没数据 → EMPTY_POOL
+// （不再下载一个只有表头的空文件，否则「导出成功」会掩盖「本来就是空的」）。
+const EXPORT_NOTE = '由「抖音评论采集器」采集：数据来自抖音页面自身的接口响应。未破解或伪造签名、未绕过登录；开始采集前若还没有可用签名，扩展会用一次合成点击替你打开评论区（让页面自己发出请求），不滚动页面、不改动评论内容。二级回复通过复用页面自己已发出的签名 URL 拉取（仅改写 path 与 item_id/comment_id/cut_version/cursor/count）。';
+
+async function exportComments(opts) {
+  const o = opts || {};
+  const wantAll = o.all === true;
+  const videoId = o.videoId ? String(o.videoId) : '';
+  const format = o.format === 'json' ? 'json' : 'csv';
+  if (!wantAll && !videoId) {
+    return { ok: false, error: 'MISSING_VIDEO_ID', hint: 'export 需要 videoId 参数；要导出本地全部视频请传 all:true' };
+  }
+  const allVideos = await getVideos();
+  const perVideo = [];
+  let comments = [];
+  if (wantAll) {
+    const ids = Object.keys(allVideos);
+    if (videoId && ids.indexOf(videoId) < 0) ids.push(videoId);   // 桶在、但 dts_videos 没记录
+    for (const v of ids) {
+      const list = Object.values(await getComments(v));
+      if (!list.length) continue;
+      perVideo.push({ videoId: v, title: (allVideos[v] && allVideos[v].title) || '', count: list.length });
+      for (const c of list) comments.push(Object.assign({}, c, { videoId: v }));
+    }
+    if (!comments.length) {
+      return { ok: false, error: 'EMPTY_POOL', scope: 'all', hint: '本地还没有任何评论数据：先采集，或用 list_videos / get_comments 确认' };
+    }
+  } else {
+    comments = Object.values(await getComments(videoId));
+    if (!comments.length) {
+      return { ok: false, error: 'EMPTY_POOL', videoId, hint: '该 videoId 本地没有评论数据' };
+    }
+  }
+  // 按时间升序，便于阅读
+  comments.sort((a, b) => (a.create_time || 0) - (b.create_time || 0));
+  const meta = allVideos[videoId] || {};
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const replyCount = comments.filter((c) => c && c.is_reply).length;
+  let dl;
+  if (format === 'json') {
+    const payload = Object.assign({
+      exportedAt: new Date().toISOString(),
+      scope: wantAll ? 'all' : 'video',
+      ...(wantAll ? { videos: perVideo } : { videoId, title: meta.title, totalReported: meta.total })
+    }, {
+      count: comments.length,
+      topLevelCount: comments.length - replyCount,
+      videoCount: wantAll ? perVideo.length : 1,
+      replyCount,   // v0.1.5：二级回复条数（带 parent_cid 的那些）
+      note: EXPORT_NOTE,
+      comments
+    });
+    dl = await download(JSON.stringify(payload, null, 2),
+      `douyin-comments-${wantAll ? 'all' : videoId}-${stamp}.json`, 'application/json');
+  } else {
+    dl = await download(toCsv(comments, { withVideoId: wantAll }),
+      `douyin-comments-${wantAll ? 'all' : videoId}-${stamp}.csv`, 'text/csv;charset=utf-8');
+  }
+  return Object.assign({
+    scope: wantAll ? 'all' : 'video',
+    videoId: wantAll ? null : videoId,
+    videoCount: wantAll ? perVideo.length : 1,
+    count: comments.length,
+    topLevelCount: comments.length - replyCount,
+    replyCount,
+    format
+  }, dl);
+}
+
 // ---------- 消息路由 ----------
 
 if (chrome && chrome.runtime && chrome.runtime.onMessage && chrome.runtime.onMessage.addListener) {
@@ -275,58 +348,8 @@ if (chrome && chrome.runtime && chrome.runtime.onMessage && chrome.runtime.onMes
         }
 
         case 'dts-export': {
-          // scope：默认只导当前视频（videoId）；msg.all === true 时把所有视频的评论合成一份导出。
-          // 每条评论带上 videoId，CSV 末尾追加 video_id 列，JSON 里给 per-video 摘要。
-          const wantAll = msg.all === true;
-          const videoId = msg.videoId;
-          const allVideos = await getVideos();
-          const perVideo = [];
-          let comments = [];
-          if (wantAll) {
-            const ids = Object.keys(allVideos);
-            if (videoId && ids.indexOf(videoId) < 0) ids.push(videoId);   // 桶在、但 dts_videos 没记录
-            for (const v of ids) {
-              const list = Object.values(await getComments(v));
-              if (!list.length) continue;
-              perVideo.push({ videoId: v, title: (allVideos[v] && allVideos[v].title) || '', count: list.length });
-              for (const c of list) comments.push(Object.assign({}, c, { videoId: v }));
-            }
-          } else {
-            comments = Object.values(await getComments(videoId));
-          }
-          // 按时间升序，便于阅读
-          comments.sort((a, b) => (a.create_time || 0) - (b.create_time || 0));
-          const videos = await getVideos();
-          const meta = videos[videoId] || {};
-          const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-          if (msg.format === 'json') {
-            const replyCount = comments.filter((c) => c && c.is_reply).length;
-            const payload = {
-              exportedAt: new Date().toISOString(),
-              scope: wantAll ? 'all' : 'video',
-              ...(wantAll ? { videos: perVideo } : { videoId, title: meta.title, totalReported: meta.total }),
-              count: comments.length,
-              topLevelCount: comments.length - replyCount,
-              videoCount: wantAll ? perVideo.length : 1,
-              replyCount,   // v0.1.5：二级回复条数（带 parent_cid 的那些）
-              note: '由「抖音评论采集器」采集：数据来自抖音页面自身的接口响应。未破解或伪造签名、未绕过登录；开始采集前若还没有可用签名，扩展会用一次合成点击替你打开评论区（让页面自己发出请求），不滚动页面、不改动评论内容。二级回复通过复用页面自己已发出的签名 URL 拉取（仅改写 path 与 item_id/comment_id/cut_version/cursor/count）。',
-              comments
-            };
-            const resJson = await download(JSON.stringify(payload, null, 2),
-              `douyin-comments-${wantAll ? 'all' : videoId}-${stamp}.json`, 'application/json');
-            sendResponse(Object.assign({}, resJson, {
-              count: comments.length, topLevelCount: payload.topLevelCount,
-              replyCount: payload.replyCount, videoCount: payload.videoCount
-            }));
-          } else {
-            const resCsv = await download(toCsv(comments, { withVideoId: wantAll }),
-              `douyin-comments-${wantAll ? 'all' : videoId}-${stamp}.csv`, 'text/csv;charset=utf-8');
-            const replyCountCsv = comments.filter((c) => c && c.is_reply).length;
-            sendResponse(Object.assign({}, resCsv, {
-              count: comments.length, topLevelCount: comments.length - replyCountCsv,
-              replyCount: replyCountCsv, videoCount: wantAll ? perVideo.length : 1
-            }));
-          }
+          // 面板「导出」与 AI 桥 dts-ai-export 都走这里；范围/成败口径见 exportComments（与 Hub export 同一份）。
+          sendResponse(await exportComments({ all: msg.all === true, videoId: msg.videoId, format: msg.format }));
           break;
         }
 
@@ -683,39 +706,14 @@ async function executeAiCommand(cmd) {
     }
 
     case 'export': {
-      const videoId = args.videoId;
-      const format = args.format === 'json' ? 'json' : 'csv';
-      if (!videoId) return { ok: false, error: 'MISSING_VIDEO_ID', hint: 'export 需要 videoId 参数' };
-      const map = await getComments(videoId);
-      if (!Object.keys(map).length) {
-        return { ok: false, error: 'EMPTY_POOL', videoId, hint: '该 videoId 本地没有评论数据' };
-      }
-      // 优先走 background（与面板同路径）；若 SW 长轮询路径已有 download 契约
-      const comments = Object.values(map);
-      comments.sort((a, b) => (a.create_time || 0) - (b.create_time || 0));
-      const videos = await getVideos();
-      const meta = videos[videoId] || {};
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-      if (format === 'json') {
-        const replyCount = comments.filter((c) => c && c.is_reply).length;
-        const payload = {
-          exportedAt: new Date().toISOString(),
-          videoId,
-          title: meta.title,
-          totalReported: meta.total,
-          count: comments.length,
-          topLevelCount: comments.length - replyCount,
-          replyCount,
-          note: '由「抖音评论采集器」采集：数据来自抖音页面自身的接口响应。未破解或伪造签名、未绕过登录；开始采集前若还没有可用签名，扩展会用一次合成点击替你打开评论区（让页面自己发出请求），不滚动页面、不改动评论内容。二级回复通过复用页面自己已发出的签名 URL 拉取（仅改写 path 与 item_id/comment_id/cut_version/cursor/count）。',
-          comments
-        };
-        const dl = await download(JSON.stringify(payload, null, 2),
-          `douyin-comments-${videoId}-${stamp}.json`, 'application/json');
-        return Object.assign({ videoId, format }, dl);
-      }
-      const dl = await download(toCsv(comments),
-        `douyin-comments-${videoId}-${stamp}.csv`, 'text/csv;charset=utf-8');
-      return Object.assign({ videoId, format }, dl);
+      // v0.2.11：与面板「导出」同一份实现（exportComments）。
+      // args.all === true 时不传 videoId 也能导：把本地所有视频的评论合成一份，
+      // CSV 末尾追加 video_id 列。成功按 Hub 约定把主体放进 result（scope / videoCount /
+      // count / replyCount / filename / bytes / path），失败保持顶层 error+hint
+      // （MISSING_VIDEO_ID / EMPTY_POOL），MCP 才能原样透给模型。
+      const r = await exportComments({ all: args.all === true, videoId: args.videoId, format: args.format });
+      if (!r.ok) return r;
+      return { ok: true, result: r };
     }
 
     case 'clear_storage': {

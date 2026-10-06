@@ -571,8 +571,9 @@ if (fs.existsSync(path.join(devExtDir, 'manifest.json'))) {
   check('后台 dts-stats 报跨视频总量（totalAll / videoCount，用 dts_videos 的 count 元数据累加）',
     /totalAll \+= Number\(videos\[v\] && videos\[v\]\.count\) \|\| 0;/.test(bgSrc)
     && /sendResponse\(\{ ok: true, count, totalAll, videoCount: vkeys\.length, videos \}\)/.test(bgSrc));
-  check('后台 dts-export 支持全部视频（msg.all === true，合并各桶并标 videoId）',
-    /const wantAll = msg\.all === true;/.test(bgSrc)
+  check('后台 dts-export 支持全部视频（面板与 Hub 共用 exportComments，合并各桶并标 videoId）',
+    /async function exportComments\(opts\) \{/.test(bgSrc)
+    && /const wantAll = o\.all === true;/.test(bgSrc)
     && /Object\.assign\(\{\}, c, \{ videoId: v \}\)/.test(bgSrc)
     && /scope: wantAll \? 'all' : 'video',/.test(bgSrc));
   check('「全部视频」导出只在 CSV 末尾追加 video_id 列（前 17 列契约不变）',
@@ -582,6 +583,16 @@ if (fs.existsSync(path.join(devExtDir, 'manifest.json'))) {
   check('「全部视频」导出文件名带上 all（不是某个 videoId，避免与单视频文件混淆）',
     /douyin-comments-\$\{wantAll \? 'all' : videoId\}-\$\{stamp\}\.json/.test(bgSrc)
     && /douyin-comments-\$\{wantAll \? 'all' : videoId\}-\$\{stamp\}\.csv/.test(bgSrc));
+  // v0.2.11：Hub(AI/MCP) 的 export 命令与面板导出合并成 exportComments 一份实现。
+  // 成功必须按 Hub 约定把主体放进 result（否则 aiPollOnce 的旧拍平分支会把
+  // scope / videoCount / count 全丢掉，MCP 只能看到 filename/bytes/path）；失败保持顶层 error+hint。
+  check('Hub(AI/MCP) 的 export 命令也支持 all（成功放 result、失败保持顶层 error+hint）',
+    /case 'export': \{[\s\S]{0,700}?const r = await exportComments\(\{ all: args\.all === true, videoId: args\.videoId, format: args\.format \}\);/.test(bgSrc)
+    && /if \(!r\.ok\) return r;\s*\n\s*return \{ ok: true, result: r \};/.test(bgSrc));
+  check('导出失败口径统一（MISSING_VIDEO_ID 提示可传 all / EMPTY_POOL，不再下载只有表头的空 CSV）',
+    /error: 'MISSING_VIDEO_ID', hint: 'export 需要 videoId 参数；要导出本地全部视频请传 all:true'/.test(bgSrc)
+    && /return \{ ok: false, error: 'EMPTY_POOL', scope: 'all'/.test(bgSrc)
+    && /return \{ ok: false, error: 'EMPTY_POOL', videoId/.test(bgSrc));
   check('面板有「本地已存」一行 + 导出范围两个按钮（都带 data-dts-act 挂点）',
     /refs\.local = row\(body, '本地已存'\);/.test(ctSrc)
     && /mkBtn\('本条视频', 'dts-btn-scope dts-on', function \(\) \{ setExportScope\(false\); \}, 'export-scope-video'\)/.test(ctSrc)

@@ -8,7 +8,18 @@
 | 不改 | 扩展的签名语义、限速、落库逻辑 |
 | 传输 | AI ↔ 本进程：**stdio**（JSON-RPC）；扩展 ↔ Hub：**HTTP 127.0.0.1** |
 | 依赖 | Node ≥ 18，**无 npm 包** |
-| 版本 | `0.3.1`（修 IPv6 `host`、NDJSON 丢帧、无 `id` 回包、写死的 node 路径；`ai_get_settings` / `ai_set_settings` 与可带设置的 `ai_start_collect` 沿用 0.3.0） |
+| 版本 | `0.3.2`（`ai_export` 支持导出本地全部视频 + 补上二级回复并发/限流的实测口径） |
+
+**0.3.2 新增**：
+
+1. `ai_export` 支持 `all: true`：不传 `videoId` 也能导出**本地全部视频**，合成一份（`scope: "all"`，
+   CSV 末尾追加 `video_id` 列，回包带 `videoCount`）。需要扩展 **≥ 0.2.11**；旧扩展会回
+   `MISSING_VIDEO_ID`，本版会给这个回包补一句「扩展太旧（< 0.2.11）」的 `hint`，不让人误以为是参数写错。
+2. 单视频导出行为不变（`scope: "video"`）；本地没有数据时统一回 `EMPTY_POOL`，
+   **不再生成只有表头的空文件**（扩展 0.2.11 起面板「导出」也是这个口径）。
+3. 工具说明写进 2026-10-06 的实测口径：二级回复每路约 4 次/秒（≈1/RTT），总速率 ≈ `replyLanes × 4` 次/秒；
+   4 路≈16 次/秒会撞限流（回复接口回 0 字节 → `EMPTY_BODY`，惩罚态可持续数分钟），**建议 `replyLanes` 取 1~2**；
+   `replyGapMs` 只对「同一条评论翻页」生效，不能当限速用。
 
 **0.3.1 修复**：
 
@@ -132,7 +143,7 @@ chrome.storage.local.set({ dts_ai_bridge: { host: '127.0.0.1', port: 18765, enab
 | `ai_get_settings` | 读设置快照：`external`（AI 下发）/ `user`（面板齿轮）/ `effective`（上次实际生效）/ `precedence` / `limits` |
 | `ai_set_settings` | 写/清设置：`scope=external`（默认，`dts_settings`）或 `panel`（`dts_user_settings`）；`clear=external\|user\|all` 恢复默认 |
 | `ai_get_comments` | `mode=summary`（默认）或 `mode=page` |
-| `ai_export` | 导出 CSV/JSON，返回 filename / path / bytes |
+| `ai_export` | 导出 CSV/JSON：默认导一个 `videoId`；`all: true` 导出本地全部视频合集（CSV 带 `video_id` 列）。返回 filename / path / bytes / count / videoCount |
 | `ai_clear_storage` | 清空（`videoId` 可选；不传清全部，危险） |
 
 ### 采集设置（AI 可调）
@@ -143,9 +154,9 @@ chrome.storage.local.set({ dts_ai_bridge: { host: '127.0.0.1', port: 18765, enab
 |---|---|---|---|
 | `max` | 目标条数上限（**AI 别名**） | 0–1000000 | 目标条数 max |
 | `maxCount` | 同上（原生字段名；与 `max` 同时给时 `max` 优先） | 0–1000000 | 目标条数 max |
-| `lanes` | 并发路数 | 1–8 | 并发路数 |
-| `replyLanes` | 二级回复并发 | 1–8 | 回复并发 |
-| `replyGapMs` | 回复请求间隔 | 0–60000 | 回复间隔 ms |
+| `lanes` | 并发路数（只管顶层列表扫描，**对回复无效**） | 1–8 | 并发路数 |
+| `replyLanes` | 二级回复并发（每路≈4 次/秒；**建议 1~2**） | 1–8 | 回复并发 |
+| `replyGapMs` | 回复同线程翻页间隔（不是全局限速） | 0–60000 | 回复间隔 ms |
 | `replyWarmupMs` | 回复阶段暖场等待 | 0–600000 | — |
 | `replyThrottleMaxWaitMs` | 限流退避最长等待 | 10000–600000 | 限流等待 s |
 
@@ -178,6 +189,23 @@ chrome.storage.local.set({ dts_ai_bridge: { host: '127.0.0.1', port: 18765, enab
 
 写进去的值都会**钳位**到上表范围；未知键和非法值在回包 `unknown` 里列出来，不会报错中断。`ai_set_settings` 既没给设置也没给 `clear` 时返回 `NO_SETTINGS`，**不会**发桥命令。
 
+### 并发与限流（2026-10-06 实测）
+
+受控实测（先暂停扩展，再在页面内自控并发打回复接口；20s 窗口，中位 RTT≈245ms）：
+
+| 二级回复并发 | 请求数（20s） | 总速率 | 每路速率 |
+|---|---|---|---|
+| 2 | 157 | 7.8 次/秒 | 3.9 次/秒 |
+| 4 | 325 | 16.1 次/秒 | 4.0 次/秒 |
+| 4（复跑） | 322 | 15.9 次/秒 | 4.0 次/秒 |
+
+- 总速率 ≈ `replyLanes × 4` 次/秒 —— **4 路是 2 路的两倍**（不是一致）；想降速只能降 `replyLanes`。
+- `lanes`（顶层并发）只作用于列表扫描：实测 `lanes=2 + replyLanes=4` 时回复请求仍是峰值 4 路、11 次/秒。
+- 被限流的形态是回复接口回 **0 字节**（扩展报 `EMPTY_BODY`），同一时刻列表接口仍正常。
+- 连跑两组 4 路（约 650 次请求）后端点进入惩罚态，**160 秒以上**不恢复；撞上后别立刻重跑，
+  已采数据不会丢，等几分钟再 `ai_start_collect` 会续采。
+- `replyGapMs`（默认 600）只在**同一条评论翻页**时 sleep；单页评论之间没有任何全局节流。
+
 ### 推荐调用顺序
 
 1. `ai_status` — Hub 是否连上、有无抖音 tab、现在是什么设置  
@@ -194,7 +222,7 @@ chrome.storage.local.set({ dts_ai_bridge: { host: '127.0.0.1', port: 18765, enab
 | `NO_DOUYIN_TAB` | 浏览器里没有打开的抖音页 |
 | content 未就绪 | 刷新该抖音标签页（扩展重载后必刷） |
 | 网格页 waiting-sign | 先点开一条作品变成浮层 |
-| `EMPTY_POOL` | 该 videoId 本地还没有数据 |
+| `EMPTY_POOL` | 本地没有可导出的数据（该 videoId 是空的；`all: true` 时表示本地一个视频都没采过） |
 | `NO_SETTINGS` | `ai_set_settings` 没给设置也没给 `clear` |
 | `HUB_TIMEOUT` | 端口不一致 / 扩展禁用 / SW 未轮询 |
 

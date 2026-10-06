@@ -51,11 +51,11 @@ douyin-ai-collector/          ← 仓库根（可自行命名）
    并发路数 `lanes`（默认 4）、超时、等扫码秒数、是否先清空、二级回复限速都可以改，三个入口：
    **扩展面板标题栏右上角的设置齿轮 `⚙`**（0.2.5 起，优先级最高，用不用 DSH 都能改）→
    DSH「设置 → 插件 → dsh-douyin-comments」的设置表（0.5.0 起，改完立即生效，不用重启）→
-   AI 经 MCP（`douyin-mcp` 0.3.1）的 `ai_get_settings` / `ai_set_settings`，`ai_start_collect`
+   AI 经 MCP（`douyin-mcp` 0.3.2）的 `ai_get_settings` / `ai_set_settings`，`ai_start_collect`
    可带 `max` / `lanes` / `replyLanes` / `replyGapMs` / `replyWarmupMs` / `replyThrottleMaxWaitMs`
    （优先级：面板齿轮 > AI 下发 > 内置默认）。
-   要把这套发给别人：用 [release/dsh-douyin-comments-v0.5.8.zip](./release/dsh-douyin-comments-v0.5.8.zip)
-   （单文件，解压后是 `dsh-douyin-comments-0.5.8.tgz` 插件包 + `douyin-collector-extension-v0.2.10.zip`
+   要把这套发给别人：用 [release/dsh-douyin-comments-v0.5.9.zip](./release/dsh-douyin-comments-v0.5.9.zip)
+   （单文件，解压后是 `dsh-douyin-comments-0.5.9.tgz` 插件包 + `douyin-collector-extension-v0.2.11.zip`
     单独扩展 + `使用说明.md` + `SHA256SUMS.txt`）。
 
 ---

@@ -2316,7 +2316,8 @@
           errText = '已取消保存，文件没有导出（评论数据仍在本地，可随时重新导出）';
         } else {
           noteText = '';
-          errText = '导出失败：' + ((resp && resp.error) || '未知错误');
+          errText = '导出失败：' + ((resp && resp.error) || '未知错误')
+            + (resp && resp.hint ? '（' + resp.hint + '）' : '');
         }
         render();
       });
