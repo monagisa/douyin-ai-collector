@@ -222,6 +222,16 @@
   margin-top: 5px;
 }
 
+/* 两个按钮的普通按钮行（开始/暂停、导出CSV/JSON）：等宽均分整行，左右对称 */
+#dts-collector-panel .dts-panel-body > .dts-row:not(.dts-actions) > .dts-btn {
+  flex: 1 1 0;
+}
+
+/* 清空/全部清空行同样等宽对称（只作用于主面板，不影响设置浮层里的三按钮行） */
+#dts-collector-panel .dts-panel-body > .dts-row.dts-actions > .dts-btn {
+  flex: 1 1 0;
+}
+
 /* 信息行与按钮行之间留一点呼吸 */
 #dts-collector-panel .dts-panel-body > .dts-row + .dts-row {
   margin-top: 0;
@@ -361,6 +371,33 @@
   opacity: 0.45;
   cursor: not-allowed;
   box-shadow: none;
+}
+
+/* v0.2.9 导出范围（本条视频 / 全部视频）：左侧灰字标签 + 两个小按钮，不占满整行 */
+#dts-collector-panel .dts-panel-body > .dts-row.dts-scope {
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
+#dts-collector-panel .dts-panel-body > .dts-row.dts-scope > .dts-btn {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+#dts-collector-panel .dts-scope-label {
+  flex: 1 1 auto;
+  font-size: 11px;
+  text-align: left;
+}
+
+/* 选中态（两个按钮互斥）：当前生效的导出范围 */
+#dts-collector-panel .dts-btn-scope.dts-on {
+  background: rgba(74, 125, 255, 0.22);
+  border-color: #4a7dff;
+  color: #dbe6ff;
+  font-weight: 600;
 }
 
 /* 收起按钮（—）通常只有一个字符，压窄一点 */

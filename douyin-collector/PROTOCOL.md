@@ -58,6 +58,8 @@ window.__DTS_COLLECTOR__ = {
                          //   `liveVideoId`（现场识别一次，**不写入** videoId）与
                          //   `hint`（= signHint()，当前页面形态该给用户的指引；测试可确定性地断言文案，
                          //    不必依赖是否真的进过 waiting-sign）
+                         //   v0.2.9 起镜像还含 `localStats`（`{videos,total,current}`，「本地已存」那一行的数据源）
+                         //   与 `exportAll`（导出范围是否选了「全部视频」，默认 false）
 }
 ```
 
@@ -373,7 +375,18 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
   `dts_panel_size`（老用户存过的 `'normal'` 被忽略，见判据 D17）。实现只写内联 `left/top` 做定位，
   尺寸完全归 CSS，两者解耦。
 - 显示：阶段、已采条数、服务端 total、当前 cursor、进度条（`count/total`，`total` 为 0 时用不确定态）、每页耗时、错误信息。
-- 按钮：`开始采集` / `暂停` / `导出 CSV` / `导出 JSON` / `清空` / `全部清空` / `—`（收起）。
+- 按钮：`开始采集` / `暂停` / `导出 CSV` / `导出 JSON` / `本条视频` / `全部视频` / `清空` / `全部清空` / `—`（收起）。
+  **v0.2.9 新增「导出范围」一行**（`.dts-row.dts-actions.dts-scope`，行首标签 `.dts-muted.dts-scope-label`
+  文案 `导出范围`）：两个**互斥**小按钮
+  · `本条视频`（默认选中，等于旧行为，只导当前这条视频；`data-dts-act="export-scope-video"`，
+    选中带 `.dts-on`）
+  · `全部视频`（把本地**所有**视频的评论合成一份导出；`data-dts-act="export-scope-all"`）
+  点任一按钮走 `setExportScope(all)`：只改 `exportAll` 并刷新选中态与提示文案，**不动任何数据**；
+  导出时由 `exportAs(format)` 把 `all: exportAll` 传给 `dts-export`（见 §3.10）。
+  选中态互斥在 `render()` 里同步（`exportAll` 为真则 `scopeAll` 加 `.dts-on`、`scopeVideo` 去掉，反之亦然）。
+  **状态镜像（v0.2.9 补充）**：`down('status', {...})` 新增 `localStats`（`{videos,total,current}`）与
+  `exportAll`；`localStats` 由 `refreshLocalStats()` 读 `dts-stats` 后填充（面板构建时一次 + 每 20 秒
+  一次 + 落库后 + 点「清空」后）。
   **v0.2.8 起「清空」拆成两个按键**（用户 m04948 的原始诉求：「一个按键是全部清空，一个按键是清空（清空本条视频链接的评论）」）：
   · `清空`（`data-dts-act="clear-video"`，无 danger 类）= 只清**本条视频链接**的评论：删 `dts_c_<videoId>` 并从
   `dts_videos` 摘掉这一条，别的视频数据与 `dts_user_settings` 都不动。仍未识别到 videoId 时**不发清空**，
@@ -540,6 +553,47 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
 - 实战提示（2026-10-05 macOS 报告的成因之一）：刚轰完列表接口时回复接口容易被整段拒
   （见本节前面的实测），这时把 `replyThrottleMaxWaitMs` 放宽到 60~300 秒比反复重跑更省事；
   仍然被拒就降 `replyLanes` 到 1~2、加大 `replyGapMs`。
+
+### 3.10 跨视频可见性与导出范围（v0.2.9 新增：`dts-stats` / `dts-export` 的 `all` 分支）
+
+**背景**：用户报「上一条视频采集完成，我又去下一条，点击开始采集，结果上一条采集完的数据没了」。
+**数据并没有丢** —— 评论一直按视频分桶存在 `chrome.storage.local` 的 `dts_c_<videoId>`
+（一个视频一个桶），除了 `dts-clear`（面板那两个清空按钮）**没有任何删除路径**；
+只是旧面板的计数（`savedCount` / `seen`）与导出都只认「当前这条视频」，滑到下一条后归零，
+看起来像被清了。本节只加「可见性」与「导出范围」，**不改任何落库/导出数据路径**。
+
+**`dts-stats`**（content.js → background，查本机存储规模）：
+
+| 字段 | 含义 |
+|---|---|
+| `count` | 当前（或请求里指定）视频的条数（原有） |
+| `totalAll` | **v0.2.9**：跨视频总条数，用 `dts_videos` 里维护的 `count` 元数据累加（**不遍历每个评论桶**） |
+| `videoCount` | **v0.2.9**：本地有几个视频（`dts_videos` 的键数） |
+| `videos` | `dts_videos` 元数据（原有） |
+
+- 请求 `{ type:'dts-stats', videoId? }` → 回包 `{ ok:true, count, totalAll, videoCount, videos }`。
+- content.js 侧：`refreshLocalStats()` 把回包写进 `localStats = {videos, total, current}`；
+  面板构建时读一次，之后每 20 秒刷新（`localStatsTimer`；`document.hidden` 或扩展上下文中断时跳过），
+  落库后与点「清空」后**立刻**再刷新一次。面板据此显示「本地已存」`N 个视频 / M 条（本条 X 条）`，
+  「已采（去重）」在本轮尚未落库但 `localStats.current > 0` 时补显 `（本地已有 N 条）`，
+  点「开始采集」时另写一行
+  `本机已存：N 个视频 / M 条（含其它视频）；本条视频本地已有 X 条`。
+
+**`dts-export`**（content.js → background 导出）：
+
+- 单视频（默认，旧行为）：`{ type:'dts-export', videoId, format }`，与 v0.2.8 及以前完全一致。
+- **v0.2.9 新增「全部视频」**：`{ type:'dts-export', videoId, format, all: true }`
+  （`content.js` 的 `exportAs(format)` 传 `all: exportAll`，由面板「导出范围」那两个按钮决定）：
+
+| | `all` 不传 / false（本条视频） | `all: true`（全部视频） |
+|---|---|---|
+| CSV 列 | 17 列（`cid … is_reply,parent_cid`） | **18 列：末尾追加 `video_id`**；**前 17 列的列序与含义完全不变**，老读者按位置读前 17 列仍然正确 |
+| JSON | `{exportedAt, videoId, title, count, topLevelCount, replyCount, comments[]}` | 顶层多 `scope: "all"` 与 `videos: [{ videoId, title, count }]`；每条评论也带 `videoId` |
+| 文件名 | `douyin-comments-<videoId>-<时间戳>.csv\|json` | `douyin-comments-all-<时间戳>.csv\|json` |
+
+- background 实现要点：`toCsv(comments, { withVideoId: wantAll })` 只在 `withVideoId` 为真时把
+  `video_id` 推进列头、并给每行追加一列；不带该选项时列数、列序完全不变。
+- 导出是**只读**操作：不删、不改任何存储键（面板「清空」按钮才走 `dts-clear`，见 §3.6）。
 
 ## 4. 测试要求（实现者 B）
 
@@ -805,7 +859,7 @@ Hub 对 **MCP 客户端** 的内部接口（同进程 in-memory / 可选 localho
 | `clear_page` | content.js | 等价面板「清空」（页面内存 + `dts-clear`）。**v0.2.8 起面板有两个清空按钮，它对应的是「清空」（只清本条视频）**，不是「全部清空」 |
 | `list_videos` | background | `dts_videos` 列表 |
 | `get_comments` | background | 按 videoId 读评论；支持 `mode=summary\|page` |
-| `export` | background / content | 复用 `dts-export`，返回 `filename/bytes/path` |
+| `export` | background / content | 复用 `dts-export`，返回 `filename/bytes/path`；v0.2.9 起可带 `all:true` 走「全部视频」（CSV 末尾多 `video_id` 列，见 §3.10） |
 | `clear_storage` | background | 复用 `dts-clear`：带 `videoId` = 只清那条视频（等价面板「清空」）；不带给 `all:true` = 清全部（等价面板「全部清空」，面板那层多一个连点两次的 UI 护栏，桥调用不需要） |
 
 页面类命令失败时必须回 **可操作 hint**（例如：没有抖音 tab、扩展未就绪请刷新页面、网格页请先点开视频）。
@@ -821,6 +875,7 @@ Hub 对 **MCP 客户端** 的内部接口（同进程 in-memory / 可选 localho
 | `dts-ai-pause` | `onPauseClick()` | `{ ok, status }` |
 | `dts-ai-clear-page` | `onClearClick()` | `{ ok, status }` |
 | `dts-ai-export` | 等价 `exportAs(format)`，videoId 可用参数覆盖 | 与 `dts-export` 回包一致 |
+| `dts-ai-export`（`all: true`，v0.2.9 起） | 导出本地**所有**视频的评论，合成一份（与面板「导出范围 → 全部视频」走同一条 `dts-export` 链路）；此时不需要 videoId，`format` 仍可 `csv`/`json` | 成功回包多 `scope:"all"`、`videoId:null`、`count`、`videoCount`（不带 `all` 时仍是 `scope:"video"` + 具体 videoId）。CSV 末尾追加 `video_id` 列、文件名 `douyin-comments-all-<时间戳>.csv`；JSON 多 `videos` 摘要数组。无 videoId 且没传 `all` 时报 `未识别到视频 ID，无法导出本条视频；可传 all:true 导出本地已存的全部视频` |
 
 另：每约 3s 发 `dts-ai-keepalive`（空消息）帮 MV3 SW 保活；background 必须忽略并回 `{ ok:true, keepalive:true }`。
 

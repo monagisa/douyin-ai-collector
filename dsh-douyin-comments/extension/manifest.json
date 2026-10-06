@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "抖音评论采集器",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "在抖音视频页/推荐页采集公开评论（含二级回复）并导出 CSV。不滚动页面、不破解签名、不绕过登录——复用页面自己已生成的签名请求，只改分页游标。",
   "minimum_chrome_version": "111",
   "permissions": [

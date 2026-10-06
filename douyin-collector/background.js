@@ -104,15 +104,18 @@ function cleanText(t) {
     .trim();
 }
 
-function toCsv(comments) {
+function toCsv(comments, opts) {
   // 前 15 列是 v0.1.4 起就有的稳定契约（顺序/含义不变）；
   // v0.1.5 新增的二级回复在**末尾追加**两列，老读者按位置读前 15 列仍然正确。
+  // v0.2.9 的「全部视频」导出再往末尾追加 video_id 一列（不带 withVideoId 时列数不变）。
+  const withVideoId = !!(opts && opts.withVideoId);
   const cols = [
     'cid', 'create_time', 'create_time_str', 'text', 'text_clean', 'text_len',
     'digg_count', 'reply_comment_total', 'ip_label', 'is_hot', 'is_folded',
     'level', 'stick_position', 'user_nickname', 'user_uid',
     'is_reply', 'parent_cid'
   ];
+  if (withVideoId) cols.push('video_id');
   const rows = [cols.join(',')];
   for (const c of comments) {
     const t = c.text || '';
@@ -127,7 +130,7 @@ function toCsv(comments) {
       csvCell(u.nickname), csvCell(u.uid),
       // 二级回复两列：顶层评论为 0 / 空
       csvCell(c.is_reply ? 1 : 0), csvCell(c.parent_cid)
-    ].join(','));
+    ].concat(withVideoId ? [csvCell(c.videoId || c.video_id || '')] : []).join(','));
   }
   return rows.join('\r\n');
 }
@@ -261,17 +264,36 @@ if (chrome && chrome.runtime && chrome.runtime.onMessage && chrome.runtime.onMes
           const key = msg.videoId;
           let count = 0;
           if (key) count = Object.keys(await getComments(key)).length;
-          else {
-            for (const v of Object.keys(videos)) count += Object.keys(await getComments(v)).length;
-          }
-          sendResponse({ ok: true, count, videos });
+          // v0.2.9：面板要显示「本地已存 N 个视频 / M 条」，换视频后仍看得到旧数据还在。
+          // totalAll 用 dts_videos 里维护的 count 元数据累加（每条 dts-comments 回包都会更新它），
+          // 免得问一次统计就把几万条评论的所有桶都读一遍。
+          const vkeys = Object.keys(videos);
+          let totalAll = 0;
+          for (const v of vkeys) totalAll += Number(videos[v] && videos[v].count) || 0;
+          sendResponse({ ok: true, count, totalAll, videoCount: vkeys.length, videos });
           break;
         }
 
         case 'dts-export': {
+          // scope：默认只导当前视频（videoId）；msg.all === true 时把所有视频的评论合成一份导出。
+          // 每条评论带上 videoId，CSV 末尾追加 video_id 列，JSON 里给 per-video 摘要。
+          const wantAll = msg.all === true;
           const videoId = msg.videoId;
-          const map = await getComments(videoId);
-          const comments = Object.values(map);
+          const allVideos = await getVideos();
+          const perVideo = [];
+          let comments = [];
+          if (wantAll) {
+            const ids = Object.keys(allVideos);
+            if (videoId && ids.indexOf(videoId) < 0) ids.push(videoId);   // 桶在、但 dts_videos 没记录
+            for (const v of ids) {
+              const list = Object.values(await getComments(v));
+              if (!list.length) continue;
+              perVideo.push({ videoId: v, title: (allVideos[v] && allVideos[v].title) || '', count: list.length });
+              for (const c of list) comments.push(Object.assign({}, c, { videoId: v }));
+            }
+          } else {
+            comments = Object.values(await getComments(videoId));
+          }
           // 按时间升序，便于阅读
           comments.sort((a, b) => (a.create_time || 0) - (b.create_time || 0));
           const videos = await getVideos();
@@ -281,20 +303,29 @@ if (chrome && chrome.runtime && chrome.runtime.onMessage && chrome.runtime.onMes
             const replyCount = comments.filter((c) => c && c.is_reply).length;
             const payload = {
               exportedAt: new Date().toISOString(),
-              videoId,
-              title: meta.title,
-              totalReported: meta.total,
+              scope: wantAll ? 'all' : 'video',
+              ...(wantAll ? { videos: perVideo } : { videoId, title: meta.title, totalReported: meta.total }),
               count: comments.length,
               topLevelCount: comments.length - replyCount,
+              videoCount: wantAll ? perVideo.length : 1,
               replyCount,   // v0.1.5：二级回复条数（带 parent_cid 的那些）
               note: '由「抖音评论采集器」采集：数据来自抖音页面自身的接口响应。未破解或伪造签名、未绕过登录；开始采集前若还没有可用签名，扩展会用一次合成点击替你打开评论区（让页面自己发出请求），不滚动页面、不改动评论内容。二级回复通过复用页面自己已发出的签名 URL 拉取（仅改写 path 与 item_id/comment_id/cut_version/cursor/count）。',
               comments
             };
-            sendResponse(await download(JSON.stringify(payload, null, 2),
-              `douyin-comments-${videoId}-${stamp}.json`, 'application/json'));
+            const resJson = await download(JSON.stringify(payload, null, 2),
+              `douyin-comments-${wantAll ? 'all' : videoId}-${stamp}.json`, 'application/json');
+            sendResponse(Object.assign({}, resJson, {
+              count: comments.length, topLevelCount: payload.topLevelCount,
+              replyCount: payload.replyCount, videoCount: payload.videoCount
+            }));
           } else {
-            sendResponse(await download(toCsv(comments),
-              `douyin-comments-${videoId}-${stamp}.csv`, 'text/csv;charset=utf-8'));
+            const resCsv = await download(toCsv(comments, { withVideoId: wantAll }),
+              `douyin-comments-${wantAll ? 'all' : videoId}-${stamp}.csv`, 'text/csv;charset=utf-8');
+            const replyCountCsv = comments.filter((c) => c && c.is_reply).length;
+            sendResponse(Object.assign({}, resCsv, {
+              count: comments.length, topLevelCount: comments.length - replyCountCsv,
+              replyCount: replyCountCsv, videoCount: wantAll ? perVideo.length : 1
+            }));
           }
           break;
         }

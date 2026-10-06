@@ -54,9 +54,9 @@ douyin-ai-collector/          ← 仓库根（可自行命名）
    AI 经 MCP（`douyin-mcp` 0.3.1）的 `ai_get_settings` / `ai_set_settings`，`ai_start_collect`
    可带 `max` / `lanes` / `replyLanes` / `replyGapMs` / `replyWarmupMs` / `replyThrottleMaxWaitMs`
    （优先级：面板齿轮 > AI 下发 > 内置默认）。
-   要把这套发给别人：用 [release/dsh-douyin-comments-v0.5.6.zip](./release/dsh-douyin-comments-v0.5.6.zip)
-   （单文件，解压后是 `dsh-douyin-comments-0.5.6.tgz` 插件包 + `douyin-collector-extension-v0.2.8.zip`
-   单独扩展 + `使用说明.md` + `SHA256SUMS.txt`）。
+   要把这套发给别人：用 [release/dsh-douyin-comments-v0.5.7.zip](./release/dsh-douyin-comments-v0.5.7.zip)
+   （单文件，解压后是 `dsh-douyin-comments-0.5.7.tgz` 插件包 + `douyin-collector-extension-v0.2.9.zip`
+    单独扩展 + `使用说明.md` + `SHA256SUMS.txt`）。
 
 ---
 

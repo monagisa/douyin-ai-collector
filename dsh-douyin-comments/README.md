@@ -1,7 +1,53 @@
 # dsh-douyin-comments
 
 DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**，注册一个工具 `douyin_comments`。
-（插件版本 0.5.6，内置扩展「抖音评论采集器」v0.2.8。）
+（插件版本 0.5.7，内置扩展「抖音评论采集器」v0.2.9。）
+
+**0.5.7 新增**：
+
+1. **修掉「换一条视频，上一条的数据就没了」的错觉**（用户报的原始问题，也是本版主题）：
+   数据从来没丢 —— 评论一直**按视频分桶**存在浏览器本地（`chrome.storage.local` 里
+   `dts_c_<videoId>`，一个视频一个桶），代码里除了面板那两个清空按钮（`dts-clear`）
+   **没有任何删除路径**。真实例证：用户自己 Edge 的 `Profile 1` 里 6 个桶都在
+   （624 / 1406 / 2142 / 2267 / 9446 / 27 条）。旧面板只是**口径**只认「当前这条视频」：
+   滑到下一条点「开始采集」后 `savedCount`/`seen` 归零、面板显示 0，看起来像被清了。
+   本版**不改任何数据路径**，只补「跨视频可见性」与「导出全部视频」。
+2. **面板新增一行「本地已存」**：显示 `N 个视频 / M 条（本条 X 条）`。面板构建时读一次
+   （后台 `dts-stats`），之后每 20 秒刷新一次；落库后与点「清空」后也会立刻刷新。
+3. **「已采（去重）」补口径**：本轮还没落库、但本地已经有这条视频的数据时，显示
+   `（本地已有 N 条）`，不再让人误以为本地是空的。
+4. **面板新增一行「导出范围」两个互斥小按钮**：
+   - **「本条视频」**（默认，等于旧行为，只导当前这条视频的评论），自动化挂点
+     `data-dts-act="export-scope-video"`；
+   - **「全部视频」**（把本地**所有**视频的评论合成一份导出），挂点
+     `data-dts-act="export-scope-all"`；
+   选中态是 CSS 类 `dts-on`，两个按钮互斥。
+5. **「全部视频」导出**（`dts-export` 带 `all: true`）：
+   - CSV **在末尾追加一列 `video_id`**（共 18 列）；**前 17 列的列序与含义完全不变**，
+     老读者按位置读前 17 列仍然正确；
+   - JSON 顶层加 `scope: "all"` 与 `videos: [{ videoId, title, count }]`（每条评论也带 `videoId`）；
+   - 文件名 `douyin-comments-all-<时间戳>.csv|json`；单视频仍是
+     `douyin-comments-<videoId>-<时间戳>.csv|json`。
+6. **后台 `dts-stats` 新增 `totalAll` 与 `videoCount`**：`totalAll` 是跨视频总条数，用
+   `dts_videos` 里维护的 `count` 元数据累加（**不遍历每个评论桶**），`videoCount` 是本地有几个视频。
+7. **点「开始采集」时面板先写一行提示**：
+   `本机已存：N 个视频 / M 条（含其它视频）；本条视频本地已有 X 条`，明确告诉用户旧数据还在。
+8. **「清空」的语义再强调一次**：**「清空」= 只清当前页面这条视频**
+   （`data-dts-act="clear-video"`，无危险样式）；**「全部清空」= 清所有视频**
+   （`data-dts-act="clear-all"`，红色危险样式、两步确认、不可恢复）。
+   换视频、清空某条视频**都不会**影响别的视频。
+9. **内置扩展升到 0.2.9**（插件 0.5.7 自带的那份）。
+10. **自测**：`node verify-tool.mjs` 全绿 **130/130**（上一版 121，本次新增 9 条断言：
+    `dts-stats` 的 `totalAll`/`videoCount`、`dts-export` 的 `all:true` 分支、CSV 末尾 `video_id` 列、
+    `all` 文件名、面板「本地已存」行与两个导出范围按钮、20 秒刷新、`all: exportAll` 传参、面板 CSS、
+    AI 桥 `dts-ai-export` 也支持 `all:true`）；
+    真机验收（临时脚本，跑完已删）**22/22 通过**：种两个视频的桶 → 换视频/没采过的视频时
+    `totalAll` 仍是 5 且 `videoCount` 是 2；单视频 CSV 仍 17 列 4 行、无 `video_id`；
+    「全部视频」CSV 18 列 6 行且两个 `video_id` 都在、一级 3 二级 2；「全部视频」JSON `scope=all`、
+    `videos` 2 个、5 条评论每条带 `videoId`；面板真机页面显示「本地已存 2 个视频 / 5 条」；
+    点「全部视频」后按钮选中态互斥、导出落盘文件内容正确；面板「清空」只作用于当前页面这条视频、
+    两个种子桶一条没少；导出是只读的。
+    配套 MCP `douyin-mcp` **没动，仍是 0.3.1**。
 
 **0.5.6 新增**：
 
@@ -144,7 +190,7 @@ DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**
 
 特点：
 
-- **自带 Chrome 扩展**（抖音评论采集器 v0.2.8）。第一次调用时会自动把扩展装进它启动的浏览器，
+- **自带 Chrome 扩展**（抖音评论采集器 v0.2.9）。第一次调用时会自动把扩展装进它启动的浏览器，
   不需要使用者手动「加载已解压的扩展程序」；扩展面板标题栏自带设置齿轮 `⚙`（0.2.5 起，在「—」左边）。
 - **只交付本次新采的数据**：结束时按 `cid` 差集剔除旧数据，只交付本轮新增的；
   一条新数据都没有就返回失败并说明原因，绝不把上一轮残留当成本轮结果。
@@ -158,6 +204,22 @@ DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**
   登录弹窗都探不到，只看 DOM 会漏判 → 直接裸采 → 被限流 → 数据残缺。
   （以前默认 `waitLoginSec=0` 且只看 DOM，等于没登录也照采。）明知要裸采时用 `DOUYIN_ALLOW_ANONYMOUS=1`。
 
+## 面板（采集时那个悬浮面板）
+
+面板标题栏右侧是设置齿轮 `⚙`（0.2.5 起，在「—」收起按钮左边）；主体自上而下：
+
+| 行 | 内容 |
+| --- | --- |
+| 状态 / 进度 | 阶段、进度条、「已采（去重）」——本轮还没落库但本地已有该视频数据时显示 `（本地已有 N 条）` |
+| **本地已存**（0.5.7 新增） | `N 个视频 / M 条（本条 X 条）`：跨视频的本地总规模。面板构建时读一次（后台 `dts-stats`），之后每 20 秒刷新，落库后与点「清空」后立刻刷新 |
+| 按钮 1 | `[开始采集]` `[暂停]` |
+| 按钮 2 | `[导出 CSV]` `[导出 JSON]` |
+| **导出范围**（0.5.7 新增） | `[本条视频]`（默认，等于旧行为）/ `[全部视频]`，两个互斥；自动化挂点 `data-dts-act="export-scope-video"` / `data-dts-act="export-scope-all"`，选中态 CSS 类 `dts-on` |
+| 按钮 3 | `[清空]`（挂点 `clear-video`，**只清当前这条视频**）/ `[全部清空]`（挂点 `clear-all`，**清所有视频**、两步确认、不可恢复） |
+
+点「开始采集」时面板会先写一行 `本机已存：N 个视频 / M 条（含其它视频）；本条视频本地已有 X 条`
+——换视频不会丢数据，只是旧面板的计数/导出都只认当前这条视频。
+
 ## 安装
 
 方式一：目录安装（本机开发/自己用）
@@ -169,8 +231,8 @@ dsh plugin --profile web add file:D:\dycopy\dsh-douyin-comments
 方式二：tarball 安装（把包发给别人时用）
 
 ```powershell
-# 对方收到 dsh-douyin-comments-0.5.6.tgz 后：
-dsh plugin --profile web add file:C:\path\to\dsh-douyin-comments-0.5.6.tgz
+# 对方收到 dsh-douyin-comments-0.5.7.tgz 后：
+dsh plugin --profile web add file:C:\path\to\dsh-douyin-comments-0.5.7.tgz
 ```
 
 装完必须**重启 dsh web**：模块解析表在进程启动时冻结，新插件的工具要重启后才可见。
@@ -278,6 +340,15 @@ dsh plugin --profile web add file:D:\dycopy\dsh-douyin-comments
 - **JSON**：`{exportedAt, videoId, title, totalReported, count, topLevelCount, replyCount, note, freshOnly:true, extension{version,installed}, comments:[…]}`。
 - 文件名：`douyin-comments-<videoId>-<时间戳>.csv/.json`。
 
+上面是**插件自己写盘**的那份（一次调用只导当前这一个视频，列契约与扩展 `background.js` 同源）。
+浏览器面板上的「**导出范围 → 全部视频**」（扩展 v0.2.9 的 `dts-export` 带 `all: true`）另外走一条路：
+
+| | 单视频（默认「本条视频」） | 全部视频（v0.2.9 新增） |
+| --- | --- | --- |
+| CSV 列 | 17 列（同上，列序冻结） | **18 列：末尾追加 `video_id`**；前 17 列的顺序与含义完全不变，老读者按位置读前 17 列仍然正确 |
+| JSON | `{exportedAt, videoId, title, count, …comments[]}` | 顶层多 `scope: "all"` 与 `videos: [{ videoId, title, count }]`；每条评论也带 `videoId` |
+| 文件名 | `douyin-comments-<videoId>-<时间戳>.csv\|json` | `douyin-comments-all-<时间戳>.csv\|json` |
+
 ## 数据新鲜度怎么保证
 
 1. 打开页面、等面板就绪后，先读出扩展里该视频的 `cid` 快照；
@@ -304,7 +375,14 @@ node _test_nosig.mjs https://www.douyin.com/video/7660328050596371819           
 node _demo_autoinstall.mjs https://www.douyin.com/video/7660328050596371819        # 删掉已装扩展，验证「从零自动装上」
 ```
 
-实测记录（2026-10-05）：
+实测记录（2026-10-06，v0.5.7）：
+
+| 用例 | 结果 |
+| --- | --- |
+| 离线自检 `node verify-tool.mjs` | **130/130 全绿**（上一版 121，本次新增 9 条断言：`dts-stats` 的 `totalAll`/`videoCount`、`dts-export` 的 `all:true` 分支、CSV 末尾 `video_id` 列、`all` 文件名、面板「本地已存」行与两个导出范围按钮、20 秒刷新、`all: exportAll` 传参、面板 CSS、AI 桥 `dts-ai-export` 的 `all:true`） |
+| 真机验收（临时脚本，跑完已删；真机 Chromium + 真抖音视频页） | **22/22 通过**：种两个视频的桶 → 断言换视频/没采过的视频时 `totalAll` 仍是 5 且 `videoCount` 是 2；单视频 CSV 仍 17 列 4 行、无 `video_id`；「全部视频」CSV 18 列 6 行且两个 `video_id` 都在、一级 3 二级 2；「全部视频」JSON `scope=all`、`videos` 2 个、5 条评论每条带 `videoId`；面板真机页面显示「本地已存 2 个视频 / 5 条」；点「全部视频」后按钮选中态互斥、导出落盘文件内容正确；面板「清空」只作用于当前页面这条视频、两个种子桶一条没少；导出是只读的 |
+
+实测记录（2026-10-05，v0.5.5 及更早，历史版本）：
 
 | 用例 | 结果 |
 | --- | --- |
@@ -318,7 +396,7 @@ node _demo_autoinstall.mjs https://www.douyin.com/video/7660328050596371819     
 | 负向（假装拿不到签名）`_nosig.txt` | ok=false、count=0、不写文件 |
 | 吞吐 | 约 30~70 条/秒（469 条 / 13.8s；1010 条 / 14.1s；8 路 405 条 / 9.8s） |
 
-实测记录（2026-10-06，v0.5.6）：
+实测记录（2026-10-06，v0.5.6，历史版本）：
 
 | 用例 | 结果 |
 | --- | --- |
@@ -365,30 +443,30 @@ node sync-extension.mjs D:\path\to\ext
 
 ## 打包 / 发布
 
-发布物在 `D:\dycopy\release\dsh-douyin-comments-v0.5.6\`：
+发布物在 `D:\dycopy\release\dsh-douyin-comments-v0.5.7\`：
 
 | 文件 | 说明 |
 | --- | --- |
-| `dsh-douyin-comments-0.5.6.tgz` | 插件本体，14 个文件（`index.js`/`collector.mjs`/`cordis.patch.yml`/`README.md`/`package.json` + `client/client.js` + `extension/` 8 个） |
-| `douyin-collector-extension-v0.2.8.zip` | 单独的扩展 zip，顶层目录 `douyin-collector/`（8 个文件），供 `chrome://extensions` 手动「加载已解压的扩展程序」 |
+| `dsh-douyin-comments-0.5.7.tgz` | 插件本体，14 个文件（`index.js`/`collector.mjs`/`cordis.patch.yml`/`README.md`/`package.json` + `client/client.js` + `extension/` 8 个） |
+| `douyin-collector-extension-v0.2.9.zip` | 单独的扩展 zip，顶层目录 `douyin-collector/`（8 个文件），供 `chrome://extensions` 手动「加载已解压的扩展程序」 |
 | `使用说明.md` | 给收件人看的中文说明（安装/扫码/两处设置/参数/FAQ/macOS） |
 | `SHA256SUMS.txt` | 三个文件的 SHA256 |
 
-再外面还有 `D:\dycopy\release\dsh-douyin-comments-v0.5.6.zip`（把上面整目录打成一个单文件，方便直接发给人）。
+再外面还有 `D:\dycopy\release\dsh-douyin-comments-v0.5.7.zip`（把上面整目录打成一个单文件，方便直接发给人）。
 
-草稿目录 `D:\dycopy\release\dsh-douyin-comments-v0.5.5\` 是上一版，保留作对照（更早的 v0.5.4 及以前也都在，不删）。
+草稿目录 `D:\dycopy\release\dsh-douyin-comments-v0.5.6\` 是上一版，保留作对照（更早的 v0.5.5 及以前也都在，不删）。
 
 重新打包：
 
 ```powershell
 cd D:\dycopy\dsh-douyin-comments
-npm pack --pack-destination D:\dycopy\release\dsh-douyin-comments-v0.5.6
+npm pack --pack-destination D:\dycopy\release\dsh-douyin-comments-v0.5.7
 
 # 扩展开 zip（顶层目录名必须是 douyin-collector；只装 8 个运行文件，别把 md 打进去）。
 # 用 .NET ZipFile 逐个 CreateEntry 造，避免 Compress-Archive 多套一层目录：
-$rel = 'D:\dycopy\release\dsh-douyin-comments-v0.5.6'
+$rel = 'D:\dycopy\release\dsh-douyin-comments-v0.5.7'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-$zip = [IO.Compression.ZipFile]::Open("$rel\douyin-collector-extension-v0.2.8.zip", 'Create')
+$zip = [IO.Compression.ZipFile]::Open("$rel\douyin-collector-extension-v0.2.9.zip", 'Create')
 Get-ChildItem D:\dycopy\douyin-collector -File |
   Where-Object { $_.Extension -in '.js','.json','.css','.html' } |
   ForEach-Object { [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $_.FullName, "douyin-collector/$($_.Name)") | Out-Null }
@@ -398,7 +476,7 @@ $zip.Dispose()
 **注意**：清空发布目录时别用 `Remove-Item "$rel\*" -Recurse -Force` —— 它不进回收站，会把里面刚写好的
 `使用说明.md` 一起删掉（v0.5.2 打包时踩过，靠旧的外层 zip 解出来才恢复）。要保留的文件先复制到别处。
 
-打包验收（**全新 profile 从 tgz 装**，2026-10-05 对 v0.5.5 实测通过，日志 `_accept_tgz.txt`；v0.5.6 打包后按同样三步验收）：
+打包验收（**全新 profile 从 tgz 装**，2026-10-05 对 v0.5.5 实测通过，日志 `_accept_tgz.txt`；v0.5.7 打包后按同样三步验收）：
 
 ```powershell
 mkdir C:\Users\mo\.dsh\profiles\pkgtest     # package.json：dsh.profile.bundles = ["@deepseek-ai/dsh-base","@deepseek-ai/dsh-headless"]
@@ -409,10 +487,10 @@ dsh --profile pkgtest headless '用 douyin_comments 工具采集 https://www.dou
 ```
 
 > 上面那段是 **v0.5.5 的历史实测记录**（命令里的 `v0.5.5` 路径是当时的真实命令，刻意不改）。
-> v0.5.6 打包后照抄同样三步，只把包路径换成本版：
+> v0.5.7 打包后照抄同样三步，只把包路径换成本版：
 
 ```powershell
-dsh plugin --profile pkgtest add file:D:\dycopy\release\dsh-douyin-comments-v0.5.6\dsh-douyin-comments-0.5.6.tgz
+dsh plugin --profile pkgtest add file:D:\dycopy\release\dsh-douyin-comments-v0.5.7\dsh-douyin-comments-0.5.7.tgz
 ```
 
 - 依赖 `playwright-core ^1.63.0`（13 MB，只有驱动、不含浏览器）由 `dsh plugin add` 自动装进 profile；
@@ -421,7 +499,7 @@ dsh plugin --profile pkgtest add file:D:\dycopy\release\dsh-douyin-comments-v0.5
 
 ## 与其他组件的关系
 
-- 浏览器里跑的扩展本体在 `D:\dycopy\douyin-collector\`（权威开发目录，v0.2.8）；插件里的 `extension/`
+- 浏览器里跑的扩展本体在 `D:\dycopy\douyin-collector\`（权威开发目录，v0.2.9）；插件里的 `extension/`
   由 `node sync-extension.mjs` 单向同步过去（同步后会反向清理白名单外的旧文件；别再手动复制）。
   插件每次启动都会把扩展 hash 记进 `~/.dsh/douyin-collector/extension.launched.json`，一变就清掉
   profile 里的旧脚本缓存再开浏览器。**注意清的范围**：要清 `Default/Code Cache` + **整个**
