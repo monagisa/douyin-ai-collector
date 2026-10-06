@@ -55,3 +55,4 @@ dsh-douyin-collector/
 
 # 打包产物（每次发布都重新生成，没必要进仓库）
 douyin-collector-dist/
+/release/
