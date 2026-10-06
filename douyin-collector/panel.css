@@ -333,6 +333,28 @@
   border-color: #3d8fd6;
 }
 
+/* 危险按钮（全部清空）：红调，和「清空本视频」在视觉上区分开 */
+#dts-collector-panel .dts-btn-danger {
+  background: #3a2528;
+  border-color: #6b3236;
+  color: #ff9c9c;
+}
+
+#dts-collector-panel .dts-btn-danger:hover {
+  background: #4a2c30;
+  border-color: #8a4046;
+  color: #ffb4b4;
+}
+
+/* 上膛态：第一次点击已生效，5 秒内再点一次才会真的全清 */
+#dts-collector-panel .dts-btn-danger.dts-armed {
+  background: #7f1d1d;
+  border-color: #b91c1c;
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 0 0 1px rgba(185, 28, 28, 0.5);
+}
+
 /* 不可用态：仍可见，但不响应点击 */
 #dts-collector-panel .dts-btn:disabled,
 #dts-collector-panel .dts-btn[disabled] {

@@ -373,7 +373,22 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
   `dts_panel_size`（老用户存过的 `'normal'` 被忽略，见判据 D17）。实现只写内联 `left/top` 做定位，
   尺寸完全归 CSS，两者解耦。
 - 显示：阶段、已采条数、服务端 total、当前 cursor、进度条（`count/total`，`total` 为 0 时用不确定态）、每页耗时、错误信息。
-- 按钮：`开始采集` / `暂停` / `导出 CSV` / `导出 JSON` / `清空` / `—`（收起）。
+- 按钮：`开始采集` / `暂停` / `导出 CSV` / `导出 JSON` / `清空` / `全部清空` / `—`（收起）。
+  **v0.2.8 起「清空」拆成两个按键**（用户 m04948 的原始诉求：「一个按键是全部清空，一个按键是清空（清空本条视频链接的评论）」）：
+  · `清空`（`data-dts-act="clear-video"`，无 danger 类）= 只清**本条视频链接**的评论：删 `dts_c_<videoId>` 并从
+  `dts_videos` 摘掉这一条，别的视频数据与 `dts_user_settings` 都不动。仍未识别到 videoId 时**不发清空**，
+  提示「未识别到视频 ID，无法清空；请先打开具体视频页/浮层」（那条护栏只管这个按钮）。
+  提示文案「已清空本视频的本地去重表与扩展存储；下次「开始采集」将从头重扫」。
+  · `全部清空`（`data-dts-act="clear-all"`，`.dts-btn-danger`）= **两步确认**：第一次点只「上膛」——
+  按钮文案变 `确认全部清空？` 并加 `.dts-armed`（红底强调），提示「再点一次「全部清空」确认：会清掉所有视频的评论与
+  本地去重表（不可恢复），5 秒内有效」，**数据一条不动**；5 秒内第二次点才真清（删所有 `dts_c_*` 与 `dts_videos`，
+  保留 `dts_user_settings`），提示「已清空全部视频的评论与本地去重表（共 N 个视频）…」；超过 5 秒文案自动复原，
+  此时再点只重新上膛。**不受**未识别 videoId 的护栏限制（任意页面都能全清）。
+  · 两个按钮都在面板最后一行 `.dts-row.dts-actions`（4 个按钮一行放不下）。`data-dts-act` 是给自动化的稳定挂点
+  （`collector.mjs` 的 `clearBefore` 用 `[data-dts-act="clear-video"]` 点「清空」，老版本扩展没有挂点才退回按文案
+  `/^清空$/` 找）；后台 `dts-clear` 仍然**要求 `all === true` 才全清**，空 videoId 绝不兜底成全清。
+  · 真机验证（v0.2.8）：面板两按钮、单视频清空只清本条、第一次点全清只上膛不动数据、5 秒过期复原、
+  第二次点真全清、`dts_user_settings` 始终保留 —— 18/18 全过。
   设置入口 **v0.2.5 起是标题栏右侧的齿轮 `⚙`**（`.dts-btn.dts-btn-gear`，排在 `—` 收起按钮**左边**，
   同一行 `.dts-tools` 内；v0.2.4 曾是第三行 `.dts-row.dts-actions` 里的「设置」文字按钮 + 摘要，
   v0.2.5 把这行去掉）。点齿轮弹出覆盖整个面板的浮层 `.dts-settings`（不改页面滚动），
@@ -787,11 +802,11 @@ Hub 对 **MCP 客户端** 的内部接口（同进程 in-memory / 可选 localho
 | `get_settings` | background | 只读设置快照 `{ external, user, effective, precedence, limits }`（见 §7.9） |
 | `set_settings` | background | `{ settings, scope? }` 写设置：`scope="external"`（默认）→ `dts_settings`，`scope="panel"` → `dts_user_settings`；或 `{ clear: "external"\|"user"\|"all" }` 删键回默认；空设置 → `{ ok:false, error:"NO_SETTINGS", hint }` |
 | `pause_collect` | content.js | 等价面板「暂停」 |
-| `clear_page` | content.js | 等价面板「清空」（页面内存 + `dts-clear`） |
+| `clear_page` | content.js | 等价面板「清空」（页面内存 + `dts-clear`）。**v0.2.8 起面板有两个清空按钮，它对应的是「清空」（只清本条视频）**，不是「全部清空」 |
 | `list_videos` | background | `dts_videos` 列表 |
 | `get_comments` | background | 按 videoId 读评论；支持 `mode=summary\|page` |
 | `export` | background / content | 复用 `dts-export`，返回 `filename/bytes/path` |
-| `clear_storage` | background | 复用 `dts-clear` |
+| `clear_storage` | background | 复用 `dts-clear`：带 `videoId` = 只清那条视频（等价面板「清空」）；不带给 `all:true` = 清全部（等价面板「全部清空」，面板那层多一个连点两次的 UI 护栏，桥调用不需要） |
 
 页面类命令失败时必须回 **可操作 hint**（例如：没有抖音 tab、扩展未就绪请刷新页面、网格页请先点开视频）。
 

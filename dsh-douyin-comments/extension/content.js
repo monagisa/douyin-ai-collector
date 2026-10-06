@@ -204,6 +204,10 @@
    *  否则清空后旧循环会把 cursor 写回高位，再点开始就“续采”，但池子已是空的。 */
   var collectEpoch = 0;
   var justCleared = false;        // 刚点过清空：下次开始采集必须整体重置、从 cursor=0
+  /** 「全部清空」的二次确认窗口（毫秒）：第一次点击只上膛，窗口内再点一次才真的清。
+   *  全清不可恢复（所有视频的评论 + 去重表），必须防误触。 */
+  var CLEAR_ALL_CONFIRM_MS = 5000;
+  var clearAllArmedAt = 0;        // 0 = 未上膛；否则 = 首次点击的时间戳
 
   // ================== 小工具 ==================
 
@@ -2016,15 +2020,12 @@
     down('stop-capture');
   }
 
-  function onClearClick() {
-    // 护栏：未识别到视频 ID 时绝不能发清空——background 侧空 videoId 不再兜底成全清，
-    // 这里直接拦下并如实提示（以前会发空串清掉所有视频的存储，面板却谎称"已清空本视频"）
-    if (!videoId) {
-      setPhase('idle', '', '未识别到视频 ID，无法清空；请先打开具体视频页/浮层');
-      return;
-    }
-    // 先作废在途采集：否则旧 startLoop 回包会把 cursor 写回高位，
-    // storage 已清空、再点「开始采集」就变成「从半路续采 + 前段丢失」。
+  /**
+   * 把「本页采集状态」整体归零（不动扩展存储里的数据）。两个清空按钮共用。
+   * 必须同时作废在途采集：否则旧 startLoop 回包会把 cursor 写回高位，
+   * storage 已清空、再点「开始采集」就变成「从半路续采 + 前段丢失」。
+   */
+  function resetLocalState() {
     collectEpoch++;
     justCleared = true;
     stopFlag = true;
@@ -2052,13 +2053,16 @@
     replyStoppedByThrottle = false;
     resumeReplies = false;
     errText = '';
-    if (extContextLost) {
-      onExtContextLost('');
-      return;
-    }
+  }
+
+  /**
+   * 发清空消息：给 videoId = 只清那条视频的评论；all:true = 全清所有视频。
+   * 忽略回包（清空是幂等的）；上下文失效时交给 onExtContextLost 统一提示。
+   */
+  function sendClear(payload) {
+    if (extContextLost) { onExtContextLost(''); return; }
     try {
-      chrome.runtime.sendMessage({ type: 'dts-clear', videoId }, function () {
-        // 忽略回包；清空是幂等的。若 context 失效，lastError 由 onExtContextLost 统一提示
+      chrome.runtime.sendMessage(Object.assign({ type: 'dts-clear' }, payload), function () {
         if (chrome.runtime.lastError && isExtContextInvalid(chrome.runtime.lastError.message)) {
           onExtContextLost(chrome.runtime.lastError.message);
         }
@@ -2066,10 +2070,71 @@
     } catch (e) {
       if (isExtContextInvalid(e)) onExtContextLost(String(e && e.message || e));
     }
+  }
+
+  /** 「清空」：只清**本条视频链接**的评论（其它视频的数据与面板设置都保留）。 */
+  function onClearClick() {
+    // 护栏：未识别到视频 ID 时绝不能发清空——background 侧空 videoId 不再兜底成全清，
+    // 这里直接拦下并如实提示（以前会发空串清掉所有视频的存储，面板却谎称"已清空本视频"）
+    if (!videoId) {
+      setPhase('idle', '', '未识别到视频 ID，无法清空；请先打开具体视频页/浮层');
+      return;
+    }
+    resetLocalState();
+    if (extContextLost) {
+      onExtContextLost('');
+      return;
+    }
+    sendClear({ videoId: videoId });
     // 上下文已失效时绝不能宣称「已清空」：采集器看到这句话会以为清空成功，
     // 而扩展存储其实一条没动（实测踩过一次：面板说已清空，桶里还是 1403 条）。
     if (extContextLost) return;
     setPhase('idle', '', '已清空本视频的本地去重表与扩展存储；下次「开始采集」将从头重扫');
+  }
+
+  /**
+   * 「全部清空」：清掉**所有**视频的评论与本地去重表（不可恢复，且不受「未识别到视频 ID」限制）。
+   * 两步确认：第一次点击只上膛（按钮变「确认全部清空？」），5 秒内再点一次才真的清。
+   */
+  function onClearAllClick() {
+    var now = Date.now();
+    if (!clearAllArmedAt || now - clearAllArmedAt > CLEAR_ALL_CONFIRM_MS) {
+      clearAllArmedAt = now;
+      noteText = '再点一次「全部清空」确认：会清掉所有视频的评论与本地去重表（不可恢复），'
+        + Math.round(CLEAR_ALL_CONFIRM_MS / 1000) + ' 秒内有效';
+      errText = '';
+      render();
+      // 窗口过期后把按钮文案复原（面板不是一直重绘，得自己收尾）
+      setTimeout(function () {
+        if (clearAllArmedAt && Date.now() - clearAllArmedAt >= CLEAR_ALL_CONFIRM_MS) {
+          clearAllArmedAt = 0;
+          render();
+        }
+      }, CLEAR_ALL_CONFIRM_MS + 60);
+      return;
+    }
+    clearAllArmedAt = 0;
+    resetLocalState();
+    if (extContextLost) {
+      onExtContextLost('');
+      return;
+    }
+    var finish = function (n) {
+      sendClear({ all: true });
+      if (extContextLost) return;
+      setPhase('idle', '', '已清空全部视频的评论与本地去重表'
+        + (n > 0 ? '（共 ' + n + ' 个视频）' : '') + '；下次「开始采集」将从头重扫');
+    };
+    // 先数一下有几个视频再清（清完就只剩 0 了，提示里想写清楚到底清了什么）
+    try {
+      chrome.storage.local.get('dts_videos', function (o) {
+        var n = 0;
+        try { n = (o && o.dts_videos) ? Object.keys(o.dts_videos).length : 0; } catch (e) { n = 0; }
+        finish(n);
+      });
+    } catch (e) {
+      finish(0);
+    }
   }
 
   function exportAs(format) {
@@ -2145,11 +2210,14 @@
     return v;
   }
 
-  function mkBtn(text, extraClass, onClick) {
+  function mkBtn(text, extraClass, onClick, act) {
     var b = document.createElement('button');
     b.type = 'button';
     b.className = 'dts-btn' + (extraClass ? ' ' + extraClass : '');
     b.textContent = text;
+    // 给自动化（采集器的 clearBefore、回归脚本）一个稳定挂点：
+    // 按文案匹配在「清空」旁边多了「全部清空」之后会变得含糊（两个都含「清空」）。
+    if (act) b.setAttribute('data-dts-act', act);
     // 兜住同步/异步异常，避免按钮回调把错误吞进未捕获的 Promise
     b.addEventListener('click', function () {
       try {
@@ -2559,8 +2627,20 @@
     r2.className = 'dts-row';
     r2.appendChild(mkBtn('导出 CSV', '', function () { exportAs('csv'); }));
     r2.appendChild(mkBtn('导出 JSON', '', function () { exportAs('json'); }));
-    r2.appendChild(mkBtn('清空', '', onClearClick));
     body.appendChild(r2);
+
+    // 清空拆成两个按钮：范围完全不同，不能共用一个入口
+    //   「清空」    —— 只清本条视频链接的评论（其它视频、面板设置都保留）
+    //   「全部清空」—— 清掉所有视频的评论与本地去重表（不可恢复，两步确认）
+    var r3 = document.createElement('div');
+    r3.className = 'dts-row dts-actions';
+    var clearBtn = mkBtn('清空', '', onClearClick, 'clear-video');
+    clearBtn.title = '只清空本条视频链接的评论与本地去重记录（其它视频的数据保留）';
+    r3.appendChild(clearBtn);
+    var clearAllBtn = mkBtn('全部清空', 'dts-btn-danger', onClearAllClick, 'clear-all');
+    clearAllBtn.title = '清空所有视频的评论与本地去重表，不可恢复；需连点两次确认';
+    r3.appendChild(clearAllBtn);
+    body.appendChild(r3);
 
     // 设置入口在标题栏的齿轮里（buildPanel 顶部），这里不再占一行
     root.appendChild(head);
@@ -2574,6 +2654,7 @@
     refs.head = head;
     refs.summary = sbox.cur;
     refs.settings = sbox.box;
+    refs.clearAll = clearAllBtn;   // render() 里同步「全部清空」的上膛文案/配色
     refs.inputs = sbox.inputs;
     ui = refs;
     makeDraggable(root, head);
@@ -2603,6 +2684,15 @@
     ui.note.textContent = noteText || '';
     ui.err.textContent = errText || '';
     if (ui.summary) ui.summary.textContent = '当前：' + settingsSummaryText();
+
+    // 「全部清空」上膛态：按钮文案/配色跟着走（否则用户不知道第一次点击已经生效）
+    if (ui.clearAll) {
+      var armed = !!clearAllArmedAt && (Date.now() - clearAllArmedAt) <= CLEAR_ALL_CONFIRM_MS;
+      var want = armed ? '确认全部清空？' : '全部清空';
+      if (ui.clearAll.textContent !== want) ui.clearAll.textContent = want;
+      if (armed) ui.clearAll.classList.add('dts-armed');
+      else ui.clearAll.classList.remove('dts-armed');
+    }
 
     if (total > 0) {
       var pct = Math.max(0, Math.min(100, (seen.size / total) * 100));

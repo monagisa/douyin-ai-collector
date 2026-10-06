@@ -489,6 +489,7 @@ if (fs.existsSync(path.join(devExtDir, 'manifest.json'))) {
   // 内容脚本自测并镜像 bgOk/bgErr，采集器预检 + 刷新页面自愈 + 如实归因。
   const bgSrc = fs.readFileSync(path.join(devExtDir, 'background.js'), 'utf8');
   const ctSrc = fs.readFileSync(path.join(devExtDir, 'content.js'), 'utf8');
+  const cssSrc = fs.readFileSync(path.join(devExtDir, 'panel.css'), 'utf8');
   check('扩展后台有零副作用探针 dts-ping（不回落到 dts-status 以免写脏 videoId=undefined）',
     /msg\.type === 'dts-ping'[\s\S]{0,200}?sendResponse\(\{ ok: true, pong: true/.test(bgSrc));
   check('内容脚本自测后台可达性并镜像 bgOk/bgErr',
@@ -503,6 +504,65 @@ if (fs.existsSync(path.join(devExtDir, 'manifest.json'))) {
     /面板的「清空」没生效（点了 3 次/.test(collectorSrc));
   check('「交付 0 条」如实归因（区分落库失败 vs 真没新评论）',
     /const stalled = \(pageSaw > 0 && all\.length <= beforeCids\.size\) \|\| bgTold;/.test(collectorSrc));
+
+  // ---------- 3a-7) 清空拆成两个按钮（用户 2026-10-06 要求） ----------
+  // 「清空」= 只清本条视频链接的评论；「全部清空」= 清掉所有视频（不可恢复）。
+  // 两个按钮文案都含「清空」，所以按钮上挂 data-dts-act，采集器按挂点精确点，不按文案匹配。
+  check('面板有「清空」与「全部清空」两个按钮，且都带 data-dts-act 挂点',
+    /if \(act\) b\.setAttribute\('data-dts-act', act\);/.test(ctSrc)
+    && /mkBtn\('清空', '', onClearClick, 'clear-video'\)/.test(ctSrc)
+    && /mkBtn\('全部清空', 'dts-btn-danger', onClearAllClick, 'clear-all'\)/.test(ctSrc));
+  check('「全部清空」是两步确认（5 秒内再点一次才真的发 all:true）',
+    /var CLEAR_ALL_CONFIRM_MS = 5000;/.test(ctSrc)
+    && /if \(!clearAllArmedAt \|\| now - clearAllArmedAt > CLEAR_ALL_CONFIRM_MS\)/.test(ctSrc)
+    && /sendClear\(\{ all: true \}\)/.test(ctSrc));
+  check('「全部清空」不受「未识别到视频 ID」限制（那条护栏只管单视频清空）',
+    /function onClearAllClick\(\)[\s\S]{0,400}?clearAllArmedAt = now;/.test(ctSrc)
+    && !/function onClearAllClick\(\)[\s\S]{0,300}?if \(!videoId\)/.test(ctSrc));
+  check('采集器 clearBefore 按 data-dts-act 点「清空本视频」，不会误点「全部清空」',
+    /clickPanel\(\/\^清空\$\/, 'clear-video'\)/.test(collectorSrc)
+    && /p\.querySelector\('\[data-dts-act="' \+ a \+ '"\]'\)/.test(collectorSrc));
+  check('后台 dts-clear 全清分支仍要求显式 all:true（空 videoId 绝不兜底成全清）',
+    /} else if \(msg\.all === true\) \{/.test(bgSrc) && /NO_VIDEO_ID/.test(bgSrc));
+  check('面板 CSS 有危险按钮样式与上膛态样式',
+    /\.dts-btn-danger \{/.test(cssSrc) && /\.dts-btn-danger\.dts-armed \{/.test(cssSrc));
+
+  // ---------- 3a-7) page.evaluate 的参数个数（2026-10-06 真机 E2E 踩坑） ----------
+  // `page.evaluate(fn, a, b)` 只有 1 个参数位（第二参是 options）→ 运行期直接抛
+  // `Too many arguments. If you need to pass more than 1 argument to the function wrap them in an object.`
+  // 当时 clearBefore 一跑就崩（点「清空」这条路径），而静态断言与直接点按钮的真机测试都看不出来。
+  // 这里静态扫 collector.mjs：每个 page.evaluate(...) 在**顶层**（相对它自己的括号）最多 1 个参数。
+  const evaluateArityProblems = (src) => {
+    const out = [];
+    const open = /page\.evaluate\(/g;
+    let m;
+    while ((m = open.exec(src))) {
+      let i = m.index + m[0].length, depth = 1, commas = 0;
+      const quotes = [];
+      for (; i < src.length; i++) {
+        const ch = src[i], prev = src[i - 1];
+        if (quotes.length) {
+          if (ch === '\\') { i++; continue; }
+          if (ch === quotes[quotes.length - 1]) quotes.pop();
+          continue;
+        }
+        if (ch === '"' || ch === "'" || ch === '`') { quotes.push(ch); continue; }
+        if (ch === '/' && prev === '/') { while (i < src.length && src[i] !== '\n') i++; continue; }
+        if (ch === '/' && prev === '*') { i = src.indexOf('*/', i) + 1; continue; }
+        if (ch === '(' || ch === '[' || ch === '{') depth++;
+        else if (ch === ')' || ch === ']' || ch === '}') { depth--; if (depth === 0) break; }
+        else if (ch === ',' && depth === 1) commas++;
+      }
+      if (commas > 1) out.push(src.slice(m.index, m.index + 140).replace(/\s+/g, ' '));
+    }
+    return out;
+  };
+  const arityBad = evaluateArityProblems(collectorSrc);
+  check('collector.mjs 的 page.evaluate 最多只传 1 个参数（多传会抛 Too many arguments）',
+    arityBad.length === 0, arityBad.join(' | '));
+  check('clickPanel 把参数包成一个对象传给 page.evaluate',
+    /page\.evaluate\(\(\{ src, a \}\)/.test(collectorSrc)
+    && /\}, \{ src: re\.source, a: act \|\| '' \}\)/.test(collectorSrc));
 } else {
   console.log('ℹ️ 跳过扩展副本一致性校验（找不到开发目录 ' + devExtDir + '，非开发机上属正常）');
 }

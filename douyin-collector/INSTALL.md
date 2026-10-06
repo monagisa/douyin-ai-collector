@@ -1,6 +1,6 @@
 # 安装 · 使用 · 打包
 
-> 抖音评论采集器 **v0.2.7** — 无 npm 依赖、无构建步骤。  
+> 抖音评论采集器 **v0.2.8** — 无 npm 依赖、无构建步骤。  
 > **适用浏览器：Chrome 111+ / Edge（Chromium）**；**不支持** Firefox / Safari（详见 README「适用范围」）。  
 > v0.2.x：AI Bridge（本地 MCP，见 `../douyin-mcp/README.md`）；采集核心仍为「复用页面签名、只改 cursor」。  
 > 历史要点：v0.1.5 起采二级回复；v0.1.11 起面板绝对坐标拖动 + 开始采集时自动打开评论区；  
@@ -13,7 +13,12 @@
 > v0.2.6 起 AI 桥可**读写设置**（`get_settings` / `set_settings`，`start_collect` 可带 `settings`），配套 MCP `douyin-mcp` 0.3.0 的 `ai_get_settings` / `ai_set_settings`（见 PROTOCOL §7.9）。  
 > v0.2.7 起新增**后台探活**：后台多了零副作用探针 `dts-ping`，内容脚本 `probeBackground()` 会主动探活
 > （状态镜像与面板文案含 `bgOk` / `bgErr` / `bgCheckedAt`）；扩展后台不可达时面板不再谎称「已清空」，
-> 配套插件也会明确报「落库失败（扩展后台不可达）」而不是静默交付 0 条。
+> 配套插件也会明确报「落库失败（扩展后台不可达）」而不是静默交付 0 条。  
+> v0.2.8 起**面板的「清空」拆成两个按键**：`[清空]` 只清**当前视频链接**这一条的去重桶
+> （别的视频与面板设置都不动，没识别到 video ID 时仍然不发清空）；`[全部清空]`（红色危险样式）是
+> **两步确认**——第一次点只把按钮「上膛」成 `确认全部清空？`、数据一条不动，5 秒内再点一次才真清掉
+> 所有视频的评论与去重表（`dts_user_settings` 保留），超时自动复原；全清不受 video ID 护栏限制。
+> 装上新扩展后 **F5 刷新抖音页**（在扩展页点过「重新加载」的旧 content script 会作废）即可看到两个按钮。
 
 ---
 
@@ -52,7 +57,7 @@ content script 把裁剪后的字段交给 background，写入 `chrome.storage.l
 
 ### ④ 清库
 
-`dts-clear`：传 `videoId` 只清该视频，不传清空全部；角标归零。
+`dts-clear`：传 `videoId` 只清该视频（面板「清空」按钮），不传清空全部（面板「全部清空」按钮，两步确认）；角标归零。
 
 ---
 
@@ -66,6 +71,9 @@ content script 把裁剪后的字段交给 background，写入 `chrome.storage.l
 5. 右下角出现面板；必要时按提示打开评论区
 6. 点「开始采集」→ 等待完成/暂停
 7. 点「导出 CSV」或「导出 JSON」
+8. 想清数据：面板最后一行是 `[清空] [全部清空]` ——「清空」只清**当前这条视频链接**的评论
+   （别的视频数据和面板设置都不动）；「全部清空」会清掉所有视频的评论与去重表，
+   为了防手滑要**连点两次**（第一次只是「上膛」确认、数据一条不动，5 秒内再点一次才真清）
 ```
 
 **改过代码后**：在 `chrome://extensions` 点扩展的 **重新加载**，再 **F5 刷新抖音页**。
@@ -124,7 +132,7 @@ content script 把裁剪后的字段交给 background，写入 `chrome.storage.l
 | `onAlarm` TypeError / SW registration failed | 扩展已去掉 chrome.alarms；请在扩展页点「重新加载」强制载入新 background.js |
 | CORS blocked `127.0.0.1` | 重启 douyin-mcp（新版才有 CORS）→ 扩展重新加载 → 打开本目录 `index.html` 探测 /health |
 | 采集秒停 / 0 条 | 刷新页面，让评论区发出请求后再点开始 |
-| 面板说「已清空」但一条不落库 / 工具报「落库失败（扩展后台不可达）」 | 扩展后台（Service Worker）没起来，常见于只清了 `ScriptCache`、留下 `Default/Service Worker/Database`：关掉浏览器，删掉 `Default/Code Cache` 与**整个** `Default/Service Worker` 目录再开。DSH 插件 0.5.5 会自动清并做「后台可达性」预检 |
+| 面板说「已清空」但一条不落库 / 工具报「落库失败（扩展后台不可达）」 | 扩展后台（Service Worker）没起来，常见于只清了 `ScriptCache`、留下 `Default/Service Worker/Database`：关掉浏览器，删掉 `Default/Code Cache` 与**整个** `Default/Service Worker` 目录再开。DSH 插件 0.5.5 起会自动清并做「后台可达性」预检 |
 | 停在少量条数 | 登录态被作废：重新登录抖音并刷新 |
 | 条数远小于页面「X.X万」 | 正常：`total` 含回复/已删除计数，列表接口可翻页集合更小 |
 | 导出无反应 | 查 `chrome://downloads` 与 Service Worker 控制台 |
