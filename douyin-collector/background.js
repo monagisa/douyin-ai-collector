@@ -312,6 +312,7 @@ if (chrome && chrome.runtime && chrome.runtime.onMessage && chrome.runtime.onMes
             const all = await chrome.storage.local.get(null);
             const keys = Object.keys(all).filter((k) => k === KEY_VIDEOS || k.startsWith(PREFIX_COMMENTS));
             await chrome.storage.local.remove(keys);
+            aiLastLive = null;   // 数据全没了，「AI 最近一次活体」也没意义了（与 clear_storage 分支一致）
           } else {
             sendResponse({ ok: false, error: 'NO_VIDEO_ID', hint: '清空需要显式 videoId，或 all:true 全清' });
             break;

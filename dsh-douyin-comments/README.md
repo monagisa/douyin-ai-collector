@@ -1,7 +1,42 @@
 # dsh-douyin-comments
 
 DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**，注册一个工具 `douyin_comments`。
-（插件版本 0.5.5，内置扩展「抖音评论采集器」v0.2.7。）
+（插件版本 0.5.6，内置扩展「抖音评论采集器」v0.2.8。）
+
+**0.5.6 新增**：
+
+1. **面板「清空」拆成两个按键**：原来那一个「清空」现在是 `[清空] [全部清空]`。
+   - **「清空」**（无危险样式，挂点 `data-dts-act="clear-video"`）：只清**当前视频链接**这一条的
+     去重桶 `dts_c_<videoId>`，并从 `dts_videos` 里摘掉这一条；别的视频数据、面板设置
+     `dts_user_settings` 都不动。护栏保留：页面没识别到 videoId 时**不发清空**，提示
+     「未识别到视频 ID，无法清空；请先打开具体视频页/浮层」。
+     提示文案：`已清空本视频的本地去重表与扩展存储；下次「开始采集」将从头重扫`。
+   - **「全部清空」**（红色危险样式 `.dts-btn-danger`，挂点 `data-dts-act="clear-all"`）：
+     **两步确认**——第一次点只「上膛」：按钮变成 `确认全部清空？` 并加 `.dts-armed` 红底强调，
+     提示「再点一次「全部清空」确认：会清掉所有视频的评论与本地去重表（不可恢复），5 秒内有效」，
+     **数据一条不动**；5 秒内第二次点才真清（清掉所有 `dts_c_*` 与 `dts_videos`，
+     保留 `dts_user_settings`），提示「已清空全部视频的评论与本地去重表（共 N 个视频）；
+     下次「开始采集」将从头重扫」；超过 5 秒按钮文案自动复原成「全部清空」。
+     它**不受**「未识别到视频 ID」护栏限制（在任意页面都能全清）。
+2. **内置扩展升到 0.2.8**（插件 0.5.6 自带的那份）：两个按钮都有 `data-dts-act` 挂点，
+   采集器用 `[data-dts-act="clear-video"]` 点「清空」（老版本扩展没有挂点时才退回按文案
+   `/^清空$/` 找按钮）；后台仍然要求 `msg.all === true` 才做「全部清空」，并保留 `NO_VIDEO_ID` 护栏。
+3. **修掉采集器一个致命 bug：`page.evaluate` 传了多余参数**（真机 E2E 抓到）。
+   Playwright 的 `page.evaluate(fn, arg)` 只有**一个**参数位（第二参是 options），而本版新写的
+   `clickPanel(re, act)` 误写成 `page.evaluate((src, a) => {...}, re.source, act)` —— 于是只要
+   `clearBefore: true` 就立刻抛
+   `Too many arguments. If you need to pass more than 1 argument to the function wrap them in an object.`
+   （离线断言、直接点按钮的真机测试都看不出来，只有真跑一轮采集才会崩）。现已改成把参数包成
+   一个对象：`page.evaluate(({ src, a }) => {...}, { src: re.source, a: act || '' })`。
+4. **自测**：`node verify-tool.mjs` 全绿 **121/121**（原 113 + 新增 8 条：两个按钮与 `data` 挂点、
+   「全部清空」两步确认、全清不设 videoId 限制、采集器按挂点点「清空」、后台仍要求 `all===true`
+   且保留 `NO_VIDEO_ID`、CSS 有危险样式与上膛样式、`page.evaluate` 最多只传 1 个参数（静态扫描）、
+   `clickPanel` 把参数包成一个对象）；真机按钮验证 **18/18 全过**
+   （面板两个按钮、单视频清空只清本条、第一次点全清只上膛不动数据、5 秒过期复原、第二次点真全清、
+   设置保留；测试前后真实 profile 的存储键集合完全还原，脚本跑完即删）；真机端到端采集
+   （`max=20`、`clearBefore=true`、`https://www.douyin.com/video/7660328050596371819`）交付 **196 条**，
+   CSV 记录数 = JSON 条数 = 196，扩展 v0.2.8。
+   配套 MCP `douyin-mcp` **没动，仍是 0.3.1**。
 
 **0.5.5 新增**：
 
@@ -109,7 +144,7 @@ DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**
 
 特点：
 
-- **自带 Chrome 扩展**（抖音评论采集器 v0.2.7）。第一次调用时会自动把扩展装进它启动的浏览器，
+- **自带 Chrome 扩展**（抖音评论采集器 v0.2.8）。第一次调用时会自动把扩展装进它启动的浏览器，
   不需要使用者手动「加载已解压的扩展程序」；扩展面板标题栏自带设置齿轮 `⚙`（0.2.5 起，在「—」左边）。
 - **只交付本次新采的数据**：结束时按 `cid` 差集剔除旧数据，只交付本轮新增的；
   一条新数据都没有就返回失败并说明原因，绝不把上一轮残留当成本轮结果。
@@ -134,8 +169,8 @@ dsh plugin --profile web add file:D:\dycopy\dsh-douyin-comments
 方式二：tarball 安装（把包发给别人时用）
 
 ```powershell
-# 对方收到 dsh-douyin-comments-0.5.5.tgz 后：
-dsh plugin --profile web add file:C:\path\to\dsh-douyin-comments-0.5.5.tgz
+# 对方收到 dsh-douyin-comments-0.5.6.tgz 后：
+dsh plugin --profile web add file:C:\path\to\dsh-douyin-comments-0.5.6.tgz
 ```
 
 装完必须**重启 dsh web**：模块解析表在进程启动时冻结，新插件的工具要重启后才可见。
@@ -283,6 +318,14 @@ node _demo_autoinstall.mjs https://www.douyin.com/video/7660328050596371819     
 | 负向（假装拿不到签名）`_nosig.txt` | ok=false、count=0、不写文件 |
 | 吞吐 | 约 30~70 条/秒（469 条 / 13.8s；1010 条 / 14.1s；8 路 405 条 / 9.8s） |
 
+实测记录（2026-10-06，v0.5.6）：
+
+| 用例 | 结果 |
+| --- | --- |
+| 离线自检 `node verify-tool.mjs` | **121/121**（新增 8 条：两个清空按钮与 `data-dts-act` 挂点、全清两步确认、全清不设 videoId 限制、采集器按挂点点「清空」、后台仍要求 `msg.all===true` 且保留 `NO_VIDEO_ID`、CSS 有危险样式与上膛样式、`page.evaluate` 最多只传 1 个参数、`clickPanel` 把参数包成一个对象） |
+| 真机面板按钮 E2E（新脚本，跑完即删） | **18/18 全过**：面板两个按钮、单视频清空只清本条、第一次点全清只上膛不动数据、5 秒过期复原、第二次点真全清、设置保留；测试前后真实 profile 的存储键集合完全还原 |
+| 真机端到端采集（`max=20`、`clearBefore=true`、`https://www.douyin.com/video/7660328050596371819`） | 交付 **196 条**、`phase=paused`（到量落盘）、扩展 v0.2.8、CSV 记录数 = JSON 条数 = 196；**这一轮才暴露出并修掉 `page.evaluate` 多传参数的崩溃** |
+
 ## 运行时验证（真 DSH agent 调用，不是模拟）
 
 上面那些是直接调 `collector.mjs` 的验收。要验证「装进 profile 后 agent 真的能调用」，用一次性 headless profile：
@@ -322,30 +365,30 @@ node sync-extension.mjs D:\path\to\ext
 
 ## 打包 / 发布
 
-发布物在 `D:\dycopy\release\dsh-douyin-comments-v0.5.5\`：
+发布物在 `D:\dycopy\release\dsh-douyin-comments-v0.5.6\`：
 
 | 文件 | 说明 |
 | --- | --- |
-| `dsh-douyin-comments-0.5.5.tgz` | 插件本体，14 个文件（`index.js`/`collector.mjs`/`cordis.patch.yml`/`README.md`/`package.json` + `client/client.js` + `extension/` 8 个） |
-| `douyin-collector-extension-v0.2.7.zip` | 单独的扩展 zip，顶层目录 `douyin-collector/`（8 个文件），供 `chrome://extensions` 手动「加载已解压的扩展程序」 |
+| `dsh-douyin-comments-0.5.6.tgz` | 插件本体，14 个文件（`index.js`/`collector.mjs`/`cordis.patch.yml`/`README.md`/`package.json` + `client/client.js` + `extension/` 8 个） |
+| `douyin-collector-extension-v0.2.8.zip` | 单独的扩展 zip，顶层目录 `douyin-collector/`（8 个文件），供 `chrome://extensions` 手动「加载已解压的扩展程序」 |
 | `使用说明.md` | 给收件人看的中文说明（安装/扫码/两处设置/参数/FAQ/macOS） |
 | `SHA256SUMS.txt` | 三个文件的 SHA256 |
 
-再外面还有 `D:\dycopy\release\dsh-douyin-comments-v0.5.5.zip`（把上面整目录打成一个单文件，方便直接发给人）。
+再外面还有 `D:\dycopy\release\dsh-douyin-comments-v0.5.6.zip`（把上面整目录打成一个单文件，方便直接发给人）。
 
-草稿目录 `D:\dycopy\release\dsh-douyin-comments-v0.5.4\` 是上一版，保留作对照。
+草稿目录 `D:\dycopy\release\dsh-douyin-comments-v0.5.5\` 是上一版，保留作对照（更早的 v0.5.4 及以前也都在，不删）。
 
 重新打包：
 
 ```powershell
 cd D:\dycopy\dsh-douyin-comments
-npm pack --pack-destination D:\dycopy\release\dsh-douyin-comments-v0.5.5
+npm pack --pack-destination D:\dycopy\release\dsh-douyin-comments-v0.5.6
 
 # 扩展开 zip（顶层目录名必须是 douyin-collector；只装 8 个运行文件，别把 md 打进去）。
 # 用 .NET ZipFile 逐个 CreateEntry 造，避免 Compress-Archive 多套一层目录：
-$rel = 'D:\dycopy\release\dsh-douyin-comments-v0.5.5'
+$rel = 'D:\dycopy\release\dsh-douyin-comments-v0.5.6'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-$zip = [IO.Compression.ZipFile]::Open("$rel\douyin-collector-extension-v0.2.7.zip", 'Create')
+$zip = [IO.Compression.ZipFile]::Open("$rel\douyin-collector-extension-v0.2.8.zip", 'Create')
 Get-ChildItem D:\dycopy\douyin-collector -File |
   Where-Object { $_.Extension -in '.js','.json','.css','.html' } |
   ForEach-Object { [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $_.FullName, "douyin-collector/$($_.Name)") | Out-Null }
@@ -355,7 +398,7 @@ $zip.Dispose()
 **注意**：清空发布目录时别用 `Remove-Item "$rel\*" -Recurse -Force` —— 它不进回收站，会把里面刚写好的
 `使用说明.md` 一起删掉（v0.5.2 打包时踩过，靠旧的外层 zip 解出来才恢复）。要保留的文件先复制到别处。
 
-打包验收（**全新 profile 从 tgz 装**，2026-10-05 实测通过，日志 `_accept_tgz.txt`）：
+打包验收（**全新 profile 从 tgz 装**，2026-10-05 对 v0.5.5 实测通过，日志 `_accept_tgz.txt`；v0.5.6 打包后按同样三步验收）：
 
 ```powershell
 mkdir C:\Users\mo\.dsh\profiles\pkgtest     # package.json：dsh.profile.bundles = ["@deepseek-ai/dsh-base","@deepseek-ai/dsh-headless"]
@@ -365,13 +408,20 @@ dsh --profile pkgtest headless '用 douyin_comments 工具采集 https://www.dou
 # ⇒ ok=true，CSV 落在 ~\.dsh\douyin-collector\out\（实测两轮：194 条 / 227 条——按页落库，条数每轮不同）
 ```
 
+> 上面那段是 **v0.5.5 的历史实测记录**（命令里的 `v0.5.5` 路径是当时的真实命令，刻意不改）。
+> v0.5.6 打包后照抄同样三步，只把包路径换成本版：
+
+```powershell
+dsh plugin --profile pkgtest add file:D:\dycopy\release\dsh-douyin-comments-v0.5.6\dsh-douyin-comments-0.5.6.tgz
+```
+
 - 依赖 `playwright-core ^1.63.0`（13 MB，只有驱动、不含浏览器）由 `dsh plugin add` 自动装进 profile；
   浏览器优先用 ms-playwright 的 chromium，找不到就用系统已装的 Chrome / Edge（mac 上也找
   `~/Library/Caches/ms-playwright`；品牌版 Chrome 137+ 会打警告并建议换 Chromium）。
 
 ## 与其他组件的关系
 
-- 浏览器里跑的扩展本体在 `D:\dycopy\douyin-collector\`（权威开发目录，v0.2.7）；插件里的 `extension/`
+- 浏览器里跑的扩展本体在 `D:\dycopy\douyin-collector\`（权威开发目录，v0.2.8）；插件里的 `extension/`
   由 `node sync-extension.mjs` 单向同步过去（同步后会反向清理白名单外的旧文件；别再手动复制）。
   插件每次启动都会把扩展 hash 记进 `~/.dsh/douyin-collector/extension.launched.json`，一变就清掉
   profile 里的旧脚本缓存再开浏览器。**注意清的范围**：要清 `Default/Code Cache` + **整个**

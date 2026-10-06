@@ -894,12 +894,22 @@ export async function collectDouyinComments(o = {}) {
         panel: p ? p.innerText.replace(/\s+/g, ' ') : '',
       };
     });
-    const clickPanel = (re) => page.evaluate((src) => {
+    /**
+     * 点面板上的按钮。给了 act 就**优先**按 data-dts-act 精确匹配：面板上「清空」与
+     * 「全部清空」都含「清空」，按文案匹配会点错（clearBefore 只想清本条视频）。
+     * 找不到 data 挂点（老版本扩展）时退回按文案正则。
+     */
+    const clickPanel = (re, act) => page.evaluate(({ src, a }) => {
       const p = document.getElementById('dts-collector-panel');
-      const b = p && [...p.querySelectorAll('button')].find((x) => new RegExp(src).test(x.innerText));
+      if (!p) return false;
+      let b = a ? p.querySelector('[data-dts-act="' + a + '"]') : null;
+      if (!b) b = [...p.querySelectorAll('button')].find((x) => new RegExp(src).test(x.innerText));
       if (b) { b.click(); return true; }
       return false;
-    }, re.source);
+      // 注意：page.evaluate() 只接受**一个**参数（第二参是 options）。写成 (fn, re.source, act)
+      // 会直接抛 `Too many arguments. If you need to pass more than 1 argument to the function
+      // wrap them in an object.`（2026-10-06 真机 E2E 踩过：clearBefore 一跑就崩）。
+    }, { src: re.source, a: act || '' });
     /**
      * 只在「扩展自己的」service worker / 扩展页里 eval。
      * 不能用 ctx.serviceWorkers()[0]：抖音页面自己也注册了 sw.js，清过脚本缓存后它可能排在前面，
@@ -987,7 +997,7 @@ export async function collectDouyinComments(o = {}) {
       // ② 首次点击撞上扩展的异步串扰。所以第一次没清掉就再点一次，
       //    并把面板自己的文案（note/error/phase）带进日志，别再让用户对着「交付 0 条」猜。
       const clickAndCheck = async () => {
-        if (!(await clickPanel(/清空/))) return { clicked: false, left: -1 };
+        if (!(await clickPanel(/^清空$/, 'clear-video'))) return { clicked: false, left: -1 };
         await sleep(1800);
         const after = await readBucket(s.videoId || s.liveVideoId || vid);
         return { clicked: true, left: after.keys.length };
