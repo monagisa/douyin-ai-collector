@@ -1,6 +1,6 @@
 # 安装 · 使用 · 打包
 
-> 抖音评论采集器 **v0.2.10** — 无 npm 依赖、无构建步骤。  
+> 抖音评论采集器 **v0.2.11** — 无 npm 依赖、无构建步骤。  
 > **适用浏览器：Chrome 111+ / Edge（Chromium）**；**不支持** Firefox / Safari（详见 README「适用范围」）。  
 > v0.2.x：AI Bridge（本地 MCP，见 `../douyin-mcp/README.md`）；采集核心仍为「复用页面签名、只改 cursor」。  
 > 历史要点：v0.1.5 起采二级回复；v0.1.11 起面板绝对坐标拖动 + 开始采集时自动打开评论区；  
@@ -19,6 +19,13 @@
 > **两步确认**——第一次点只把按钮「上膛」成 `确认全部清空？`、数据一条不动，5 秒内再点一次才真清掉
 > 所有视频的评论与去重表（`dts_user_settings` 保留），超时自动复原；全清不受 video ID 护栏限制。
 > 装上新扩展后 **F5 刷新抖音页**（在扩展页点过「重新加载」的旧 content script 会作废）即可看到两个按钮。  
+> v0.2.11 起**导出只有一份实现、AI/MCP 也能「全部视频」导出**：面板「导出 CSV/JSON」按钮与
+> Hub(AI/MCP) 的 `export` 命令现在共用 `background.js` 的 `exportComments(opts)`，行为完全一致；
+> `export` 新增 `all:true`——不传 `videoId` 也能把本地所有视频合成一份导出（每条评论标 `videoId`，
+> CSV 末尾追加 `video_id` 列、前 17 列不变，文件名 `douyin-comments-all-<时间戳>.csv|json`）。
+> 导出失败口径统一：既没 `videoId` 又没 `all` 回 `MISSING_VIDEO_ID`（hint 提示可传 `all:true`），
+> 本地确实没评论数据回 `EMPTY_POOL`——**不再下载一个只有表头的空 CSV**；面板失败提示会带上后台给的
+> `hint`（`导出失败：<error>（<hint>）`）。面板 UI、按钮与存储格式都没有变化。  
 > v0.2.10 起**清空会自检，失败不再谎报**：以前 `sendClear` 不等后台回包，扩展刚在 `edge://extensions`
 > 重新加载 / 后台没响应时面板照样显示「已清空」，其实 `chrome.storage.local` 里一条都没动；现在点
 > 「清空 / 全部清空」会**等后台回包**，再由内容脚本 `verifyCleared(vid, all, cb)` **直接读回

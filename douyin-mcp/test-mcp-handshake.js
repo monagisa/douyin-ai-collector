@@ -45,8 +45,10 @@ function handshake(label, port, mode) {
           const hasTools = out.includes('ai_status');
           const hasSettingsTools = out.includes('ai_get_settings') && out.includes('ai_set_settings');
           const hasMaxParam = out.includes('目标条数上限');
+          // 0.3.2：ai_export 必须同时暴露 videoId 与 all（全部视频导出）
+          const hasExportAll = out.includes('ai_export') && out.includes('导出本地全部视频') && out.includes('"all"');
           try { child.kill(); } catch (e) {}
-          resolve({ label, ok: true, hasTools, hasSettingsTools, hasMaxParam, out: out.slice(0, 350), err: err.slice(0, 350) });
+          resolve({ label, ok: true, hasTools, hasSettingsTools, hasMaxParam, hasExportAll, out: out.slice(0, 350), err: err.slice(0, 350) });
         }, 300);
       }
     });
@@ -106,6 +108,6 @@ function handshake(label, port, mode) {
   ];
   try { holder.kill(); } catch (e) {}
   console.log(JSON.stringify(results, null, 2));
-  if (!results.every((r) => r.ok && r.hasTools && r.hasSettingsTools && r.hasMaxParam)) process.exit(1);
+  if (!results.every((r) => r.ok && r.hasTools && r.hasSettingsTools && r.hasMaxParam && r.hasExportAll)) process.exit(1);
   console.log('ALL MCP HANDSHAKE: PASS');
 })();

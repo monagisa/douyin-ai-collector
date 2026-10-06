@@ -564,7 +564,7 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
   （见本节前面的实测），这时把 `replyThrottleMaxWaitMs` 放宽到 60~300 秒比反复重跑更省事；
   仍然被拒就降 `replyLanes` 到 1~2、加大 `replyGapMs`。
 
-### 3.10 跨视频可见性与导出范围（v0.2.9 新增：`dts-stats` / `dts-export` 的 `all` 分支；v0.2.10 起 `dts-stats` 带请求序号 `localStatsSeq`）
+### 3.10 跨视频可见性与导出范围（v0.2.9 新增：`dts-stats` / `dts-export` 的 `all` 分支；v0.2.10 起 `dts-stats` 带请求序号 `localStatsSeq`；v0.2.11 起 Hub `export` 与面板导出共用 `exportComments`，也支持 `all`）
 
 **背景**：用户报「上一条视频采集完成，我又去下一条，点击开始采集，结果上一条采集完的数据没了」。
 **数据并没有丢** —— 评论一直按视频分桶存在 `chrome.storage.local` 的 `dts_c_<videoId>`
@@ -609,6 +609,14 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
 - background 实现要点：`toCsv(comments, { withVideoId: wantAll })` 只在 `withVideoId` 为真时把
   `video_id` 推进列头、并给每行追加一列；不带该选项时列数、列序完全不变。
 - 导出是**只读**操作：不删、不改任何存储键（面板「清空」按钮才走 `dts-clear`，见 §3.6）。
+- **v0.2.11 起导出只有一份实现**：面板「导出 CSV/JSON」（`dts-export`）与 Hub(AI/MCP) 的 `export`
+  命令**共用** `background.js` 的 `async function exportComments(opts)`（`case 'export':` 与面板按钮
+  路径都走它），行为完全一致；Hub `export` 也支持 `all:true`（不传 `videoId` 时把本地所有视频合成
+  一份，每条评论标 `videoId`）。Hub 回包约定：**成功主体放 `result`**——`{ok:true, result:{scope, videoId, videoCount, count, topLevelCount, replyCount, format, filename, bytes, downloadId, path}}`；**失败保持顶层** `{ok:false, error, hint}`。失败口径统一：
+  既没 `videoId` 又没 `all:true` → `MISSING_VIDEO_ID`（hint 提示可传 `all:true`）；本地确实没有
+  评论数据 → `EMPTY_POOL`（全量时 hint 提示先采集或用 `list_videos` / `get_comments` 确认）。
+  **不再下载一个只有表头的空 CSV**（以前「导出成功」会掩盖「本来就是空的」）。
+- 面板导出失败时的提示会带上后台给的 `hint`：文案形如 `导出失败：<error>（<hint>）`。
 
 ## 4. 测试要求（实现者 B）
 
@@ -874,7 +882,7 @@ Hub 对 **MCP 客户端** 的内部接口（同进程 in-memory / 可选 localho
 | `clear_page` | content.js | 等价面板「清空」（页面内存 + `dts-clear`）。**v0.2.8 起面板有两个清空按钮，它对应的是「清空」（只清本条视频）**，不是「全部清空」。**v0.2.10 起**桥回包 `{ok:true}` 之后内容脚本仍会读回 `chrome.storage.local` 自检（`verifyCleared`），**只有真清掉才显示「已清空」**；失败时回「清空没有生效」并带「`edge://extensions` 重新加载 + F5 刷新」指引（详见 §3.6） |
 | `list_videos` | background | `dts_videos` 列表 |
 | `get_comments` | background | 按 videoId 读评论；支持 `mode=summary\|page` |
-| `export` | background / content | 复用 `dts-export`，返回 `filename/bytes/path`；v0.2.9 起可带 `all:true` 走「全部视频」（CSV 末尾多 `video_id` 列，见 §3.10） |
+| `export` | background / content | 复用 `dts-export`，返回 `filename/bytes/path`；v0.2.9 起可带 `all:true` 走「全部视频」（CSV 末尾多 `video_id` 列，见 §3.10）。**v0.2.11 起与面板「导出 CSV/JSON」共用 `exportComments()`**：`all:true` 时不传 `videoId` 也能导出；**成功回包主体放 `result`**（`scope / videoCount / count / topLevelCount / replyCount / format / filename / bytes / downloadId / path`），**失败保持顶层** `{ok:false, error, hint}`，口径统一 `MISSING_VIDEO_ID`（既没 videoId 又没 all，hint 提示可传 `all:true`）/ `EMPTY_POOL`（本地无数据），**不再下载只有表头的空 CSV**（详见 §3.10） |
 | `clear_storage` | background | 复用 `dts-clear`：带 `videoId` = 只清那条视频（等价面板「清空」）；不带给 `all:true` = 清全部（等价面板「全部清空」，面板那层多一个连点两次的 UI 护栏，桥调用不需要） |
 
 页面类命令失败时必须回 **可操作 hint**（例如：没有抖音 tab、扩展未就绪请刷新页面、网格页请先点开视频）。
@@ -905,7 +913,7 @@ Hub 对 **MCP 客户端** 的内部接口（同进程 in-memory / 可选 localho
 | `ai_get_settings` | — | 读设置快照（external / user / effective / precedence / limits） |
 | `ai_set_settings` | `scope?=external\|panel`、`clear?=external\|user\|all`，以及「设置参数」 | 写设置或清设置；两样都空 → `NO_SETTINGS`（不会发桥命令） |
 | `ai_get_comments` | `videoId`, `mode=summary\|page`, `limit?`, `offset?`, `fields?` | 默认摘要，避免刷爆上下文 |
-| `ai_export` | `videoId`, `format=csv\|json` | 文件名/路径 |
+| `ai_export` | `videoId?`, `all?`, `format=csv\|json` | 文件名/路径；`all:true`（需扩展 ≥ 0.2.11）不传 `videoId` 也能导出本地全部视频合成一份（CSV 末列 `video_id`、回包带 `videoCount`）；两者都不传时 MCP 自己就拒（`videoId 必填`，不发桥命令），旧扩展回 `MISSING_VIDEO_ID` 时补一句「扩展可能太旧（< 0.2.11）」。回包已把 Hub 的 `result` **拍平**（`scope / videoCount / count / topLevelCount / replyCount / format / filename / bytes / path`） |
 | `ai_clear_storage` | `videoId?` | 清空（可选） |
 
 **设置参数**（`ai_start_collect` / `ai_set_settings` 通用）: `max`（AI 别名，等价面板齿轮的「目标条数 max」）、`maxCount`、`lanes`、`replyLanes`、`replyGapMs`、`replyWarmupMs`、`replyThrottleMaxWaitMs`。`max` 与 `maxCount` 同时给时以 `max` 为准。

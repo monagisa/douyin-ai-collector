@@ -5,6 +5,13 @@
 - **不破解签名** · **不绕过登录** · **不伪造请求**  
 - 复用页面自己生成的签名请求，只改分页 `cursor` / `count`  
 - 数据只落在本机 `chrome.storage.local`，可导出后自行分析  
+- v0.2.11：**导出只有一份实现 + AI/MCP 也能「全部视频」导出**——面板「导出 CSV / 导出 JSON」与 Hub(AI/MCP)
+  的 `export` 命令现在**共用同一份实现** `background.js` 的 `async function exportComments(opts)`，
+  行为完全一致（以前是两份各写各的）；Hub `export` 新增 `all:true`：**不传 `videoId` 也能导出**——
+  把本地所有视频的评论合成一份，每条评论标上 `videoId`，CSV **末尾追加 `video_id` 一列**（前 17 列不变），
+  文件名 `douyin-comments-all-<时间戳>.csv|json`，JSON 里 `scope:"all"` 且带 `videos` 摘要；
+  导出失败口径统一（既没 `videoId` 又没 `all` → `MISSING_VIDEO_ID`；本地确实没数据 → `EMPTY_POOL`），
+  **不再下载一个只有表头的空 CSV**；面板导出失败的提示会带上后台给的 `hint`（`导出失败：<error>（<hint>）`）。
 - v0.2.10：**清空会自检**——后台没响应 / 扩展刚重新加载时不再谎称「已清空」，而是提示你重新加载扩展并 F5；修掉「全部清空后『本地已存』还显示旧数字」的旧回包竞态。
 - v0.2.9：**面板新增「本地已存」+ 导出范围（本条视频 / 全部视频）**——换视频**不会丢数据**，
   评论一直按 `videoId` 分池存在本地（`dts_c_<videoId>`，一个视频一个桶），
@@ -190,6 +197,35 @@ is_reply, parent_cid
 
 **JSON** 含 `videoId` / `count` / `topLevelCount` / `replyCount` / `comments[]` 等字段。
 
+### v0.2.11：导出只有一份实现 + Hub/MCP 也能「全部视频」导出
+
+**导出实现合并成一份**：`background.js` 新增 `async function exportComments(opts)`（第 227 行起），
+面板「导出 CSV/JSON」按钮（内容脚本发 `dts-export` 消息）与 AI/MCP 走的 Hub 命令 `export`
+（`background.js` 第 708 行 `case 'export':`）**现在共用这一份实现**，行为完全一致
+（以前是两份各写各的）。
+
+**Hub 的 `export` 命令新增 `all:true`**：不传 `videoId` 也能导出——把本地所有视频的评论合成一份，
+每条评论标上 `videoId`，CSV **末尾追加 `video_id` 一列**（前 17 列契约不变，列顺序：
+…`is_reply,parent_cid` 之后是 `video_id`）；文件名 `douyin-comments-all-<时间戳>.csv|json`
+（单视频仍是 `douyin-comments-<videoId>-<时间戳>.*`）。JSON 里 `scope:"all"` 且带
+`videos:[{videoId,title,count}]` 摘要。
+
+**导出失败口径统一**（面板与 Hub 一样）：
+
+- 既没 `videoId` 又没 `all:true` →
+  `{ok:false, error:'MISSING_VIDEO_ID', hint:'export 需要 videoId 参数；要导出本地全部视频请传 all:true'}`
+- 本地确实没有评论数据 → `{ok:false, error:'EMPTY_POOL', hint:'该 videoId 本地没有评论数据'}`；
+  全量时 `hint:'本地还没有任何评论数据：先采集，或用 list_videos / get_comments 确认'`
+- **不再下载一个只有表头的空 CSV**（以前「导出成功」会掩盖「本来就是空的」）。
+
+**Hub 成功回包结构**（Hub 命令约定：成功主体放 `result`）：
+`{ok:true, result:{scope:'all'|'video', videoId, videoCount, count, topLevelCount, replyCount, format, filename, bytes, downloadId, path}}`；
+失败保持顶层 `{ok:false, error, hint}`。
+
+面板导出失败时的提示现在会带上后台给的 `hint`：文案形如 `导出失败：<error>（<hint>）`。
+
+`manifest.json` 版本 → **0.2.11**。面板 UI、按钮、存储格式**没有**任何变化。
+
 ### v0.2.10：清空自检，失败不再谎报
 
 用户报「**为什么全部清空没有用，本地已存还是在**」。真机复现后确认这是**面板显示/自检的 bug**，数据本身没问题：
@@ -219,9 +255,11 @@ is_reply, parent_cid
   `确认全部清空？`，`CLEAR_ALL_CONFIRM_MS = 5000` 内再点一次才真清），后台 `dts-clear` 仍要求
   显式 `all:true`，空 videoId 绝不兜底成全清。
 
-**自测**：离线 `node verify-tool.mjs` **135/135 全绿**（上一版 130/130；新增 5 条断言：`sendClear`
+**自测**：离线 `node verify-tool.mjs` **137/137 全绿**（上一版 130/130 → 135（清空自检 5 条：`sendClear`
 等后台回包、清空后读回 storage 自检、失败文案带 `edge://extensions` 重新加载 + F5 指引、
-统计请求序号作废在途旧回包、失败文案必须走 `setPhase` 的 `err` 参数不被清空）。真机验收（两条路径，
+统计请求序号作废在途旧回包、失败文案必须走 `setPhase` 的 `err` 参数不被清空）→ 137（本版 2 条：
+① Hub(AI/MCP) 的 `export` 命令也支持 `all`，成功放 `result`、失败保持顶层 `error+hint`；
+② 导出失败口径统一 `MISSING_VIDEO_ID`（提示可传 all）/ `EMPTY_POOL`，不再下载只有表头的空 CSV））。真机验收（两条路径，
 临时脚本 + 临时 profile，跑完已删）：① 正常清空 9/9——种两个视频的桶 → 面板先显示「本地已存
 2 个视频 / 7 条」→ 点「清空」只清当前视频、其它视频保留、面板立刻「1 个视频 / 4 条」→ 点「全部清空」
 （两步确认）→ 存储里 `dts_c_*` 与 `dts_videos` 全没了，且面板「本地已存」**立刻**变成「暂无」
