@@ -19,6 +19,12 @@ const check = (name, ok, detail = '') => {
   results.push({ name, ok, detail });
   console.log(`${ok ? '✅' : '❌'} ${name}${detail ? ' — ' + detail : ''}`);
 };
+// 版本比较：三件套自 v0.5.15 起统一编号，这里用语义比较而不写死字符串
+const verNum = (v) => String(v).split('.').map((n) => parseInt(n, 10) || 0);
+const verAtLeast = (v, maj, min, pat) => {
+  const a = verNum(v);
+  return a[0] > maj || (a[0] === maj && (a[1] > min || (a[1] === min && a[2] >= pat)));
+};
 
 // ---------- 1) 注册定义 ----------
 const registered = [];
@@ -156,7 +162,7 @@ check('readSettings 把路数钳在 1..8', mod.readSettings({ lanes: vbox(99) })
 check('插件描述里交代了设置入口', /设置/.test(String(def.description || '')) && /lanes|并发路数/.test(String(def.description || '')));
 check('输出 schema 里有 lanes（能看出实际用了几路）', schemaProps.includes('lanes'), schemaProps.join(','));
 check('出厂默认 max = 80000（= 扩展评论池上限）', DEFAULTS.max === 80000, String(DEFAULTS.max));
-check('出厂默认顶层路数 = 3（v0.2.15 错峰多路；1 = 老单路）', DEFAULTS.lanes === 3, String(DEFAULTS.lanes));
+check('出厂默认顶层路数 = 3（v0.5.13 错峰多路；1 = 老单路）', DEFAULTS.lanes === 3, String(DEFAULTS.lanes));
 check('出厂默认超时 = 30 分钟（够采几万条）', DEFAULTS.timeoutMs === 1800000, String(DEFAULTS.timeoutMs));
 check('出厂默认不清空（保住扩展的断点续采）', DEFAULTS.clearBefore === false, String(DEFAULTS.clearBefore));
 check('回复类出厂默认：并发 0=跟扩展内置、限流 0=跟内置、无进展 900s',
@@ -180,7 +186,7 @@ check('工具描述交代了用户报障时找 logPath/snapshotDir',
   /logPath/.test(String(def.description || '')) && /snapshotDir/.test(String(def.description || '')), '');
 const partialText = def.output.render({}, {
   ok: true, error: '', videoId: '123', title: '标题', count: 7, csvPath: 'a.csv', jsonPath: 'a.json',
-  phase: 'paused', note: '超时收工', durationSec: 30, extensionVersion: '0.2.15', extensionInstalled: false,
+  phase: 'paused', note: '超时收工', durationSec: 30, extensionVersion: '0.5.15', extensionInstalled: false,
   sample: [], lanes: 3, logPath: 'D:\\logs\\x.log', snapshotDir: 'D:\\failures\\x',
 }).map((x) => x.text).join('\n');
 check('render 成功但没采完时会指出现场快照', partialText.includes('D:\\failures\\x'), partialText.split('\n').slice(-1)[0]);
@@ -367,14 +373,14 @@ const stamp = path.join(DEFAULTS.home, 'extension.installed.json');
 check('写了安装戳', fs.existsSync(stamp), stamp);
 check('哈希 16 位', /^[0-9a-f]{16}$/.test(ext.hash), ext.hash);
 
-// ---------- 3a) 扩展侧：顶层列表「错峰多路」（v0.2.15），1 路 = 老单路 ----------
+// ---------- 3a) 扩展侧：顶层列表「错峰多路」（v0.5.13），1 路 = 老单路 ----------
 // 2026-10-06 真机实测（视频 7692405235813272867）：4 路**同时**发只有 492 条唯一一级评论
-// （c50/c100/c150 拿到同一页），单路串行 714~744 条 ⇒ 0.2.12 固定单路。
+// （c50/c100/c150 拿到同一页），单路串行 714~744 条 ⇒ 0.5.10 固定单路。
 // 2026-10-07 复现并量化（临时探针 _lanes_probe.mjs / _lanes_probe2.mjs）：
 //   · 同时发 4 个 cursor：Σ200 条、去重后只有 56 条，next 字段还对（静默少采）；
 //   · 错峰 200ms / 500ms：唯一 200/200；
 //   · 扫完整个列表（21 页）：单路含 400ms 间隔 15.79s vs 错峰 4 路 7.72s，唯一 907 vs 912。
-// 所以 v0.2.15 改成错峰多路（默认 3 路），并加「两路同页 ⇒ 当轮降回单路」兜底。
+// 所以 v0.5.13 改成错峰多路（默认 3 路），并加「两路同页 ⇒ 当轮降回单路」兜底。
 const contentSrc = fs.readFileSync(path.join(ext.dir, 'content.js'), 'utf8');
 check('扩展读运行时设置 dts_settings 且保留内置 MAX_LANES 兜底',
   /loadRuntimeSettings/.test(contentSrc) && /dts_settings/.test(contentSrc) && /MAX_LANES/.test(contentSrc));
@@ -412,12 +418,12 @@ check('回复限流预算、并发、间隔都能被 dts_settings 覆盖（不�
   /RS\.replyThrottleMaxWaitMs/.test(contentSrc) && /RS\.replyLanes/.test(contentSrc) && /RS\.replyGapMs/.test(contentSrc)
   && /RS\.replyWarmupMs/.test(contentSrc),
   ['replyThrottleMaxWaitMs', 'replyLanes', 'replyGapMs', 'replyWarmupMs'].filter((k) => contentSrc.includes('RS.' + k)).join(','));
-check('内置默认：回复并发 4、间隔 600ms、等窗口总预算 120 秒（v0.2.14；面板可设回 10 秒）',
+check('内置默认：回复并发 4、间隔 600ms、等窗口总预算 120 秒（v0.5.12；面板可设回 10 秒）',
   /const REPLY_LANES = 4;/.test(contentSrc) && /const REPLY_GAP_MS = 600;/.test(contentSrc)
   && /const REPLY_THROTTLE_MAX_WAIT_MS = 120 \* 1000;/.test(contentSrc),
   (contentSrc.match(/const REPLY_LANES = \d+;.*/) || [''])[0]);
-check('装出来的扩展 ≥ 0.2.3（0.2.2 不认识回复限流设置）',
-  /^0\.2\.(3|[4-9]|\d\d+)$/.test(String(targetManifest.version)) || Number(String(targetManifest.version).split('.')[1]) >= 3,
+check('装出来的扩展 ≥ 0.2.3 语义（0.2.2 不认识回复限流设置；统一编号后是 0.5.15）',
+  verAtLeast(targetManifest.version, 0, 2, 3),
   targetManifest.version);
 
 // ---------- 3a-3) AI 桥（v0.2.6）：douyin-mcp / DSH 插件可通过桥命令下发采集设置 ----------
@@ -438,8 +444,8 @@ check('设置项硬上限与 content.js 同源（七项都在，含 maxCount / r
   'SETTINGS_FIELDS');
 check('start_collect 的 appliedSettings 会透到桥回包（拍平 result 时不能丢）',
   /body\.result = \{ status: out\.status, tabId: out\.tabId, tabUrl: out\.tabUrl \};[\s\S]{0,200}?body\.result\.appliedSettings = out\.appliedSettings/.test(bgSrc));
-check('装出来的扩展 ≥ 0.2.6（桥的设置命令从 0.2.6 起）',
-  /^0\.2\.(6|[7-9]|\d\d+)$/.test(String(targetManifest.version)) || Number(String(targetManifest.version).split('.')[1]) >= 6,
+check('装出来的扩展 ≥ 0.2.6 语义（桥的设置命令从 0.2.6 起；统一编号后是 0.5.15）',
+  verAtLeast(targetManifest.version, 0, 2, 6),
   targetManifest.version);
 
 // ---------- 3a-4) 扩展更新后，别让浏览器继续跑 profile 里缓存的旧扩展脚本 ----------
@@ -511,7 +517,7 @@ check('面板设置优先于 DSH 插件下发的 dts_settings（逐项 pick：�
   `user@${iUserPick} plugin@${iPluginPick}`);
 check('可调参数里有 max（第一项标签「目标条数 max」）',
   /maxCount', label: '目标条数 max'/.test(contentSrc) && /resetSettings/.test(contentSrc));
-// ---------- 3a-2b) maxCount 到量「只停顶层、二级回复补完」（v0.2.13，用户 2026-10-07 报的严重缺陷） ----------
+// ---------- 3a-2b) maxCount 到量「只停顶层、二级回复补完」（v0.5.11，用户 2026-10-07 报的严重缺陷） ----------
 // 旧实现把到量判断放在主循环里直接 break，而调 collectReplies() 的分支在 break 之后 ⇒ 目标条数一设，
 // 二级回复永远是 0 条；老断言只匹配了那行字面（见 m07215 审计）所以自检全绿却行为错。现在分三段验：
 //   ① 到量判断用一级口径 topSeenCount（不是一二级同池的 seen.size）；
@@ -535,7 +541,7 @@ check('二级回复补采移到循环外第二阶段（catch 之前），收尾 
   && /replyTargets\.size > replyDoneSet\.size\) \{\s*\n\s*await collectReplies\(\);/.test(contentSrc)
   && /topCapReached\) \{[\s\S]{0,400}?setPhase\('done', '', doneNote\);/.test(contentSrc),
   `maxCap@${iMaxCap} postStage@${iPostStage} lastReplyCall@${iReplyCall}`);
-// ---------- 3a-2c) 回复请求全局限速 + 撞限流自动降路（v0.2.13，用户 2026-10-07 报的缺陷4） ----------
+// ---------- 3a-2c) 回复请求全局限速 + 撞限流自动降路（v0.5.11，用户 2026-10-07 报的缺陷4） ----------
 // 旧实现：replyLanes 个 worker 取到线程就立刻 fetchThread，唯一 sleep 是同线程翻页的 replyGapMs(600ms)，
 // 单页线程（大多数）等于零间隔 ⇒ ≈ lanes/RTT ≈ 20 次/秒，两轮实测 0/46 线程 vs ~139 条回复。
 check('回复请求有跨线程全局闸门（REPLY_GLOBAL_GAP_MS 250ms，fetchThread/recoverReply 都过闸）',
@@ -557,8 +563,8 @@ check('replyGlobalGapMs 可被 dts_settings 覆盖（面板 > 插件 > 内置 25
   && /out\.replyGlobalGapMs = gap > 0 \? gap : REPLY_GLOBAL_GAP_MS;/.test(contentSrc)
   && /replyGlobalGapMs: REPLY_GLOBAL_GAP_MS/.test(contentSrc)
   && /replyGateMs = RS\.replyGlobalGapMs;\s*\n\s*replyGateAt = 0;\s*\n\s*replyLaneLimit = 0;/.test(contentSrc),
-  'v0.2.14 起 0 / 缺省 = 用内置 250ms（旧版把 0 当「关闸门」，与设置页/MCP/PROTOCOL 的文案矛盾）');
-// ---------- 3a-2d) 服务端不回数据时「分波停顿重试」，不再一波判终局（v0.2.14，用户 2026-10-07 报「假限流」） ----------
+  'v0.5.12 起 0 / 缺省 = 用内置 250ms（旧版把 0 当「关闸门」，与设置页/MCP/PROTOCOL 的文案矛盾）');
+// ---------- 3a-2d) 服务端不回数据时「分波停顿重试」，不再一波判终局（v0.5.12，用户 2026-10-07 报「假限流」） ----------
 // 真机依据（同一视频 7692405235813272867）：A 轮会话内连续重试 108 秒、48 次回复请求全是
 // HTTP 200 + 0 字节 body；11 秒后新会话的 B 轮 39/39 线程全成、302 条；C 轮把预算放宽到 300 秒
 // 连撞 125 秒 / 200+ 次请求仍一次没放行；D 轮跨 8.5 分钟 4 波全被拒，随后新会话 x1 轮 23/23 全成。
@@ -794,7 +800,7 @@ if (fs.existsSync(path.join(devExtDir, 'manifest.json'))) {
   check('「全部视频」导出文件名带上 all（不是某个 videoId，避免与单视频文件混淆）',
     /douyin-comments-\$\{wantAll \? 'all' : videoId\}-\$\{stamp\}\.json/.test(bgSrc)
     && /douyin-comments-\$\{wantAll \? 'all' : videoId\}-\$\{stamp\}\.csv/.test(bgSrc));
-  // v0.2.11：Hub(AI/MCP) 的 export 命令与面板导出合并成 exportComments 一份实现。
+  // v0.5.9：Hub(AI/MCP) 的 export 命令与面板导出合并成 exportComments 一份实现。
   // 成功必须按 Hub 约定把主体放进 result（否则 aiPollOnce 的旧拍平分支会把
   // scope / videoCount / count 全丢掉，MCP 只能看到 filename/bytes/path）；失败保持顶层 error+hint。
   check('Hub(AI/MCP) 的 export 命令也支持 all（成功放 result、失败保持顶层 error+hint）',
@@ -875,10 +881,12 @@ check('插件设置表单/执行链都带上 replyGlobalGapMs（0 = 用扩展内
 check('插件描述如实写「到量只停顶层扫描、继续补二级回复」（0.5.11 起）',
   /到量就\*\*停止顶层扫描、继续把二级回复补完\*\*/.test(String(def.description || ''))
   && /0\.5\.11 起真正生效/.test(String(def.description || '')));
-check('插件 package.json / 扩展 manifest 版本对得上（0.5.14 / 0.2.15）',
-  manifest.version === '0.5.14' && targetManifest.version === '0.2.15',
-  `plugin=${manifest.version} ext=${targetManifest.version}`);
-// ---------- 3d) v0.5.12 / 扩展 0.2.14：「假限流」三处修正 ----------
+const mcpPkgPath = path.join(here, '..', 'douyin-mcp', 'package.json');
+const mcpPkgVer = fs.existsSync(mcpPkgPath) ? JSON.parse(fs.readFileSync(mcpPkgPath, 'utf8').replace(/^\uFEFF/, '')).version : '(无)';
+check('三件套版本统一：插件 package.json / 扩展 manifest / MCP package.json 都是 0.5.15',
+  manifest.version === '0.5.15' && targetManifest.version === '0.5.15' && mcpPkgVer === '0.5.15',
+  `plugin=${manifest.version} ext=${targetManifest.version} mcp=${mcpPkgVer}`);
+// ---------- 3d) v0.5.12：「假限流」三处修正 ----------
 // 用户 2026-10-07 报「我怀疑这个限速是假限速，有时候我自己点就可以拿到」，随后又猜
 // 「请求过快、还没拿到返回结果就说是限流」。真机三轮探针（_rl_probe/_rl_direct）证伪了后者：
 // EMPTY_BODY 只可能来自「HTTP 200 + body 0 字节」（hook.js 里 res.text() 拿到空串），
@@ -887,7 +895,7 @@ check('插件 package.json / 扩展 manifest 版本对得上（0.5.14 / 0.2.15�
 check('插件设置项说明如实写「总等待」，不再写「十秒不行就停」式文案',
   /本轮\*\*总共\*\*最多等多少秒/.test(indexSrc),
   'index.js 的 replyThrottleSec 描述');
-check('扩展默认：单波 12 秒 + 停顿 15/30/60 秒 + 总窗口 120 秒 (0.2.14)',
+check('扩展默认：单波 12 秒 + 停顿 15/30/60 秒 + 总窗口 120 秒 (0.5.12)',
   /const REPLY_WAVE_BUDGET_MS = 12 \* 1000;/.test(contentSrc)
   && /const REPLY_PARK_PLAN_MS = \[15000, 30000, 60000\];/.test(contentSrc)
   && /const REPLY_THROTTLE_MAX_WAIT_MS = 120 \* 1000;/.test(contentSrc));
@@ -896,7 +904,7 @@ check('「0 = 用内置 250ms」在扩展侧与设置页/MCP 文案一致（0 �
   && /0=用扩展内置 250ms|0 = 用扩展内置 250ms/.test(bgSrc)
   && !/const REPLY_GLOBAL_GAP_MS = 250;        \/\/ 所有回复请求（跨线程）的最小间隔；0 = 关闭限速/.test(contentSrc));
 
-// ---------- 3e) v0.2.15：顶层列表改回「错峰多路」（用户 2026-10-07 报「单路太慢」） ----------
+// ---------- 3e) v0.5.13：顶层列表改回「错峰多路」（用户 2026-10-07 报「单路太慢」） ----------
 // 探针结论：同时发（同一签名 ~200ms 窗口内）会被服务端并成同一页（4 个 cursor Σ200 条只去重出
 // 56 条、next 字段还对 ⇒ 静默少采）；错峰 200ms 恢复正常；扫完 21 页单路 15.79s vs 错峰 4 路
 // 7.72s、唯一 907 vs 912。所以默认 3 路错峰，1 = 老单路，并保留「两路同页 ⇒ 当轮降回单路」兜底。
@@ -905,7 +913,9 @@ if (fs.existsSync(mcpPath)) {
   const mcpSrc = fs.readFileSync(mcpPath, 'utf8');
   check('MCP 的 lanes 说明改成「错峰多路」并带实测数字（不再是【已停用】）',
     /顶层列表路数（默认 3，错峰多路/.test(mcpSrc) && !/【已停用】顶层扫描并发路数/.test(mcpSrc));
-  check('MCP VERSION = 0.3.6（与 package.json 对齐）', /const VERSION = '0\.3\.6';/.test(mcpSrc),
+  const mcpPkgRaw = fs.readFileSync(path.join(here, '..', 'douyin-mcp', 'package.json'), 'utf8');
+  check('MCP VERSION = 0.5.15（与 package.json 对齐；三件套统一编号）',
+    /const VERSION = '0\.5\.15';/.test(mcpSrc) && /"version": "0\.5\.15"/.test(mcpPkgRaw),
     (mcpSrc.match(/const VERSION = '[^']*'/) || [''])[0]);
 }
 check('插件工具描述里的 lanes 不再写「已停用」', !/已停用/.test(String(def.description || '')),

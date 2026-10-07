@@ -137,7 +137,7 @@ export const Config = Schema ? Schema.object({
   max: vol(Schema.number()
     .description('一级评论的目标条数：到量就停止顶层扫描、继续补二级回复（默认 80000 = 扩展单视频评论池的防御上限）。0.5.11 起真正生效（下发给扩展 maxCount）')
     .default(80000).min(1).max(1000000).step(1)),
-  // 0.5.13（扩展 0.2.15）起顶层列表**错峰多路**：每路错开 200ms，实测比单路快 2.04× 且数量一样。
+  // 0.5.13 起顶层列表**错峰多路**：每路错开 200ms，实测比单路快 2.04× 且数量一样。
   // 同一瞬间发多路才会被服务端并成同一页（0.5.10 因此固定过单路）；扩展发现同页会自动降回单路。
   lanes: vol(Schema.number()
     .description('顶层列表路数：错峰多路推进（默认 3，每路错开 200ms）；1 = 单路。0.5.13 起真正生效——2026-10-07 实测扫完 21 页单路 15.8s vs 错峰 7.7s，唯一条数一样多')
@@ -155,10 +155,10 @@ export const Config = Schema ? Schema.object({
     .description('二级回复阶段的并发线程数 1~8（默认 4）。回复接口比列表接口更容易被限流，撞限流扩展会自动降 1 路并把全局限速翻倍')
     .default(4).min(1).max(8).step(1)),
   replyGlobalGapMs: vol(Schema.number()
-    .description('回复请求「跨线程」的全局最小间隔毫秒（默认 0 = 用扩展内置的 250ms ≈ ≤4 次/秒）。实测 4 路各自零间隔发（≈20 次/秒）会撞成片拒绝，0.2.13 起按这个间隔全局限速；0 = 不指定')
+    .description('回复请求「跨线程」的全局最小间隔毫秒（默认 0 = 用扩展内置的 250ms ≈ ≤4 次/秒）。实测 4 路各自零间隔发（≈20 次/秒）会撞成片拒绝，0.5.11 起按这个间隔全局限速；0 = 不指定')
     .default(0).min(0).max(2000).step(50)),
   replyThrottleSec: vol(Schema.number()
-    .description('二级回复被服务端拒（HTTP 200 + 0 字节 body）时，本轮**总共**最多等多少秒（默认 120）。v0.2.14 起扩展分波重试：单波最多 12 秒，波间停 15/30/60 秒再打一波，总等待封顶在这个值 ⇒ 实测「等十几秒窗口就开了」的情况不用再靠手动点第二次；设 10 = 老行为「十秒不行就收尾」')
+    .description('二级回复被服务端拒（HTTP 200 + 0 字节 body）时，本轮**总共**最多等多少秒（默认 120）。v0.5.12 起扩展分波重试：单波最多 12 秒，波间停 15/30/60 秒再打一波，总等待封顶在这个值 ⇒ 实测「等十几秒窗口就开了」的情况不用再靠手动点第二次；设 10 = 老行为「十秒不行就收尾」')
     .default(120).min(10).max(600).step(1)),
   replyNoProgressSec: vol(Schema.number()
     .description('二级回复阶段多久没有新数据就收工（秒，默认 900 = 15 分钟）。退避重试期间条数本来就长时间不动，太小会导致回复采不到就收工')
@@ -276,7 +276,7 @@ export function apply(ctx, config = {}) {
           csvPath: { type: 'string', required: true },
           jsonPath: { type: 'string', required: true },
           phase: { type: 'string', required: true, description: '收工时的扩展状态' },
-          lanes: { type: 'integer', required: true, description: '顶层列表实际用的路数（扩展写回的 dts_settings_effective；v0.2.15 起 = 设置值或检测到同页后自降的 1，读不到时为本次请求值）' },
+          lanes: { type: 'integer', required: true, description: '顶层列表实际用的路数（扩展写回的 dts_settings_effective；v0.5.13 起 = 设置值或检测到同页后自降的 1，读不到时为本次请求值）' },
           note: { type: 'string', required: true, description: '扩展面板的说明文字' },
           durationSec: { type: 'number', required: true },
           extensionVersion: { type: 'string', required: true, description: '安装进浏览器的扩展版本' },

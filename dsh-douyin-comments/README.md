@@ -1,7 +1,21 @@
 # dsh-douyin-comments
 
 DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**，注册一个工具 `douyin_comments`。
-（插件版本 0.5.14，内置扩展「抖音评论采集器」v0.2.15。）
+（插件版本 0.5.15；**v0.5.15 起插件 / 内置扩展「抖音评论采集器」/ MCP `douyin-collector-mcp` 三件套统一编号**，同为 `0.5.15`。）
+
+**0.5.15 新增**（用户 2026-10-07 说「同步一下版本号吧，有点乱」）：
+
+1. **三件套从本版起同号**：扩展 `manifest.json` 从 `0.2.15` 改为 **`0.5.15`**、MCP `package.json` 与 `mcp.js` 的
+   `VERSION` 从 `0.3.6` 改为 **`0.5.15`**、插件自身 `0.5.14` → **`0.5.15`**。发布附件名同步统一：
+   `dsh-douyin-comments-0.5.15.tgz`、`douyin-collector-extension-v0.5.15.zip`、`douyin-collector-mcp-v0.5.15.zip`、
+   整包 `dsh-douyin-comments-v0.5.15.zip`。
+2. **功能一行没改**：采集逻辑、设置项（`max` / `lanes` / `failSnapshot` / `keepSnapshots` …）、返回值
+   （`logPath` / `snapshotDir`）、`chrome.storage` 键、面板 UI、CSV/JSON 列都与 0.5.14 相同，只是版本号口径统一。
+3. **历史编号对照**（changelog 里的旧编号 ↔ 发布版）：扩展 0.2.11 / 0.2.12 / 0.2.13 / 0.2.14 / 0.2.15 ↔ 发布
+   v0.5.9 / v0.5.10 / v0.5.11 / v0.5.12 / v0.5.13（v0.5.14 沿用扩展 0.2.15）；MCP 0.3.2~0.3.6 ↔ v0.5.9~v0.5.13。
+4. **自测**：`node verify-tool.mjs` **193/193 全绿**——新增 1 条「三件套版本统一」硬断言（插件 `package.json`、
+   扩展 `manifest.json`、`douyin-mcp/package.json` 必须都是 `0.5.15`），两条扩展版本下限断言改成**语义比较**
+   （不再写死数字），MCP `VERSION` 断言与 MCP `package.json` 对齐。
 
 **0.5.14 新增**（用户 2026-10-07 说「做个失败快照和日志吧」；扩展与 MCP 本次**未改动**，仍是 0.2.15 / 0.3.6）：
 
@@ -33,7 +47,7 @@ DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**
 老结论「多路并发会被服务端合并成同一页」只对了一半——**真凶是「同一签名 + ~200ms 内同时发」**，
 错峰就没事。
 
-1. **顶层列表改回「错峰多路」，`lanes` 重新生效**（扩展 0.2.15）：内置默认 **3 路**，路与路之间
+1. **顶层列表改回「错峰多路」，`lanes` 重新生效**（扩展 0.2.15，即发布版 v0.5.13）：内置默认 **3 路**，路与路之间
    `sleep(LANE_STAGGER_MS = 200ms + 0~60ms 抖动)` 才发下一个（错峰在途，最后 `Promise.all` 收拢）；
    `lanes: 1` = 老的单路串行。旧版（0.2.12~0.2.14）固定单路是**矫枉过正**。
 2. **单路礼貌间隔 400ms → 150ms**（`MIN_INTERVAL_MS`）：实测中位往返 344ms，那 400ms 里有一半是纯等。
@@ -46,7 +60,7 @@ DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**
      错峰 200ms / 500ms 都是 **200/200 唯一**。
    - 扫完整个列表（21 页、Σ返回 1021 条）：单路 **15.79s / 唯一 907** vs 错峰 4 路 **7.72s / 唯一 912**
      ⇒ **2.04× 提速、数据一样多**。
-   - 端到端（扩展 0.2.15）：单路 `lanes=1` → **919 条 / 36.8s**；错峰 3 路 `lanes=3` → **919 条 / 29.5s**；
+   - 端到端（扩展 0.2.15 / 发布版 v0.5.13）：单路 `lanes=1` → **919 条 / 36.8s**；错峰 3 路 `lanes=3` → **919 条 / 29.5s**；
      错峰 3 路 + `max=30` → **421 条 = 一级 105 + 二级 316（38/38 线程）** / **24.3s** / `phase=done`。
 5. **面板 / 设置文案**：齿轮里「并发路数（已停用）」→「**顶层并发路数**」（1~8，默认 3），摘要显示
    「顶层 3 路错峰（200ms）」；插件设置表单、工具参数说明、`ai_get_settings` 同步改口径。
@@ -595,6 +609,15 @@ node _test_nosig.mjs https://www.douyin.com/video/7660328050596371819           
 node _demo_autoinstall.mjs https://www.douyin.com/video/7660328050596371819        # 删掉已装扩展，验证「从零自动装上」
 ```
 
+实测记录（2026-10-07，v0.5.15 + 扩展 0.5.15，**纯版本号统一**）：
+
+| 用例 | 结果 |
+| --- | --- |
+| 离线自检 `node verify-tool.mjs` | **193/193 全绿**（与 0.5.14 同为 193；其中版本相关断言已改：`三件套版本统一：插件 package.json / 扩展 manifest / MCP package.json 都是 0.5.15`、`MCP VERSION = 0.5.15（与 package.json 对齐；三件套统一编号）`，两条扩展版本下限断言改成 `verAtLeast()` 语义比较，不再写死数字） |
+| 版本号一致性 | `douyin-collector/manifest.json` / `dsh-douyin-comments/extension/manifest.json` / `dsh-douyin-comments/package.json` / `douyin-mcp/package.json` / `douyin-mcp/mcp.js` 的 `VERSION` **全部 0.5.15**；打包物名同步为 `dsh-douyin-comments-0.5.15.tgz`、`douyin-collector-extension-v0.5.15.zip`、`douyin-collector-mcp-v0.5.15.zip`、`dsh-douyin-comments-v0.5.15.zip` |
+| **打包验收（`pkgtest` profile 装 `dsh-douyin-comments-0.5.15.tgz` 后 headless 真采）** | **PASS**（2026-10-07）：`dsh plugin --profile pkgtest add file:D:\dycopy\release\dsh-douyin-comments-v0.5.15\dsh-douyin-comments-0.5.15.tgz` → pkgtest **0.5.14 → 0.5.15**、`--dump-config` 认到 `dsh-douyin-comments`；headless 真采视频 `7660328050596371819`（`max=30`、先清空）→ **`count=214` = 一级 104 + 二级 110（19/38 个线程、50 次回复请求）**、`phase=done`、**33.4s**、顶层列表 **3 路（错峰）**、**扩展自报 `0.5.15`**（`source:'插件自带（随包分发）'`）；运行日志 `C:\Users\mo\.dsh\douyin-collector\logs\collect-2026-10-07T06-50-34-21460.log`（末行 `[+33.4s] 收工原因：done（phase=done，页面侧 214 条）`、`[+33.4s] 顶层列表实际路数：3（本次请求 3 路；错峰多路）`）、`snapshotDir=""`（本轮采完，不留现场）；CSV/JSON `D:\dycopy\douyin-comments\douyin-comments-7660328050596371819-2026-10-07T06-51-07.{csv,json}`（CSV 219 行）。note 摘要：「一级评论已到目标 30 条（去重后 104 条）…已采 214/1971 条；二级回复已补采 110 条（19/38 个线程，请求 50 次）。服务端始终没放行回复接口（列表接口正常：它回的是 HTTP 200 + 0 字节 body）…还剩 19 个线程没拉到」 |
+| 与 v0.5.14 行为对照 | 功能无差异：一级到 30 条停顶层、二级续补、`logPath`/`snapshotDir` 字段、失败现场四件套、`logPath` 每次必写、`keepSnapshots` 封顶都在；本版只把三件套版本号统一成 `0.5.15` |
+
 实测记录（2026-10-07，v0.5.14 + 扩展 0.2.15，扩展/MCP 本版未改动）：
 
 | 用例 | 结果 |
@@ -722,21 +745,22 @@ node sync-extension.mjs D:\path\to\ext
 ## 打包 / 发布
 
 **正式分发走 GitHub Releases**（仓库里不放二进制包，`release/` 只在本地做打包输出）：
-<https://github.com/monagisa/douyin-ai-collector/releases> —— 当前版本 [v0.5.14](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.14)，
-附件有 `dsh-douyin-comments-v0.5.14.zip`（整目录单文件）、`dsh-douyin-comments-0.5.14.tgz`、
-`douyin-collector-extension-v0.2.15.zip`、`douyin-collector-mcp-v0.3.6.zip`、`USAGE-zh-CN.md`（中文说明，zip 里叫 `使用说明.md`）、`SHA256SUMS.txt`。
-更早一版是 [v0.5.13](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.13)（扩展 0.2.15 / MCP 0.3.6；v0.5.14 只改插件，扩展与 MCP 未动）。
+<https://github.com/monagisa/douyin-ai-collector/releases> —— 当前版本 [v0.5.15](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.15)，
+附件有 `dsh-douyin-comments-v0.5.15.zip`（整目录单文件）、`dsh-douyin-comments-0.5.15.tgz`、
+`douyin-collector-extension-v0.5.15.zip`、`douyin-collector-mcp-v0.5.15.zip`、`USAGE-zh-CN.md`（中文说明，zip 里叫 `使用说明.md`）、`SHA256SUMS.txt`。
+**v0.5.15 起三件套同号**（插件 = 扩展 = MCP = `0.5.15`）：扩展 manifest 由 0.2.15 改为 0.5.15、MCP 由 0.3.6 改为 0.5.15，功能一行未改。
+更早一版 [v0.5.14](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.14)（插件 0.5.14 / 扩展 0.2.15 / MCP 0.3.6，首次加入运行日志 + 失败现场快照）。
 
-本地发布物在 `D:\dycopy\release\dsh-douyin-comments-v0.5.14\`：
+本地发布物在 `D:\dycopy\release\dsh-douyin-comments-v0.5.15\`：
 
 | 文件 | 说明 |
 | --- | --- |
-| `dsh-douyin-comments-0.5.14.tgz` | 插件本体，14 个文件（`index.js`/`collector.mjs`/`cordis.patch.yml`/`README.md`/`package.json` + `client/client.js` + `extension/` 8 个） |
-| `douyin-collector-extension-v0.2.15.zip` | 单独的扩展 zip，顶层目录 `douyin-collector/`（8 个文件），供 `chrome://extensions` 手动「加载已解压的扩展程序」（本版与 v0.5.13 同一个文件，可原样搬运） |
+| `dsh-douyin-comments-0.5.15.tgz` | 插件本体，14 个文件（`index.js`/`collector.mjs`/`cordis.patch.yml`/`README.md`/`package.json` + `client/client.js` + `extension/` 8 个） |
+| `douyin-collector-extension-v0.5.15.zip` | 单独的扩展 zip，顶层目录 `douyin-collector/`（8 个文件），供 `chrome://extensions` 手动「加载已解压的扩展程序」（**本版 manifest 版本号从 0.2.15 改成 0.5.15 ⇒ 必须重新打包**，不能沿用 v0.5.13 / v0.5.14 的 zip） |
 | `使用说明.md` | 给收件人看的中文说明（安装/扫码/两处设置/参数/FAQ/macOS） |
 | `SHA256SUMS.txt` | 三个文件的 SHA256 |
 
-整包单文件 `dsh-douyin-comments-v0.5.14.zip`（把上面整目录打成一个单文件，方便直接发给人）**也放在同一个 `release\dsh-douyin-comments-v0.5.14\` 目录里**（v0.5.12 起改为随版本目录存放，不再放在 `release\` 根下）。
+整包单文件 `dsh-douyin-comments-v0.5.15.zip`（把上面整目录打成一个单文件，方便直接发给人）**也放在同一个 `release\dsh-douyin-comments-v0.5.15\` 目录里**（v0.5.12 起改为随版本目录存放，不再放在 `release\` 根下）。
 
 更早的草稿目录（`D:\dycopy\release\dsh-douyin-comments-v0.5.7\` 及以前）都保留作对照，不删。
 
@@ -744,14 +768,14 @@ node sync-extension.mjs D:\path\to\ext
 
 ```powershell
 cd D:\dycopy\dsh-douyin-comments
-npm pack --pack-destination D:\dycopy\release\dsh-douyin-comments-v0.5.14
+npm pack --pack-destination D:\dycopy\release\dsh-douyin-comments-v0.5.15
 
 # 扩展开 zip（顶层目录名必须是 douyin-collector；只装 8 个运行文件，别把 md 打进去）。
 # 用 .NET ZipFile 逐个 CreateEntry 造，避免 Compress-Archive 多套一层目录：
-# 本版扩展没动，可直接从 v0.5.13 目录复制同一个 douyin-collector-extension-v0.2.15.zip。
-$rel = 'D:\dycopy\release\dsh-douyin-comments-v0.5.14'
+# 本版扩展 manifest 的版本号变了（0.2.15 → 0.5.15），**必须重新打**，不能沿用旧 zip。
+$rel = 'D:\dycopy\release\dsh-douyin-comments-v0.5.15'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-$zip = [IO.Compression.ZipFile]::Open("$rel\douyin-collector-extension-v0.2.15.zip", 'Create')
+$zip = [IO.Compression.ZipFile]::Open("$rel\douyin-collector-extension-v0.5.15.zip", 'Create')
 Get-ChildItem D:\dycopy\douyin-collector -File |
   Where-Object { $_.Extension -in '.js','.json','.css','.html' } |
   ForEach-Object { [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $_.FullName, "douyin-collector/$($_.Name)") | Out-Null }
@@ -761,7 +785,7 @@ $zip.Dispose()
 **注意**：清空发布目录时别用 `Remove-Item "$rel\*" -Recurse -Force` —— 它不进回收站，会把里面刚写好的
 `使用说明.md` 一起删掉（v0.5.2 打包时踩过，靠旧的外层 zip 解出来才恢复）。要保留的文件先复制到别处。
 
-打包验收（**全新 profile 从 tgz 装**，2026-10-05 对 v0.5.5 实测通过，日志 `_accept_tgz.txt`；v0.5.11 / v0.5.12 / v0.5.13 / v0.5.14 打包后按同样三步验收）：
+打包验收（**全新 profile 从 tgz 装**，2026-10-05 对 v0.5.5 实测通过，日志 `_accept_tgz.txt`；v0.5.11 / v0.5.12 / v0.5.13 / v0.5.14 / v0.5.15 打包后按同样三步验收）：
 
 ```powershell
 mkdir C:\Users\mo\.dsh\profiles\pkgtest     # package.json：dsh.profile.bundles = ["@deepseek-ai/dsh-base","@deepseek-ai/dsh-headless"]
@@ -772,13 +796,13 @@ dsh --profile pkgtest headless '用 douyin_comments 工具采集 https://www.dou
 ```
 
 > 上面那段是 **v0.5.5 的历史实测记录**（命令里的 `v0.5.5` 路径是当时的真实命令，刻意不改）。
-> v0.5.14 打包后照抄同样三步，只把包路径换成本版：
+> v0.5.15 打包后照抄同样三步，只把包路径换成本版：
 
 ```powershell
-dsh plugin --profile pkgtest add file:D:\dycopy\release\dsh-douyin-comments-v0.5.14\dsh-douyin-comments-0.5.14.tgz
+dsh plugin --profile pkgtest add file:D:\dycopy\release\dsh-douyin-comments-v0.5.15\dsh-douyin-comments-0.5.15.tgz
 dsh --profile pkgtest --dump-config | Select-String dsh-douyin-comments
 dsh --profile pkgtest headless '用 douyin_comments 工具采集 https://www.douyin.com/video/7660328050596371819 （max=30，先清空）。工具返回后只回复三行：ok=、count=、csvPath=。'
-# ⇒ 见下方「实测记录（2026-10-07，v0.5.14 + 扩展 0.2.15）」的打包验收行（本版还额外跑了 timeoutMs=15000 的「没采完」对照，验证现场快照与日志路径）
+# ⇒ v0.5.15 是**纯版本号统一**（功能等同 v0.5.14）：自测 193/193；打包后照跑上面三步，结果见下方「实测记录（2026-10-07，v0.5.15 + 扩展 0.5.15）」
 #   csv：D:\dycopy\douyin-comments\douyin-comments-<videoId>-<时间戳>.csv
 #   （headless 的 cwd 是 D:\dycopy，所以没传 outDir 时 CSV 落在工作目录的 douyin-comments\ 下）
 ```
@@ -789,7 +813,7 @@ dsh --profile pkgtest headless '用 douyin_comments 工具采集 https://www.dou
 
 ## 与其他组件的关系
 
-- 浏览器里跑的扩展本体在 `D:\dycopy\douyin-collector\`（权威开发目录，v0.2.15）；插件里的 `extension/`
+- 浏览器里跑的扩展本体在 `D:\dycopy\douyin-collector\`（权威开发目录，0.5.15）；插件里的 `extension/`
   由 `node sync-extension.mjs` 单向同步过去（同步后会反向清理白名单外的旧文件；别再手动复制）。
   插件每次启动都会把扩展 hash 记进 `~/.dsh/douyin-collector/extension.launched.json`，一变就清掉
   profile 里的旧脚本缓存再开浏览器。**注意清的范围**：要清 `Default/Code Cache` + **整个**

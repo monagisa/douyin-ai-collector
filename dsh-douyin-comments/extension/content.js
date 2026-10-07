@@ -24,7 +24,7 @@
   //   服务端 p50 = 228ms（min 217 / max 385），故 400ms 间隔仍留有余量
   //   页面自身分页实测 ~444ms/页，400~550ms 与页面自身节奏相当甚至更慢
   const COUNT = 50;                     // 服务端上限 50；原先用 20 白跑一倍页数
-  // v0.2.15：单路每轮之间的最小间隔 400 → 150。真机实测（2026-10-07，视频 7692405235813272867）
+  // v0.5.13：单路每轮之间的最小间隔 400 → 150。真机实测（2026-10-07，视频 7692405235813272867）
   // 列表往返中位 344ms，400ms 的间隔里有一半是纯等；21 页从 15.8s 降到 ~10s。
   const MIN_INTERVAL_MS = 150;          // 单路模式每轮之间最小间隔
   const JITTER_MS = 150;                // 0~150 随机抖动
@@ -85,7 +85,7 @@
   //       ③ 只有「签名真没了」（NO_SIGNED_URL / 坏签名 / 401·403 / 传输错误）才要求用户
   //          重新打开评论区；STATUS_5 / EMPTY_BODY / STATUS_NULL 一律当**服务端没放行**（签名还活着）；
   //       ④ 等满预算仍无果就收尾成 done，**绝不无限等待、绝不要求滚动**。
-  // 2026-10-07 v0.2.14：预算从「10 秒一次性判决」改成「分波停顿重试、总窗口封顶」。
+  // 2026-10-07 v0.5.12：预算从「10 秒一次性判决」改成「分波停顿重试、总窗口封顶」。
   //   实测（同一视频 7692405235813272867，探针 _rl_probe/_rl_direct）：
   //     · A 轮：会话内连续重试 108 秒，48 次回复请求全部 HTTP 200 + 0 字节 body；
   //     · 11 秒后新开会话的 B 轮：39/39 线程、302 条回复，一次没失败；
@@ -104,7 +104,7 @@
   const REPLY_THROTTLE_MAX_WAIT_MS = 120 * 1000;      // 「等窗口」的**总**墙钟上限（含波间停顿；面板可改，10s~10min）
   const REPLY_WAVE_BUDGET_MS = 12 * 1000;             // 单波连续重试的上限（撞得再久也不连撞 200 次）
   const REPLY_PARK_PLAN_MS = [15000, 30000, 60000];   // 波间停顿计划（最后一档重复用）
-  // ================== 回复请求全局限速（v0.2.13） ==================
+  // ================== 回复请求全局限速（v0.5.11） ==================
   // 2026-10-07 定因（用户报「时不时触发回复限流，并发调低了也没用」）：
   // 4 条 lane 各自「取到线程就发」，唯一间隔只有同线程翻页的 REPLY_GAP_MS，
   // 而绝大多数线程只有一页 ⇒ 单线程等于**零间隔**，速率 ≈ replyLanes / RTT
@@ -122,18 +122,18 @@
   //   各 cursor 独立返回，next == cursor+count 全部成立 → 可安全并发
   //   每路平均：1 路 698ms → 4 路 92ms（7.63x）
   //   全量 206 页：串行 2.9 分钟 → 4 路 0.4 分钟
-  // ⚠️ 顶层列表的路数规则（v0.2.12 固定单路 → v0.2.15 恢复「错峰多路」）：
-  //   0.2.11 及以前：同**一瞬间**并发发多个 cursor → 服务端把同签名的并发请求合并成同一页，
+  // ⚠️ 顶层列表的路数规则（v0.5.10 固定单路 → v0.5.13 恢复「错峰多路」）：
+  //   0.5.9 及以前：同**一瞬间**并发发多个 cursor → 服务端把同签名的并发请求合并成同一页，
   //     4 路并发反而少采 ~30%（2026-10-06 实测；2026-10-07 在 __DTS_COLLECTOR__.replay()
   //     上用 4 个 cursor 同时发复现：Σ返回 200 条、**去重后只有 56 条**，c50/c100/c150 三页
   //     逐条完全相同，而 next 字段还是对的 ⇒ 静默少给，只能靠 cid 去重才看得出）。
-  //   0.2.12：矫枉过正固定单路 —— 拿得全但慢。
-  //   0.2.15：**错峰多路**。同一批请求每路错开 LANE_STAGGER_MS=200ms 就不再被合并
+  //   0.5.10：矫枉过正固定单路 —— 拿得全但慢。
+  //   0.5.13：**错峰多路**。同一批请求每路错开 LANE_STAGGER_MS=200ms 就不再被合并
   //     （同一次实测：错峰 200ms → 200 条全唯一；错峰 500ms 同样正常），
   //     扫完整个列表 21 页：单路含间隔 15.79s → 错峰 4 路 7.72s（2.04×），唯一 cid 907 vs 912（一样多）。
   //   兜底：若某一轮里两路返回的 cid 完全一样（服务端又开始合并），当轮就把路数降回 1 并在面板说明，
   //     宁可慢也不再静默少采。
-  const MAX_LANES = 3;                  // 内置默认顶层路数（v0.2.15 起真正生效；1 = 老单路）
+  const MAX_LANES = 3;                  // 内置默认顶层路数（v0.5.13 起真正生效；1 = 老单路）
   // DSH 插件（dsh-douyin-comments）可以在自己的「设置 → 插件」里调并发路数：它把
   // { lanes } 写进 chrome.storage.local.dts_settings，扩展每次开始采集时读一次。
   // LANES_HARD_MAX 是兜底硬上限（6 路起服务端开始排队，再多只是白挨风控）。
@@ -158,7 +158,7 @@
     replyGapMs: REPLY_GAP_MS,
     replyWarmupMs: REPLY_WARMUP_MS,
     replyThrottleMaxWaitMs: REPLY_THROTTLE_MAX_WAIT_MS,
-    replyGlobalGapMs: REPLY_GLOBAL_GAP_MS,   // v0.2.13：回复请求跨线程的全局限速（0/未设 = 用内置 250ms）
+    replyGlobalGapMs: REPLY_GLOBAL_GAP_MS,   // v0.5.11：回复请求跨线程的全局限速（0/未设 = 用内置 250ms）
   };
   // 最近一次读设置时，面板（dts_user_settings）里是否有用户改动 —— 只用于面板上显示来源
   var hasUserSettings = false;
@@ -199,7 +199,7 @@
   // ================== 状态 ==================
   var phase = 'idle';
   var seen = new Set();      // cid 去重（协议 §3.3，background 里还会再兜一次）
-  // v0.2.13：`seen` 是一二级**同池**去重（accept 把回复 cid 也加进去），所以「目标条数 max」
+  // v0.5.11：`seen` 是一二级**同池**去重（accept 把回复 cid 也加进去），所以「目标条数 max」
   // 不能再拿 seen.size 当一级计数 —— 单独记一个一级去重数（协议 §3.9 的 topSeen 字段）。
   var topSeenCount = 0;      // 一级评论去重条数
   var cursor = 0;            // 下一个请求的 cursor
@@ -232,7 +232,7 @@
   var replyTargets = new Map();   // 顶层 cid → 服务端报的回复数（reply_comment_total）
   var replyDoneSet = new Set();   // 已拉完的顶层 cid（重扫/暂停继续时不重复拉）
   var replyPages = 0;             // 已发起的回复请求数
-  // ---- v0.2.13：回复请求的全局限速 + 撞限流自动降速（跨 lane 共享）----
+  // ---- v0.5.11：回复请求的全局限速 + 撞限流自动降速（跨 lane 共享）----
   var replyGateAt = 0;            // 下一个回复请求最早可发的时刻（墙钟毫秒）
   var replyGateMs = REPLY_GLOBAL_GAP_MS;        // 当前生效的全局间隔（撞限流翻倍，封顶 REPLY_GLOBAL_GAP_MAX_MS）
   var replyLaneLimit = 0;         // 撞限流后「自动降 1 路」的实时并发上限；0 = 用设置里的 replyLanes
@@ -243,9 +243,9 @@
   var replyLastError = '';        // 最近一次回复失败原因（供面板/测试诊断）
   var replyThrottledMs = 0;       // 因「服务端不放行回复接口」而在**单波内**等待的毫秒（不打扰用户的预算）
   var replyThrottleStartAt = 0;   // 本轮静默等待的起点（墙钟）；0 = 当前不在等待
-  var replyParkedMs = 0;          // v0.2.14：波间停顿累计毫秒（与 replyThrottledMs 相加 = 本轮总等待）
-  var replyWaves = 0;             // v0.2.14：本轮已经打过的波数（1 = 只跑了第一波）
-  var replyWaveBudgetMs = REPLY_WAVE_BUDGET_MS;  // v0.2.14：当前这一波的连续重试上限
+  var replyParkedMs = 0;          // v0.5.12：波间停顿累计毫秒（与 replyThrottledMs 相加 = 本轮总等待）
+  var replyWaves = 0;             // v0.5.12：本轮已经打过的波数（1 = 只跑了第一波）
+  var replyWaveBudgetMs = REPLY_WAVE_BUDGET_MS;  // v0.5.12：当前这一波的连续重试上限
   var replyStoppedByThrottle = false; // 本轮补采是因为「服务端不放行回复接口」而提前收尾的（面板要如实说明）
   var resumeReplies = false;      // 补采因签名失效停下后，拿到新签名直接回补采（不重扫顶层）
   /** 清空/换代号：清空时 +1。旧 startLoop 的在途回包若 epoch 不一致，必须丢弃，
@@ -1076,7 +1076,7 @@
         t.is_reply = true;
         t.parent_cid = String(parentCid);
       } else {
-        topSeenCount++;   // v0.2.13：一级去重计数（maxCount / 面板「目标条数」用它，不再用混池的 seen.size）
+        topSeenCount++;   // v0.5.11：一级去重计数（maxCount / 面板「目标条数」用它，不再用混池的 seen.size）
         var rct = Number(t.reply_comment_total);
         if (rct > 0) replyTargets.set(key, rct);   // 待补采的线程
       }
@@ -1331,7 +1331,7 @@
    * 「服务端不回数据」（EMPTY_BODY / STATUS_NULL / STATUS_5）**只在单波预算内**等
    * （replyWaveBudgetMs：内置 12 秒，由 collectReplies 按剩余总窗口算出），
    * 到点就 { givingUp, throttled } 交给 collectReplies —— 由它决定「停一会儿再打下一波」
-   * 还是收尾（v0.2.14：不再一波判终局）。绝不无限等待、绝不要求用户滚动。
+   * 还是收尾（v0.5.12：不再一波判终局）。绝不无限等待、绝不要求用户滚动。
    */
   async function recoverReply(parentCid, cur, firstErr) {
     var err = firstErr;
@@ -1359,7 +1359,7 @@
         }
         await sleep(Math.min(REPLY_BACKOFF_MAX_MS, REPLY_BACKOFF_BASE_MS * Math.pow(2, k)));
         k++;
-        await replyGate();   // v0.2.13：重试也要过全局闸门，否则「退避重试」本身又变成突发
+        await replyGate();   // v0.5.11：重试也要过全局闸门，否则「退避重试」本身又变成突发
         var r = await requestReplyReplay(parentCid, cur, REPLY_COUNT);
         replyPages++;
         if (r && r.ok) { replyThrottleStartAt = 0; replyThrottledMs = 0; return { r: r }; }
@@ -1381,7 +1381,7 @@
         return { needSign: true };
       }
       replyLastError = err + '（列表接口仍正常，判定为服务端暂时不放行回复接口）';
-      // v0.2.13：确认只是「回复被拒」（签名还活着）→ 自动降速，别继续用同一个速率硬撞
+      // v0.5.11：确认只是「回复被拒」（签名还活着）→ 自动降速，别继续用同一个速率硬撞
       replyBackOff(err);
       // 先判预算再报状态：否则刚说完「还在重试」下一行就收尾了
       if (replyThrottledMs >= waveBudget) {
@@ -1396,7 +1396,7 @@
   }
 
   /**
-   * v0.2.13：回复请求的**全局闸门**（跨 lane 共享）。
+   * v0.5.11：回复请求的**全局闸门**（跨 lane 共享）。
    * 保证所有 lane 合起来的回复请求速率 ≤ 1/replyGateMs；单页线程也因此不再零间隔。
    * JS 是单线程：成功分支里「读时刻 → 写下一个放行时刻」之间没有 await，
    * 所以不会出现两条 lane 同时通过闸门的情况。
@@ -1412,7 +1412,7 @@
   }
 
   /**
-   * v0.2.13：判定为「回复接口被限流（列表接口仍正常）」时自动降速：
+   * v0.5.11：判定为「回复接口被限流（列表接口仍正常）」时自动降速：
    * 全局间隔翻倍（封顶 REPLY_GLOBAL_GAP_MAX_MS）+ 并发降 1 路（下限 1）。
    * 只在 recoverReply 里「列表探活成功」之后调用 —— 签名真没了走 needSign，不该降速。
    */
@@ -1435,7 +1435,7 @@
     while (!stopFlag) {
       if (replyPages >= REPLY_MAX_REQUESTS) return { got: got, stop: true };
       if (guard++ >= REPLY_MAX_PAGES_PER_THREAD) break;
-      await replyGate();   // v0.2.13：跨线程全局限速（单页线程以前等于零间隔，是撞限流的主因）
+      await replyGate();   // v0.5.11：跨线程全局限速（单页线程以前等于零间隔，是撞限流的主因）
       var r = await requestReplyReplay(parentCid, cur, REPLY_COUNT);
       replyPages++;
 
@@ -1487,11 +1487,11 @@
     var needSignStop = false, hardStop = false, throttledStop = false;
     replyThrottledMs = 0;   // 每次进入补采重算「等窗口」预算
     replyThrottleStartAt = 0;
-    replyParkedMs = 0;      // v0.2.14：波间停顿累计
-    replyWaves = 1;         // v0.2.14：马上要打第一波
+    replyParkedMs = 0;      // v0.5.12：波间停顿累计
+    replyWaves = 1;         // v0.5.12：马上要打第一波
     replyWaveBudgetMs = Math.min(REPLY_WAVE_BUDGET_MS, RS.replyThrottleMaxWaitMs);
     replyStoppedByThrottle = false;
-    // v0.2.13：每次进入补采都把限速/降速状态复位（上一轮的降速不继承到这一轮）
+    // v0.5.11：每次进入补采都把限速/降速状态复位（上一轮的降速不继承到这一轮）
     replyGateMs = RS.replyGlobalGapMs;
     replyGateAt = 0;
     replyLaneLimit = 0;
@@ -1501,7 +1501,7 @@
       var idx = 0, failed = [];
       async function worker(myLane) {
         while (!stopFlag && !needSignStop && !hardStop && !throttledStop) {
-          // v0.2.13：撞限流后 replyLaneLimit 会降到 1..n-1，多出来的 worker 主动退出
+          // v0.5.11：撞限流后 replyLaneLimit 会降到 1..n-1，多出来的 worker 主动退出
           if (myLane >= (replyLaneLimit > 0 ? replyLaneLimit : RS.replyLanes)) return;
           // 补采可能跑很久（线程多），签名过期检查必须在这里也做一遍，
           // 否则会用死签名一直失败下去
@@ -1517,7 +1517,7 @@
           if (r.stop) { hardStop = true; return; }
           if (r.failed) failed.push(cid); else {
             replyDoneSet.add(cid);
-            // v0.2.14：这一波里先撞了几次「服务端暂时不回数据」、后面又成功时，
+            // v0.5.12：这一波里先撞了几次「服务端暂时不回数据」、后面又成功时，
             // 面板那行红字（errText）不清掉会一直挂着，看起来像「一直在限流」——
             // 有任意一个线程成功就说明窗口已经开了，立刻清掉。
             if (errText) errText = '';
@@ -1548,7 +1548,7 @@
       failed = await runRound(failed, '重试失败线程');
     }
 
-    // v0.2.14：服务端不放行时**不再一波判终局** —— 停一会儿、再来一波。
+    // v0.5.12：服务端不放行时**不再一波判终局** —— 停一会儿、再来一波。
     // 依据见文件顶部 REPLY_THROTTLE_MAX_WAIT_MS 的实测注释：窗口常在十几秒后自己打开，
     // 而「一口气连撞」并不会让它开得更快（C 轮连撞 125 秒 / 200+ 次请求，一次没放行）。
     // 单波上限 replyWaveBudgetMs，波间停 REPLY_PARK_PLAN_MS，总等待封顶 RS.replyThrottleMaxWaitMs。
@@ -1604,7 +1604,7 @@
         + (failed.length ? '，仍有 ' + failed.length + ' 个线程没拉全' : '')
         + (hardStop ? '，达到请求上限提前停止' : '') + '）';
     }
-    // v0.2.14：补采阶段到此结束，把「阶段」交回调用方 —— 它负责置 done，并补上
+    // v0.5.12：补采阶段到此结束，把「阶段」交回调用方 —— 它负责置 done，并补上
     // 「到量停顶层」的前缀（第二阶段收尾的 phase === 'collecting' 门槛，见本文件下方）。
     // 旧版这里留在 'replies'，那个门槛因此永远不成立 ⇒ 面板一直停在「补采二级回复」，
     // DSH 采集器更要等到「无进展 900 秒」才收工；真机 y1 轮就是补采完成后被签名抖动
@@ -1762,7 +1762,7 @@
       // B 的），请求必然失败或返回不相干数据。background 侧按 cid 去重，重采不会产生
       // 重复行，所以清掉是安全的。
       seen.clear();
-      topSeenCount = 0;   // v0.2.13：一级计数与 seen 同生同灭
+      topSeenCount = 0;   // v0.5.11：一级计数与 seen 同生同灭
       replyTargets.clear();
       replyDoneSet.clear();
       savedCount = 0;
@@ -1795,7 +1795,7 @@
         replyGapMs: REPLY_GAP_MS,
         replyWarmupMs: REPLY_WARMUP_MS,
         replyThrottleMaxWaitMs: REPLY_THROTTLE_MAX_WAIT_MS,
-        replyGlobalGapMs: REPLY_GLOBAL_GAP_MS,   // v0.2.13：回复请求跨线程全局限速（0/未设 = 用这个内置 250ms）
+        replyGlobalGapMs: REPLY_GLOBAL_GAP_MS,   // v0.5.11：回复请求跨线程全局限速（0/未设 = 用这个内置 250ms）
       };
       var clamp = function (v, lo, hi, dflt) {
         var n = Number(v);
@@ -1813,15 +1813,15 @@
             if (s && s[key] !== undefined && s[key] !== null) return clamp(s[key], lo, hi, dflt);
             return dflt;
           };
-          out.lanes = pick('lanes', 1, LANES_HARD_MAX, MAX_LANES);   // 顶层列表路数（v0.2.15 起真正生效，默认 3）
+          out.lanes = pick('lanes', 1, LANES_HARD_MAX, MAX_LANES);   // 顶层列表路数（v0.5.13 起真正生效，默认 3）
           out.maxCount = pick('maxCount', 0, MAX_COUNT_HARD_MAX, 0);
           out.replyLanes = pick('replyLanes', 1, LANES_HARD_MAX, REPLY_LANES);
           out.replyGapMs = pick('replyGapMs', 0, 60000, REPLY_GAP_MS);
           out.replyWarmupMs = pick('replyWarmupMs', 0, 600000, REPLY_WARMUP_MS);
           // 等窗口的**总**预算：上限 10 分钟；下限 10 秒（=老行为「十秒不行就停」），内置 120 秒
           out.replyThrottleMaxWaitMs = pick('replyThrottleMaxWaitMs', 10000, 600000, REPLY_THROTTLE_MAX_WAIT_MS);
-          // v0.2.13：回复请求全局限速。0 或缺省 = 用内置 250ms —— 与 DSH 设置页/MCP/文档的
-          // 「0 = 用扩展内置 250ms」保持一致（v0.2.13 曾把 0 当「关闸门」，与文档矛盾：AI 一条
+          // v0.5.11：回复请求全局限速。0 或缺省 = 用内置 250ms —— 与 DSH 设置页/MCP/文档的
+          // 「0 = 用扩展内置 250ms」保持一致（v0.5.11 曾把 0 当「关闸门」，与文档矛盾：AI 一条
           // ai_set_settings{replyGlobalGapMs:0} 就能静默关掉限速）
           var gap = pick('replyGlobalGapMs', 0, 2000, 0);
           out.replyGlobalGapMs = gap > 0 ? gap : REPLY_GLOBAL_GAP_MS;
@@ -1852,7 +1852,7 @@
     // 设置每次「开始采集」都重读一次：DSH 插件改完立即生效，不用重开浏览器。
     RS = await loadRuntimeSettings();
     var lanesWanted = RS.lanes;
-    // 顶层列表路数（v0.2.15：错峰多路，见常量区那段实测说明）。把「实际用了几路」落进 storage，
+    // 顶层列表路数（v0.5.13：错峰多路，见常量区那段实测说明）。把「实际用了几路」落进 storage，
     // 供 DSH 插件/排查时核对（读不回来也不影响采集）。若主循环发现两路被服务端并成了同一页，
     // 会就地改写 effSettings.lanes / lanesNote 再回写 —— 排查的人一眼能看出「这一轮被降成单路了」。
     var effSettings = {
@@ -1864,8 +1864,8 @@
       replyGlobalGapMs: RS.replyGlobalGapMs,
       replyGapMs: RS.replyGapMs,
       replyThrottleMaxWaitMs: RS.replyThrottleMaxWaitMs,
-      replyWaveBudgetMs: REPLY_WAVE_BUDGET_MS,      // v0.2.14：单波连续重试上限
-      replyParkPlanMs: REPLY_PARK_PLAN_MS.join('/'), // v0.2.14：波间停顿计划
+      replyWaveBudgetMs: REPLY_WAVE_BUDGET_MS,      // v0.5.12：单波连续重试上限
+      replyParkPlanMs: REPLY_PARK_PLAN_MS.join('/'), // v0.5.12：波间停顿计划
       from: hasUserSettings ? 'panel' : 'plugin',
       at: Date.now(),
     };
@@ -1902,9 +1902,9 @@
         return;
       }
 
-      // v0.2.13：maxCount 到量只停**顶层扫描**，二级回复仍要补完（循环外的补采段负责）
+      // v0.5.11：maxCount 到量只停**顶层扫描**，二级回复仍要补完（循环外的补采段负责）
       var topCapReached = false;
-      // v0.2.15：顶层列表实际用的路数。正常情况下就是 RS.lanes；一旦发现某一轮里两路返回了
+      // v0.5.13：顶层列表实际用的路数。正常情况下就是 RS.lanes；一旦发现某一轮里两路返回了
       // 完全相同的页（服务端又开始合并并发请求），当轮就降回 1 并写进 dts_settings_effective。
       var laneBudget = Math.max(1, Math.min(LANES_HARD_MAX, Math.round(RS.lanes || MAX_LANES)));
       var lanes = laneBudget;
@@ -1936,7 +1936,7 @@
 
         // ---- 一轮：顶层列表**错峰多路**推进（每路都用服务端给的 next） ----
         //
-        // 0.2.11 及以前是「同时发 N 路」：cursor, cursor+COUNT, cursor+2*COUNT … 一起发出去。
+        // 0.5.9 及以前是「同时发 N 路」：cursor, cursor+COUNT, cursor+2*COUNT … 一起发出去。
         // 2026-10-06 真机实测（_scan_probe2.mjs / _scan_probe3.mjs，视频 7692405235813272867，
         // 登录态正常，服务端列表在 offset 850 触底、total=1704）：
         //   · 单路串行 18 步 → 714 条唯一一级评论（多轮累加 744）；
@@ -1944,13 +1944,13 @@
         //   · 并发那一轮里 c50/c100/c150 三个请求拿到的是**同一页**（两两重合 50/50，
         //     而且这一页不在任何串行页里）→ 服务端把**同一瞬间**的同签名请求合并了；
         //   · 同样 4 路、每路之间错峰 200ms → 恢复正常（4 页 = 200 条唯一）。
-        // 0.2.12 因此固定单路（拿得全但慢）。2026-10-07 用 __DTS_COLLECTOR__.replay() 复现 + 量化：
+        // 0.5.10 因此固定单路（拿得全但慢）。2026-10-07 用 __DTS_COLLECTOR__.replay() 复现 + 量化：
         //   · 同时发 4 个 cursor：Σ返回 200 条、**去重后只有 56 条**，c50/c100/c150 逐条相同，
         //     而 next 字段还是对的（50/100/150/200）⇒ 静默少给，只有按 cid 去重才看得出；
         //   · 错峰 200ms：唯一 200/200；错峰 500ms：唯一 200/200；
         //   · 扫完整个列表（21 页 / Σ返回 1021 条）：单路含 400ms 间隔 15.79s → 错峰 4 路 7.72s，
         //     唯一 cid 907 vs 912（一样多）。
-        // 所以 v0.2.15 起改成**错峰多路**：每路错开 LANE_STAGGER_MS，并且在下面校验里检测
+        // 所以 v0.5.13 起改成**错峰多路**：每路错开 LANE_STAGGER_MS，并且在下面校验里检测
         // 「两路返回同一页」→ 当轮降回单路（宁可慢，也不再静默少采）。
         var lanes = laneBudget;
         var i;
@@ -1979,7 +1979,7 @@
           }
         }
 
-        // v0.2.15 兜底：同一轮里两路返回**逐条相同**的页 ⇒ 服务端又把并发的同签名请求并成一个响应了。
+        // v0.5.13 兜底：同一轮里两路返回**逐条相同**的页 ⇒ 服务端又把并发的同签名请求并成一个响应了。
         // 当轮就降回单路，并如实写进 dts_settings_effective —— 宁可慢，也不再静默少采（这是少采的唯一可见信号）。
         if (reqs.length > 1) {
           var mergedLanes = false;
@@ -2027,7 +2027,7 @@
             laneEnd = true;
           }
         }
-        // v0.2.15：多路时「有一路越界返回空页」不代表触底 —— 同一轮里还有路带回满页且 has_more=1，
+        // v0.5.13：多路时「有一路越界返回空页」不代表触底 —— 同一轮里还有路带回满页且 has_more=1，
         // 那是本路 cursor 暂时跑到列表末端之外（列表还没扫完），必须继续。只有所有路都没有 has_more 才算到底。
         if (laneEnd && anyLaneHasMore) laneEnd = false;
 
@@ -2075,7 +2075,7 @@
         await flushComments((laneEnd && !willRescan) ? 0 : 1);
 
         // 面板「设置 → 目标条数」到了就**停止顶层扫描**（0 = 不限）。
-        // 0.2.13 修正：这里只跳出顶层 while，二级回复由循环外的补采段继续补完 ——
+        // 0.5.11 修正：这里只跳出顶层 while，二级回复由循环外的补采段继续补完 ——
         //   旧版在这一行直接 setPhase('done') + break，于是「设了目标条数」
         //   就变成「二级回复一条都不要」，而注释恰恰写着「仍要补完再停」（Mac 报告里那个坑）。
         // 计数用 topSeenCount（**一级**去重条数），不再用一二级混池的 seen.size。
@@ -2099,13 +2099,13 @@
             await sleep(MIN_INTERVAL_MS + Math.random() * JITTER_MS);
             continue;
           }
-          // 顶层列表采完 → 第二阶段（补采二级回复）统一交给循环外的补采段处理（v0.2.13 抽出，
+          // 顶层列表采完 → 第二阶段（补采二级回复）统一交给循环外的补采段处理（v0.5.11 抽出，
           // 这样「maxCount 到量」和「列表触底」两条路径共用同一段逻辑，不会再有一条漏掉回复）
           break;
         }
 
         // 触底保护：某一路返回的条数明显少于 COUNT → 服务端已到列表末尾，
-        // 下轮退回单路，避免越过末尾白跑并产生空洞（v0.2.15：这一轮起 laneBudget 就固定为 1）
+        // 下轮退回单路，避免越过末尾白跑并产生空洞（v0.5.13：这一轮起 laneBudget 就固定为 1）
         if (laneShort) {
           laneBudget = 1;
           cursor = maxNext;
@@ -2145,7 +2145,7 @@
       }
 
       // ---- 第二阶段：补采二级回复（协议 §3.8）----
-      // v0.2.13：顶层扫描结束的两条路径（列表触底 / maxCount 到量）都落到这里，
+      // v0.5.11：顶层扫描结束的两条路径（列表触底 / maxCount 到量）都落到这里，
       // 「设了目标条数」因此不会再丢掉二级回复。只在仍是 collecting 时收尾：
       // 不覆盖 collectReplies 自己置的 waiting-sign / paused（实测踩到过「显示已完成却没采完」）。
       if (!stopFlag && epoch === collectEpoch && phase === 'collecting' &&
@@ -2765,7 +2765,7 @@
   // 存的 dts_user_settings 优先级高于 DSH 插件下发的 dts_settings（见 loadRuntimeSettings）。
   var SETTING_FIELDS = [
     { key: 'maxCount', label: '目标条数 max', min: 0, max: MAX_COUNT_HARD_MAX, step: 50, title: '采到这么多条一级评论就自动收工（等同 DSH 插件的 max）；0 = 不限（二级回复会补完再停）' },
-    // v0.2.15 起顶层列表**错峰多路**真正生效（默认 3 路、每路 200ms 错峰）。
+    // v0.5.13 起顶层列表**错峰多路**真正生效（默认 3 路、每路 200ms 错峰）。
     // 2026-10-07 实测：同一瞬间发多路会被服务端并成同一页（4 路 Σ200 条只去重出 56 条），
     // 错峰 200ms 就正常；扫完 21 页单路 15.8s vs 错峰 4 路 7.7s，唯一 cid 一样多。
     { key: 'lanes', label: '顶层并发路数', min: 1, max: LANES_HARD_MAX, step: 1, title: '顶层列表同时推进几路：1 = 老老实实单路；内置默认 3，每路错峰 200ms 出发。一旦发现两路拿到同一页（服务端合并并发请求）会自动降回单路并在面板说明。' },
@@ -2806,7 +2806,7 @@
   }
 
   function settingsSummaryText() {
-    // v0.2.15：顶层默认错峰多路（内置 3 路 / 每路错峰 200ms）。摘要里如实写**设置值**；
+    // v0.5.13：顶层默认错峰多路（内置 3 路 / 每路错峰 200ms）。摘要里如实写**设置值**；
     // 某一轮若因「两路同页」被自动降成单路，`dts_settings_effective.lanesNote` 会另附说明。
     return '顶层 ' + (RS.lanes > 1 ? RS.lanes + ' 路错峰（' + LANE_STAGGER_MS + 'ms）' : '单路') +
       ' · 目标 ' + (RS.maxCount > 0 ? RS.maxCount + ' 条' : '不限') +
@@ -3135,7 +3135,7 @@
     down('status', {
       phase: phase, videoId: videoId, cursor: cursor, pages: pages,
       unique: seen.size, total: total, savedCount: savedCount,
-      // v0.2.13：**一级评论**去重条数（seen 混了一二级）——maxCount 与采集器的 max 都用它
+      // v0.5.11：**一级评论**去重条数（seen 混了一二级）——maxCount 与采集器的 max 都用它
       topSeen: topSeenCount,
       localStats: localStats, exportAll: exportAll,
       lastMs: lastMs, failStreak: failStreak, running: running,
@@ -3224,7 +3224,7 @@
       cursor: cursor,
       pages: pages,
       unique: seen.size,
-      topSeen: topSeenCount,   // v0.2.13：一级去重条数（unique 含二级回复）
+      topSeen: topSeenCount,   // v0.5.11：一级去重条数（unique 含二级回复）
       total: total,
       savedCount: savedCount,
       lastMs: lastMs,
@@ -3282,7 +3282,7 @@
       cursor: cursor,
       pages: pages,
       unique: seen.size,
-      topSeen: topSeenCount,   // v0.2.13：一级去重条数（采集器的 max 用它判定，别用混池的 unique）
+      topSeen: topSeenCount,   // v0.5.11：一级去重条数（采集器的 max 用它判定，别用混池的 unique）
       total: total,
       savedCount: savedCount,
       lastMs: lastMs,

@@ -50,19 +50,19 @@ export const DEFAULTS = {
   /**
    * 目标条数上限（工具参数 max 优先）。默认 8 万 = 扩展单视频评论池的防御上限
    * （douyin-collector/background.js:22 MAX_COMMENTS_PER_VIDEO = 80000）。
-   * v0.2.13 起作为 maxCount **下发给扩展**：到量只停顶层扫描，二级回复仍补完再收工
+   * v0.5.11 起作为 maxCount **下发给扩展**：到量只停顶层扫描，二级回复仍补完再收工
    * （旧版既不封一级、又会在回复阶段点暂停 —— 见 README「目标条数」一节）。
    */
   max: Number(process.env.DOUYIN_MAX || 0) || 80000,
   /**
    * 顶层列表路数：错峰多路推进（每路一个 cursor，路与路之间错开 200ms）。
-   * v0.2.15 起真正生效，内置默认 3（`lanes=1` 就是老的单路串行）。
+   * v0.5.13 起真正生效，内置默认 3（`lanes=1` 就是老的单路串行）。
    * 2026-10-07 真机实测（视频 7692405235813272867，扫完 21 页）：单路含 400ms 间隔 15.8s、
    * 3~4 路错峰 200ms 7.7s（2.04×），唯一 cid 907 vs 912（一样多）。同时发（不错峰）会被
    * 服务端并成同一页：4 个 cursor Σ200 条只去重出 56 条，next 字段还是对的（静默少采）。
    * 扩展侧一旦发现两路拿到同一页会自动降回单路并在面板说明；这里仍会钳到 1..8。
    */
-  lanes: Number(process.env.DOUYIN_LANES || 0) || 3,   // 顶层错峰多路（v0.2.15 起生效，1 = 老单路）
+  lanes: Number(process.env.DOUYIN_LANES || 0) || 3,   // 顶层错峰多路（v0.5.13 起生效，1 = 老单路）
   /**
    * 单次采集总超时（工具参数 timeoutMs 优先）。默认 30 分钟：max 默认 8 万，
    * 原先的 4 分钟根本采不到，会让人误以为已经「采到底」。
@@ -81,7 +81,7 @@ export const DEFAULTS = {
    */
   replyLanes: Number(process.env.DOUYIN_REPLY_LANES || 0) || 0,
   /**
-   * v0.2.13：回复请求**跨线程**的全局最小间隔（毫秒，写进扩展 dts_settings）。
+   * v0.5.11：回复请求**跨线程**的全局最小间隔（毫秒，写进扩展 dts_settings）。
    * 0 = 不指定，用扩展内置的 250ms（≈ ≤4 次/秒）。实测：4 路各自「取到线程就发」、
    * 而绝大多数线程只有一页 ⇒ 速率 ≈ 20 次/秒，同一视频两轮能差到「0/46 线程被拒」
    * 与「~139 条」——扩展侧现在按这个间隔全局限速，撞限流还会自动降 1 路。
@@ -89,7 +89,7 @@ export const DEFAULTS = {
   replyGlobalGapMs: Number(process.env.DOUYIN_REPLY_GLOBAL_GAP_MS || 0) || 0,
   /**
    * 二级回复「等窗口」的**总**墙钟预算（秒，写进扩展 dts_settings）。0 = 扩展内置的 120 秒。
-   * v0.2.14 起扩展不再「一波判终局」：单波最多撞 12 秒，波间停 15/30/60 秒再打一波，
+   * v0.5.12 起扩展不再「一波判终局」：单波最多撞 12 秒，波间停 15/30/60 秒再打一波，
    * 总等待封顶在这个预算上。真机依据（2026-10-07，同一视频 7692405235813272867）：
    * A 轮会话内连撞 108 秒、48 次回复请求全是 HTTP 200 + 0 字节 body；11 秒后新会话的
    * B 轮 39/39 线程全成；C 轮把预算放宽到 300 秒连撞 125 秒仍一次没放行；D 轮跨 8.5 分钟
@@ -733,7 +733,7 @@ export async function captureFailureSnapshot({
  * @param {number} [o.max]      目标条数上限（默认 DEFAULTS.max = 80000，到量即暂停）
  * @param {boolean} [o.replies] 是否等二级回复补采（默认 true）
  * @param {number} [o.timeoutMs] 总超时（默认 DEFAULTS.timeoutMs = 1800000）
- * @param {number} [o.lanes]    顶层列表路数（v0.2.15 起生效：错峰多路，默认 3，1 = 老单路；会写进扩展 dts_settings.lanes）
+ * @param {number} [o.lanes]    顶层列表路数（v0.5.13 起生效：错峰多路，默认 3，1 = 老单路；会写进扩展 dts_settings.lanes）
  * @param {number} [o.waitLoginSec] 检测到未登录时等使用者扫码的秒数（不传用 DEFAULTS.waitLoginSec，默认 180；显式 0 = 不等）
  * @param {string} [o.outDir]   输出目录
  * @param {boolean} [o.keep]    采完不关浏览器（调试用）
@@ -762,7 +762,7 @@ export async function collectDouyinComments(o = {}) {
   const timeoutMs = Number(o.timeoutMs) > 0
     ? Number(o.timeoutMs)
     : (Number(DEFAULTS.timeoutMs) > 0 ? Number(DEFAULTS.timeoutMs) : 1800000);
-  // 顶层路数：工具参数 > 插件设置（DEFAULTS.lanes）> 3；v0.2.15 起真正生效（错峰多路，1 = 老单路）
+  // 顶层路数：工具参数 > 插件设置（DEFAULTS.lanes）> 3；v0.5.13 起真正生效（错峰多路，1 = 老单路）
   const lanes = Math.max(1, Math.min(8, Math.round(
     Number(o.lanes) > 0 ? Number(o.lanes) : (Number(DEFAULTS.lanes) > 0 ? Number(DEFAULTS.lanes) : 3),
   )));
@@ -776,7 +776,7 @@ export async function collectDouyinComments(o = {}) {
     return isFinite(dn) && dn > 0 ? dn : 0;
   };
   const replyLanes = Math.max(0, Math.min(8, Math.round(numOr(o.replyLanes, DEFAULTS.replyLanes))));
-  // v0.2.13：回复请求全局限速（0 = 用扩展内置的 250ms）
+  // v0.5.11：回复请求全局限速（0 = 用扩展内置的 250ms）
   const replyGlobalGapMs = Math.max(0, Math.min(2000, Math.round(numOr(o.replyGlobalGapMs, DEFAULTS.replyGlobalGapMs))));
   const replyThrottleSec = numOr(o.replyThrottleSec, DEFAULTS.replyThrottleSec);
   const replyNoProgressMs = Math.max(60000, Math.round(
@@ -1200,7 +1200,7 @@ export async function collectDouyinComments(o = {}) {
       return r && Number(r.lanes) > 0 ? r : null;
     };
     /**
-     * v0.2.13：扩展有没有按我们下发的 maxCount 生效（≥0.2.13 会把 maxCount 写回 dts_settings_effective）。
+     * v0.5.11：扩展有没有按我们下发的 maxCount 生效（≥0.5.11 会把 maxCount 写回 dts_settings_effective）。
      * 没生效（旧扩展 / 设置写不进去）时，采集器退回「轮询到量点暂停」的兜底逻辑。
      */
     let extMaxOk = null;
@@ -1283,7 +1283,7 @@ export async function collectDouyinComments(o = {}) {
 
     // ⑥.5 把运行时设置推给扩展（DSH「设置 → 插件」里可改；写不进去就用扩展内置值）
     const extSettings = { lanes };
-    // v0.2.13：max 必须下发给扩展（maxCount）——扩展会「一级到量只停顶层扫描、二级回复仍补完」。
+    // v0.5.11：max 必须下发给扩展（maxCount）——扩展会「一级到量只停顶层扫描、二级回复仍补完」。
     // 不下发时采集器只能靠轮询点「暂停」，一级根本封不住（旧版实测 max=100 却采回 896 条）。
     if (max > 0) extSettings.maxCount = max;
     if (replyLanes > 0) extSettings.replyLanes = replyLanes;
@@ -1386,8 +1386,8 @@ export async function collectDouyinComments(o = {}) {
       if (s.phase === 'error') throw new Error('扩展报错：' + (s.error || s.note || '(无详情)'));
       if (u !== lastUnique) { lastUnique = u; stallSince = Date.now(); }
 
-      // max 只算「一级评论」（扩展 0.2.13 起单独上报 topSeen；unique 是一二级同池）：
-      //   ① 扩展认 maxCount 时（0.2.13+）采集器什么都不用做 —— 扩展到量只停顶层扫描，
+      // max 只算「一级评论」（v0.5.11 起单独上报 topSeen；unique 是一二级同池）：
+      //   ① 扩展认 maxCount 时（0.5.11+）采集器什么都不用做 —— 扩展到量只停顶层扫描，
       //      把二级回复补完再置 done；
       //   ② 旧扩展不认 maxCount：退回「轮询到量点暂停」兜底。旧版不分阶段地 u >= max 就点暂停，
       //      一进回复阶段就被掐掉（回复永远是 0 条）；现在至少不会掐掉刚进回复阶段的那一轮。
@@ -1452,7 +1452,7 @@ export async function collectDouyinComments(o = {}) {
     let snapDir = incomplete ? await snap('采集未完成：' + endedBy, finalStatus, { endedBy }) : '';
 
     // 扩展侧实际用了几路（content.js 每次开始采集都会把 dts_settings_effective 写回 storage）
-    // v0.2.15：默认错峰多路；若扩展发现「两路返回同一页」会当轮降回 1，并把原因写进 lanesNote。
+    // v0.5.13：默认错峰多路；若扩展发现「两路返回同一页」会当轮降回 1，并把原因写进 lanesNote。
     const effLanes = await readEffectiveLanes();
     if (effLanes) {
       const actual = Number(effLanes.lanes) || 0;

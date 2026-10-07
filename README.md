@@ -13,6 +13,8 @@ douyin-ai-collector/          ← 仓库根（可自行命名）
 
 若只上传扩展，可单独使用 `douyin-collector/` 目录；AI 调用请同时带上 `douyin-mcp/`。
 
+> **版本号（v0.5.15 起）**：扩展、DSH 插件、MCP **三件套统一编号**，当前都是 `0.5.15`。更早对照：发布 v0.5.9/0.5.10/0.5.11/0.5.12 = 扩展 0.2.11/0.2.12/0.2.13/0.2.14，v0.5.13 与 v0.5.14 = 扩展 0.2.15（MCP 依次 0.3.2~0.3.6）。
+
 **下载发布物**（打包好的 tgz / 扩展 zip / 使用说明 / SHA256SUMS）走 **GitHub Releases**，不放在仓库里：
 <https://github.com/monagisa/douyin-ai-collector/releases>（最新版直接看 [releases/latest](https://github.com/monagisa/douyin-ai-collector/releases/latest)）。
 本仓库是 **private**，这些链接要用有权限的 GitHub 账号打开；要发给没有权限的人，请下载附件后直接传文件。
@@ -56,7 +58,7 @@ douyin-ai-collector/          ← 仓库根（可自行命名）
    超时、等扫码秒数、是否先清空、二级回复限速（`replyLanes` / `replyGlobalGapMs` / `replyGapMs` / `replyThrottleSec`）都可以改，三个入口：
    **扩展面板标题栏右上角的设置齿轮 `⚙`**（0.2.5 起，优先级最高，用不用 DSH 都能改）→
    DSH「设置 → 插件 → dsh-douyin-comments」的设置表（0.5.0 起，改完立即生效，不用重启）→
-   AI 经 MCP（`douyin-mcp` 0.3.6）的 `ai_get_settings` / `ai_set_settings`，`ai_start_collect`
+   AI 经 MCP（`douyin-mcp` 0.5.15）的 `ai_get_settings` / `ai_set_settings`，`ai_start_collect`
    可带 `max` / `lanes` / `replyLanes` / `replyGlobalGapMs` / `replyGapMs` / `replyWarmupMs` / `replyThrottleMaxWaitMs`
    （优先级：面板齿轮 > AI 下发 > 内置默认）。0.5.12 + 扩展 0.2.14 起，回复接口被服务端暂时拒绝时
    **不再「十秒不行就收尾」**：单波最多撞 12 秒，波间停 15/30/60 秒自动再来一波，总窗口默认 120 秒
@@ -66,13 +68,14 @@ douyin-ai-collector/          ← 仓库根（可自行命名）
    含截图 / 页面 HTML / 状态 JSON / 日志副本，返回值 `snapshotDir`；正常采完不留，日志留 50 份、现场留 20 份）。
    装完**不用重启**：桌面端这类宿主默认开着 HMR（只监听 profile 配置，`@deepseek-ai/dsh-hmr` 的 `root: []`），
    新装插件会即时重新组合并挂载；只有**覆盖安装同一个包换版本**时才需要重启 DSH 才会加载新代码。
-   要把这套发给别人：下载 [v0.5.14 的单文件包](https://github.com/monagisa/douyin-ai-collector/releases/download/v0.5.14/dsh-douyin-comments-v0.5.14.zip)
-   （解压后是 `dsh-douyin-comments-0.5.14.tgz` 插件包 + `douyin-collector-extension-v0.2.15.zip`
+   要把这套发给别人：下载 [v0.5.15 的单文件包](https://github.com/monagisa/douyin-ai-collector/releases/download/v0.5.15/dsh-douyin-comments-v0.5.15.zip)
+   （解压后是 `dsh-douyin-comments-0.5.15.tgz` 插件包 + `douyin-collector-extension-v0.5.15.zip`
     单独扩展 + `使用说明.md` + `SHA256SUMS.txt`）。
    对方**不用 DSH、只要 MCP**：下载
-   [v0.5.14 里的 MCP 单文件包](https://github.com/monagisa/douyin-ai-collector/releases/download/v0.5.14/douyin-collector-mcp-v0.3.6.zip)
-   （解压后是 `douyin-collector/` 扩展源码（v0.2.15）+ `douyin-mcp/` 本地 MCP server（v0.3.6）+
+   [v0.5.15 里的 MCP 单文件包](https://github.com/monagisa/douyin-ai-collector/releases/download/v0.5.15/douyin-collector-mcp-v0.5.15.zip)
+   （解压后是 `douyin-collector/` 扩展源码（0.5.15）+ `douyin-mcp/` 本地 MCP server（0.5.15）+
     `使用说明.md`）。同页附件里还有 `SHA256SUMS.txt` 可校验，单独的中文说明是附件 `USAGE-zh-CN.md`。
+   （**v0.5.15 起三件套同号**；v0.5.14 及更早是扩展 `0.2.x` / 插件 `0.5.x` / MCP `0.3.x` 各自编号。）
 
 ---
 
