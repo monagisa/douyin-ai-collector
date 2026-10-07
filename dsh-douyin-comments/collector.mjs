@@ -49,7 +49,9 @@ export const DEFAULTS = {
   allowAnonymous: process.env.DOUYIN_ALLOW_ANONYMOUS === '1',
   /**
    * 目标条数上限（工具参数 max 优先）。默认 8 万 = 扩展单视频评论池的防御上限
-   * （douyin-collector/background.js:22 MAX_COMMENTS_PER_VIDEO = 80000），到量即暂停落盘。
+   * （douyin-collector/background.js:22 MAX_COMMENTS_PER_VIDEO = 80000）。
+   * v0.2.13 起作为 maxCount **下发给扩展**：到量只停顶层扫描，二级回复仍补完再收工
+   * （旧版既不封一级、又会在回复阶段点暂停 —— 见 README「目标条数」一节）。
    */
   max: Number(process.env.DOUYIN_MAX || 0) || 80000,
   /**
@@ -75,6 +77,13 @@ export const DEFAULTS = {
    * 回复接口比列表接口更容易被限流（实测 4 路 × 600ms 就会撞窗口），所以单独留一个档位。
    */
   replyLanes: Number(process.env.DOUYIN_REPLY_LANES || 0) || 0,
+  /**
+   * v0.2.13：回复请求**跨线程**的全局最小间隔（毫秒，写进扩展 dts_settings）。
+   * 0 = 不指定，用扩展内置的 250ms（≈ ≤4 次/秒）。实测：4 路各自「取到线程就发」、
+   * 而绝大多数线程只有一页 ⇒ 速率 ≈ 20 次/秒，同一视频两轮能差到「0/46 线程被拒」
+   * 与「~139 条」——扩展侧现在按这个间隔全局限速，撞限流还会自动降 1 路。
+   */
+  replyGlobalGapMs: Number(process.env.DOUYIN_REPLY_GLOBAL_GAP_MS || 0) || 0,
   /**
    * 二级回复「等限流窗口」的墙钟预算（秒，写进扩展 dts_settings）。0 = 扩展内置的 10 秒。
    * 10 秒是原作者按「十秒不行就停」定的；报告实测限流窗口往往几秒才开、10 秒经常整轮白跑，
@@ -595,6 +604,8 @@ export async function collectDouyinComments(o = {}) {
     return isFinite(dn) && dn > 0 ? dn : 0;
   };
   const replyLanes = Math.max(0, Math.min(8, Math.round(numOr(o.replyLanes, DEFAULTS.replyLanes))));
+  // v0.2.13：回复请求全局限速（0 = 用扩展内置的 250ms）
+  const replyGlobalGapMs = Math.max(0, Math.min(2000, Math.round(numOr(o.replyGlobalGapMs, DEFAULTS.replyGlobalGapMs))));
   const replyThrottleSec = numOr(o.replyThrottleSec, DEFAULTS.replyThrottleSec);
   const replyNoProgressMs = Math.max(60000, Math.round(
     (numOr(o.replyNoProgressSec, DEFAULTS.replyNoProgressSec) || 900) * 1000,
@@ -980,6 +991,20 @@ export async function collectDouyinComments(o = {}) {
       }).catch(() => null);
       return r && Number(r.lanes) > 0 ? r : null;
     };
+    /**
+     * v0.2.13：扩展有没有按我们下发的 maxCount 生效（≥0.2.13 会把 maxCount 写回 dts_settings_effective）。
+     * 没生效（旧扩展 / 设置写不进去）时，采集器退回「轮询到量点暂停」的兜底逻辑。
+     */
+    let extMaxOk = null;
+    const extHandlesMax = async () => {
+      if (extMaxOk !== null) return extMaxOk;
+      const eff = await readEffectiveLanes();   // 整条 dts_settings_effective
+      extMaxOk = !!(eff && Number(eff.maxCount) > 0 && Number(eff.maxCount) === max);
+      log(extMaxOk
+        ? '扩展已按 maxCount=' + max + ' 生效：一级到目标只停顶层扫描，二级回复继续补采'
+        : '扩展没有按 max=' + max + ' 生效（旧版扩展或设置没写进去）：采集器用轮询兜底（到量点暂停）');
+      return extMaxOk;
+    };
 
     let s = await st();
     log('面板就绪：phase=' + s.phase + ' videoId=' + s.videoId + ' 现有条数=' + (s.unique || 0));
@@ -1050,7 +1075,11 @@ export async function collectDouyinComments(o = {}) {
 
     // ⑥.5 把运行时设置推给扩展（DSH「设置 → 插件」里可改；写不进去就用扩展内置值）
     const extSettings = { lanes };
+    // v0.2.13：max 必须下发给扩展（maxCount）——扩展会「一级到量只停顶层扫描、二级回复仍补完」。
+    // 不下发时采集器只能靠轮询点「暂停」，一级根本封不住（旧版实测 max=100 却采回 896 条）。
+    if (max > 0) extSettings.maxCount = max;
     if (replyLanes > 0) extSettings.replyLanes = replyLanes;
+    if (replyGlobalGapMs > 0) extSettings.replyGlobalGapMs = replyGlobalGapMs;
     if (replyThrottleSec > 0) extSettings.replyThrottleMaxWaitMs = Math.round(replyThrottleSec * 1000);
     const pushed = await pushExtensionSettings(extSettings);
     if (pushed.ok) log('已把设置写进扩展：dts_settings=' + JSON.stringify(pushed.value));
@@ -1149,17 +1178,20 @@ export async function collectDouyinComments(o = {}) {
       if (s.phase === 'error') throw new Error('扩展报错：' + (s.error || s.note || '(无详情)'));
       if (u !== lastUnique) { lastUnique = u; stallSince = Date.now(); }
 
-      // max 只算「一级评论」：到量后如果还要二级回复，就继续让扩展补采。
-      // 旧版不分阶段地 u >= max 就点暂停 —— 一级评论早就超过 max 的那种视频，
-      // 一进回复阶段就被掐掉，回复永远是 0 条（报告里的实测正是如此）。
-      if (u >= max) {
+      // max 只算「一级评论」（扩展 0.2.13 起单独上报 topSeen；unique 是一二级同池）：
+      //   ① 扩展认 maxCount 时（0.2.13+）采集器什么都不用做 —— 扩展到量只停顶层扫描，
+      //      把二级回复补完再置 done；
+      //   ② 旧扩展不认 maxCount：退回「轮询到量点暂停」兜底。旧版不分阶段地 u >= max 就点暂停，
+      //      一进回复阶段就被掐掉（回复永远是 0 条）；现在至少不会掐掉刚进回复阶段的那一轮。
+      const uTop = typeof s.topSeen === 'number' ? s.topSeen : u;
+      if (uTop >= max && !(await extHandlesMax())) {
         if (wantReplies && s.phase === 'collecting') {
           if (!topCapLogged) {
-            log('一级评论已到目标 ' + max + ' 条（当前 ' + u + ' 条），继续等二级回复补采…');
+            log('一级评论已到目标 ' + max + ' 条（当前 ' + uTop + ' 条），继续等二级回复补采…');
             topCapLogged = true;
           }
         } else {
-          log('已到目标 ' + max + ' 条（当前 ' + u + ' 条），点「暂停」…');
+          log('已到目标 ' + max + ' 条（当前 ' + uTop + ' 条），点「暂停」…');
           await clickPanel(/暂停/);
           paused = true;
           s = await settle();
