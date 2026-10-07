@@ -81,14 +81,27 @@
   //          一次补采最多花 ~10 秒在「等窗口」上，之后立刻收尾，绝不长时间卡住；
   //          想再试就再点一次「开始采集」——已采到的不重复拉，从断点续采；
   //       ③ 只有「签名真没了」（NO_SIGNED_URL / 坏签名 / 401·403 / 传输错误）才要求用户
-  //          重新打开评论区；STATUS_5 / EMPTY_BODY / STATUS_NULL 一律当**限流**（签名还活着）；
-  //       ④ 等满 10 秒仍无果就优雅收尾成 done，**绝不无限等待、绝不要求滚动**。
+  //          重新打开评论区；STATUS_5 / EMPTY_BODY / STATUS_NULL 一律当**服务端没放行**（签名还活着）；
+  //       ④ 等满预算仍无果就收尾成 done，**绝不无限等待、绝不要求滚动**。
+  // 2026-10-07 v0.2.14：预算从「10 秒一次性判决」改成「分波停顿重试、总窗口封顶」。
+  //   实测（同一视频 7692405235813272867，探针 _rl_probe/_rl_direct）：
+  //     · A 轮：会话内连续重试 108 秒，48 次回复请求全部 HTTP 200 + 0 字节 body；
+  //     · 11 秒后新开会话的 B 轮：39/39 线程、302 条回复，一次没失败；
+  //     · C 轮（把预算放宽到 300 秒，连撞 125 秒 / 200+ 次请求）：服务端一次都没放行；
+  //     · D 轮：跨 8.5 分钟 4 波全被拒；随后新会话的 x1 轮又 23/23 全成。
+  //   ⇒ 空 body 是服务端真没给数据（不是本地抢跑：hook 里只有 res.text() 拿到空串才是
+  //     EMPTY_BODY，超时是另一个错误码 REPLAY_TIMEOUT，从未出现过）；但「10 秒」是假的终局：
+  //     窗口常在十几秒后自己打开。所以改成：单波最多 REPLY_WAVE_BUDGET_MS，
+  //     波与波之间停 REPLY_PARK_PLAN_MS，总等待封顶 RS.replyThrottleMaxWaitMs（内置 120 秒）。
+  //     老行为（十秒不行就停）仍可复原：面板「限流等待 s」设 10 即可。
   const REPLY_WARMUP_MS = 1500;           // 进入补采前先停一下，让刚被列表扫描用掉的配额回血
-  const REPLY_COOLDOWN_MS = 1500;         // 连续失败到阈值后的冷却（预算只有 10s，冷却必须短）
+  const REPLY_COOLDOWN_MS = 1500;         // 连续失败到阈值后的冷却
   const REPLY_FAIL_STREAK_STOP = 3;       // 连续失败累计到这个数，才做一次「冷却 + 探签名死活」
   const REPLY_BACKOFF_BASE_MS = 1000;     // 重试退避基数（1s 起，指数递增到上限后保持）
-  const REPLY_BACKOFF_MAX_MS = 3000;      // 退避上限（3s：预算 10s 内只够试几次，不拖长）
-  const REPLY_THROTTLE_MAX_WAIT_MS = 10 * 1000;       // 整段「等限流窗口」的墙钟上限（用户定的 10 秒）
+  const REPLY_BACKOFF_MAX_MS = 3000;      // 退避上限（3s）
+  const REPLY_THROTTLE_MAX_WAIT_MS = 120 * 1000;      // 「等窗口」的**总**墙钟上限（含波间停顿；面板可改，10s~10min）
+  const REPLY_WAVE_BUDGET_MS = 12 * 1000;             // 单波连续重试的上限（撞得再久也不连撞 200 次）
+  const REPLY_PARK_PLAN_MS = [15000, 30000, 60000];   // 波间停顿计划（最后一档重复用）
   // ================== 回复请求全局限速（v0.2.13） ==================
   // 2026-10-07 定因（用户报「时不时触发回复限流，并发调低了也没用」）：
   // 4 条 lane 各自「取到线程就发」，唯一间隔只有同线程翻页的 REPLY_GAP_MS，
@@ -98,7 +111,7 @@
   // 策略：① 跨 lane 的**全局间隔**（默认 250ms ≈ ≤4 次/秒，落在用户给的 4~6 次/秒档）；
   //       ② 撞限流（列表接口正常、回复被拒）时**自动降 1 路**并把全局间隔翻倍（上限 1000ms）——
   //          越撞越慢，自然退到服务端能过的档位，而不是一路硬撞到预算耗尽。
-  const REPLY_GLOBAL_GAP_MS = 250;        // 所有回复请求（跨线程）的最小间隔；0 = 关闭限速
+  const REPLY_GLOBAL_GAP_MS = 250;        // 所有回复请求（跨线程）的最小间隔；0/未设 = 用这个内置值
   const REPLY_GLOBAL_GAP_MAX_MS = 1000;   // 自适应上限（每撞一次限流翻倍，封顶在这里）
 
   // ================== 并发重放（最快档） ==================
@@ -135,7 +148,7 @@
     replyGapMs: REPLY_GAP_MS,
     replyWarmupMs: REPLY_WARMUP_MS,
     replyThrottleMaxWaitMs: REPLY_THROTTLE_MAX_WAIT_MS,
-    replyGlobalGapMs: REPLY_GLOBAL_GAP_MS,   // v0.2.13：回复请求跨线程的全局限速（0 = 关闭）
+    replyGlobalGapMs: REPLY_GLOBAL_GAP_MS,   // v0.2.13：回复请求跨线程的全局限速（0/未设 = 用内置 250ms）
   };
   // 最近一次读设置时，面板（dts_user_settings）里是否有用户改动 —— 只用于面板上显示来源
   var hasUserSettings = false;
@@ -218,9 +231,12 @@
   var replyFailStreak = 0;        // 回复请求连续失败次数
   var replyFailCount = 0;         // 补采失败（没拉全）的线程数
   var replyLastError = '';        // 最近一次回复失败原因（供面板/测试诊断）
-  var replyThrottledMs = 0;       // 因「回复接口拒绝」而静默等待的累计毫秒（不打扰用户的预算）
+  var replyThrottledMs = 0;       // 因「服务端不放行回复接口」而在**单波内**等待的毫秒（不打扰用户的预算）
   var replyThrottleStartAt = 0;   // 本轮静默等待的起点（墙钟）；0 = 当前不在等待
-  var replyStoppedByThrottle = false; // 本轮补采是因为「服务端硬拒回复接口」而提前收尾的（面板要如实说明）
+  var replyParkedMs = 0;          // v0.2.14：波间停顿累计毫秒（与 replyThrottledMs 相加 = 本轮总等待）
+  var replyWaves = 0;             // v0.2.14：本轮已经打过的波数（1 = 只跑了第一波）
+  var replyWaveBudgetMs = REPLY_WAVE_BUDGET_MS;  // v0.2.14：当前这一波的连续重试上限
+  var replyStoppedByThrottle = false; // 本轮补采是因为「服务端不放行回复接口」而提前收尾的（面板要如实说明）
   var resumeReplies = false;      // 补采因签名失效停下后，拿到新签名直接回补采（不重扫顶层）
   /** 清空/换代号：清空时 +1。旧 startLoop 的在途回包若 epoch 不一致，必须丢弃，
    *  否则清空后旧循环会把 cursor 写回高位，再点开始就“续采”，但池子已是空的。 */
@@ -1302,21 +1318,23 @@
   /**
    * 回复请求被拒后的恢复（协议 §3.8）。
    * 返回 { r }（拿到成功响应）| { needSign: true }（签名真的没了）| { givingUp: true }。
-   * 限流（EMPTY_BODY / STATUS_NULL / STATUS_5）**只在预算内等**（RS.replyThrottleMaxWaitMs：
-   * 内置 10 秒，DSH 插件的设置里可以放宽到 10 分钟），
-   * 到点就 { givingUp, throttled } 收尾 —— 绝不无限等待、绝不要求用户滚动。
+   * 「服务端不回数据」（EMPTY_BODY / STATUS_NULL / STATUS_5）**只在单波预算内**等
+   * （replyWaveBudgetMs：内置 12 秒，由 collectReplies 按剩余总窗口算出），
+   * 到点就 { givingUp, throttled } 交给 collectReplies —— 由它决定「停一会儿再打下一波」
+   * 还是收尾（v0.2.14：不再一波判终局）。绝不无限等待、绝不要求用户滚动。
    */
   async function recoverReply(parentCid, cur, firstErr) {
     var err = firstErr;
     var k = 0;   // 退避指数：跨轮累计，到 REPLY_BACKOFF_MAX_MS 后保持
-    // 预算是墙钟：退避睡眠本身也算在内，否则「10 秒上限」会被重试循环放大成几十秒。
+    var waveBudget = replyWaveBudgetMs > 0 ? replyWaveBudgetMs : RS.replyThrottleMaxWaitMs;
+    // 预算是墙钟：退避睡眠本身也算在内，否则「12 秒上限」会被重试循环放大成几十秒。
     if (!replyThrottleStartAt) replyThrottleStartAt = Date.now();
     // 本 lane 自己的起点：4 条 lane 并发时，任意一条成功都会把全局起点清零，
     // 另一条若还在冷却里、拿全局值做减法就会算出「已等待 17 亿秒」（实测踩到过）。
     var throttleStart = replyThrottleStartAt;
-    // 立刻把状态告诉用户：这是「接口正在限流、我自己在短退避重试」，不需要任何操作
-    setPhase('replies', '回复接口正在限流（' + err + '），自动退避重试中，最多试 '
-      + Math.round(RS.replyThrottleMaxWaitMs / 1000) + ' 秒（无需你操作）…');
+    // 立刻把状态告诉用户：这是「服务端不回数据、我自己在短退避重试」，不需要任何操作
+    setPhase('replies', '服务端暂时不回数据（' + err + '），自动退避重试中，这一波最多试 '
+      + Math.round(waveBudget / 1000) + ' 秒（无需你操作；不成会停一会儿再自动来一波）…');
 
     while (!stopFlag) {
       if (replyPages >= REPLY_MAX_REQUESTS) return { givingUp: true, error: '达到请求上限' };
@@ -1325,9 +1343,9 @@
       while (replyFailStreak < REPLY_FAIL_STREAK_STOP && !stopFlag) {
         if (replyPages >= REPLY_MAX_REQUESTS) return { givingUp: true, error: '达到请求上限' };
         // 预算检查必须在内层也做：否则要等退避跑完、冷却结束才判上限，会超出预算一大截
-        if (Date.now() - throttleStart >= RS.replyThrottleMaxWaitMs) {
-          return { givingUp: true, throttled: true, error: '回复接口持续拒绝超过 '
-            + Math.round(RS.replyThrottleMaxWaitMs / 1000) + ' 秒' };
+        if (Date.now() - throttleStart >= waveBudget) {
+          return { givingUp: true, throttled: true, error: '服务端持续不回数据超过 '
+            + Math.round(waveBudget / 1000) + ' 秒' };
         }
         await sleep(Math.min(REPLY_BACKOFF_MAX_MS, REPLY_BACKOFF_BASE_MS * Math.pow(2, k)));
         k++;
@@ -1352,17 +1370,17 @@
         replyLastError = err + '（列表接口也失败，签名确实不可用了）';
         return { needSign: true };
       }
-      replyLastError = err + '（列表接口仍正常，判定为回复接口临时拒绝）';
-      // v0.2.13：确认只是「回复被限流」（签名还活着）→ 自动降速，别继续用同一个速率硬撞
+      replyLastError = err + '（列表接口仍正常，判定为服务端暂时不放行回复接口）';
+      // v0.2.13：确认只是「回复被拒」（签名还活着）→ 自动降速，别继续用同一个速率硬撞
       replyBackOff(err);
       // 先判预算再报状态：否则刚说完「还在重试」下一行就收尾了
-      if (replyThrottledMs >= RS.replyThrottleMaxWaitMs) {
-        return { givingUp: true, throttled: true, error: '回复接口持续拒绝超过 '
-          + Math.round(RS.replyThrottleMaxWaitMs / 1000) + ' 秒' };
+      if (replyThrottledMs >= waveBudget) {
+        return { givingUp: true, throttled: true, error: '服务端持续不回数据超过 '
+          + Math.round(waveBudget / 1000) + ' 秒' };
       }
-      setPhase('replies', '回复接口正在限流（' + err + '），已退避重试 '
-        + Math.round(replyThrottledMs / 1000) + ' 秒（最多试 '
-        + Math.round(RS.replyThrottleMaxWaitMs / 1000) + ' 秒，不成先收尾）…');
+      setPhase('replies', '服务端暂时不回数据（' + err + '），已退避重试 '
+        + Math.round(replyThrottledMs / 1000) + ' 秒（这一波最多 '
+        + Math.round(waveBudget / 1000) + ' 秒，之后会停一会儿再来一波）…');
     }
     return { givingUp: true, error: 'stopped' };
   }
@@ -1393,7 +1411,7 @@
     replyGateMs = Math.min(REPLY_GLOBAL_GAP_MAX_MS, Math.max(REPLY_GLOBAL_GAP_MS, replyGateMs * 2));
     var lanes = replyLaneLimit > 0 ? replyLaneLimit : RS.replyLanes;
     if (lanes > 1) replyLaneLimit = lanes - 1;
-    noteText = '回复接口被限流（' + (reason || '') + '）：已自动降速 —— 全局间隔 ' + before + '→'
+    noteText = '服务端暂时不放行回复接口（' + (reason || '') + '）：已自动降速 —— 全局间隔 ' + before + '→'
       + replyGateMs + 'ms，并发 ' + (replyLaneLimit || RS.replyLanes) + ' 路……';
     render();
   }
@@ -1457,8 +1475,11 @@
     await sleep(RS.replyWarmupMs);
     if (stopFlag) return;
     var needSignStop = false, hardStop = false, throttledStop = false;
-    replyThrottledMs = 0;   // 每次进入补采重算「静默等待」预算
+    replyThrottledMs = 0;   // 每次进入补采重算「等窗口」预算
     replyThrottleStartAt = 0;
+    replyParkedMs = 0;      // v0.2.14：波间停顿累计
+    replyWaves = 1;         // v0.2.14：马上要打第一波
+    replyWaveBudgetMs = Math.min(REPLY_WAVE_BUDGET_MS, RS.replyThrottleMaxWaitMs);
     replyStoppedByThrottle = false;
     // v0.2.13：每次进入补采都把限速/降速状态复位（上一轮的降速不继承到这一轮）
     replyGateMs = RS.replyGlobalGapMs;
@@ -1484,7 +1505,13 @@
           if (r.needSign) { needSignStop = true; return; }
           if (r.throttled) { throttledStop = true; return; }
           if (r.stop) { hardStop = true; return; }
-          if (r.failed) failed.push(cid); else replyDoneSet.add(cid);
+          if (r.failed) failed.push(cid); else {
+            replyDoneSet.add(cid);
+            // v0.2.14：这一波里先撞了几次「服务端暂时不回数据」、后面又成功时，
+            // 面板那行红字（errText）不清掉会一直挂着，看起来像「一直在限流」——
+            // 有任意一个线程成功就说明窗口已经开了，立刻清掉。
+            if (errText) errText = '';
+          }
           noteText = label + ' ' + replyDoneSet.size + '/' + replyTargets.size + ' 个线程，已得 '
             + repliesCollected + ' 条（请求 ' + replyPages + ' 次'
             + (failed.length ? '，本轮失败 ' + failed.length : '') + '）';
@@ -1511,6 +1538,36 @@
       failed = await runRound(failed, '重试失败线程');
     }
 
+    // v0.2.14：服务端不放行时**不再一波判终局** —— 停一会儿、再来一波。
+    // 依据见文件顶部 REPLY_THROTTLE_MAX_WAIT_MS 的实测注释：窗口常在十几秒后自己打开，
+    // 而「一口气连撞」并不会让它开得更快（C 轮连撞 125 秒 / 200+ 次请求，一次没放行）。
+    // 单波上限 replyWaveBudgetMs，波间停 REPLY_PARK_PLAN_MS，总等待封顶 RS.replyThrottleMaxWaitMs。
+    while (throttledStop && failed.length && !needSignStop && !stopFlag) {
+      var parkMs = REPLY_PARK_PLAN_MS[Math.min(replyWaves - 1, REPLY_PARK_PLAN_MS.length - 1)];
+      var wouldWait = replyParkedMs + parkMs;
+      // 留一波的余量：总窗口不够再打一波就收尾，别停完了发现没时间试
+      if (wouldWait + REPLY_WAVE_BUDGET_MS > RS.replyThrottleMaxWaitMs) break;
+      replyWaves++;
+      await flushComments(0);   // 先落盘：用户这时关页面/切视频也不会丢已拿到的
+      noteText = '服务端还没放行回复接口（本轮已等 '
+        + Math.round((replyParkedMs + replyThrottledMs) / 1000) + ' 秒，还剩 '
+        + (replyDoneSet.size < replyTargets.size ? (replyTargets.size - replyDoneSet.size) : failed.length)
+        + ' 个线程）：' + Math.round(parkMs / 1000) + ' 秒后自动再试一波，不用你操作……';
+      render();
+      await sleep(parkMs);
+      if (stopFlag) break;
+      replyParkedMs = wouldWait;
+      throttledStop = false;
+      replyFailStreak = 0;
+      replyThrottleStartAt = 0;
+      replyThrottledMs = 0;
+      replyLastError = '';
+      replyWaveBudgetMs = Math.min(REPLY_WAVE_BUDGET_MS,
+        Math.max(6000, RS.replyThrottleMaxWaitMs - replyParkedMs));
+      setPhase('replies', '', noteText);
+      failed = await runRound(failed, '停顿 ' + Math.round(parkMs / 1000) + 's 后重试');
+    }
+
     await flushComments(0);
     replyFailCount = failed.length;
     if (throttledStop) replyStoppedByThrottle = true;
@@ -1525,16 +1582,25 @@
       return;
     }
     if (throttledStop) {
-      noteText = '回复接口正在限流，重试 ' + Math.round(replyThrottledMs / 1000)
-        + ' 秒仍未成功，本轮补采到此为止（' + replyDoneSet.size + '/' + replyTargets.size
-        + ' 个线程，共 ' + repliesCollected + ' 条，请求 ' + replyPages + ' 次）。'
-        + '稍后再点「开始采集」会从断点续补采二级回复（不重扫顶层，已采到的不重复拉）';
+      noteText = '服务端始终没放行回复接口（本轮共等 '
+        + Math.round((replyParkedMs + replyThrottledMs) / 1000) + ' 秒、分 ' + replyWaves
+        + ' 波重试；' + replyDoneSet.size + '/' + replyTargets.size
+        + ' 个线程、共 ' + repliesCollected + ' 条已采到，请求 ' + replyPages + ' 次）。'
+        + '再点一次「开始采集」会从断点续补采（不重扫顶层、已采到的不重复拉）；'
+        + '想让它等更久/更短，面板「限流等待 s」可调（内置 120 秒，设 10 秒 = 老行为）';
     } else {
       noteText = '二级回复补采完成：' + replyDoneSet.size + '/' + replyTargets.size
         + ' 个线程，共新增 ' + repliesCollected + ' 条（请求 ' + replyPages + ' 次'
         + (failed.length ? '，仍有 ' + failed.length + ' 个线程没拉全' : '')
         + (hardStop ? '，达到请求上限提前停止' : '') + '）';
     }
+    // v0.2.14：补采阶段到此结束，把「阶段」交回调用方 —— 它负责置 done，并补上
+    // 「到量停顶层」的前缀（第二阶段收尾的 phase === 'collecting' 门槛，见本文件下方）。
+    // 旧版这里留在 'replies'，那个门槛因此永远不成立 ⇒ 面板一直停在「补采二级回复」，
+    // DSH 采集器更要等到「无进展 900 秒」才收工；真机 y1 轮就是补采完成后被签名抖动
+    // 拽进 waiting-sign、再空等 120 秒才结束（ok=true，但 phase 不是 done）。
+    // 裸赋值不走 setPhase：既不改刚写好的 noteText，也不清掉可能刚清空过的 errText。
+    phase = 'collecting';
     render();
   }
 
@@ -1620,12 +1686,14 @@
     if (!replyTargets.size) return '';
     var s = '；二级回复已补采 ' + repliesCollected + ' 条（' + replyDoneSet.size
       + '/' + replyTargets.size + ' 个线程，请求 ' + replyPages + ' 次）';
-    // 被限流时如实说明，并给出用户唯一的动作：过一会儿再点一次（无需滚动）
+    // 服务端不放行时如实说明（含总等待与波数），并给出用户唯一的动作：过一会儿再点一次（无需滚动）
     if (replyStoppedByThrottle) {
-      s += '。抖音正在限流回复接口（列表接口仍正常），已重试 '
-        + Math.max(1, Math.round(replyThrottledMs / 1000)) + ' 秒仍未成功，还剩 '
+      s += '。服务端始终没放行回复接口（列表接口正常：它回的是 HTTP 200 + 0 字节 body，'
+        + '不是本地请求没回来），本轮共等 '
+        + Math.max(1, Math.round((replyParkedMs + replyThrottledMs) / 1000)) + ' 秒、分 '
+        + replyWaves + ' 波重试，还剩 '
         + (replyTargets.size - replyDoneSet.size)
-        + ' 个线程没拉到 —— 过一会儿再点「开始采集」会**从断点续补采二级回复**'
+        + ' 个线程没拉到 —— 再点「开始采集」会**从断点续补采二级回复**'
         + '（不重扫顶层、已采到的不重复拉）';
     }
     return s;
@@ -1717,7 +1785,7 @@
         replyGapMs: REPLY_GAP_MS,
         replyWarmupMs: REPLY_WARMUP_MS,
         replyThrottleMaxWaitMs: REPLY_THROTTLE_MAX_WAIT_MS,
-        replyGlobalGapMs: REPLY_GLOBAL_GAP_MS,   // v0.2.13：回复请求跨线程全局限速（0 = 关闭）
+        replyGlobalGapMs: REPLY_GLOBAL_GAP_MS,   // v0.2.13：回复请求跨线程全局限速（0/未设 = 用这个内置 250ms）
       };
       var clamp = function (v, lo, hi, dflt) {
         var n = Number(v);
@@ -1740,10 +1808,13 @@
           out.replyLanes = pick('replyLanes', 1, LANES_HARD_MAX, REPLY_LANES);
           out.replyGapMs = pick('replyGapMs', 0, 60000, REPLY_GAP_MS);
           out.replyWarmupMs = pick('replyWarmupMs', 0, 600000, REPLY_WARMUP_MS);
-          // 等限流窗口的预算：上限 10 分钟；下限仍是内置的 10 秒（只放宽、不提前放弃）
-          out.replyThrottleMaxWaitMs = pick('replyThrottleMaxWaitMs', REPLY_THROTTLE_MAX_WAIT_MS, 600000, REPLY_THROTTLE_MAX_WAIT_MS);
-          // v0.2.13：回复请求全局限速。0 = 关闭（不建议）；上限 2 秒/次（再慢就不如调小并发）
-          out.replyGlobalGapMs = pick('replyGlobalGapMs', 0, 2000, REPLY_GLOBAL_GAP_MS);
+          // 等窗口的**总**预算：上限 10 分钟；下限 10 秒（=老行为「十秒不行就停」），内置 120 秒
+          out.replyThrottleMaxWaitMs = pick('replyThrottleMaxWaitMs', 10000, 600000, REPLY_THROTTLE_MAX_WAIT_MS);
+          // v0.2.13：回复请求全局限速。0 或缺省 = 用内置 250ms —— 与 DSH 设置页/MCP/文档的
+          // 「0 = 用扩展内置 250ms」保持一致（v0.2.13 曾把 0 当「关闸门」，与文档矛盾：AI 一条
+          // ai_set_settings{replyGlobalGapMs:0} 就能静默关掉限速）
+          var gap = pick('replyGlobalGapMs', 0, 2000, 0);
+          out.replyGlobalGapMs = gap > 0 ? gap : REPLY_GLOBAL_GAP_MS;
           resolve(out);
         });
       } catch (e) {
@@ -1787,6 +1858,8 @@
           replyGlobalGapMs: RS.replyGlobalGapMs,
           replyGapMs: RS.replyGapMs,
           replyThrottleMaxWaitMs: RS.replyThrottleMaxWaitMs,
+          replyWaveBudgetMs: REPLY_WAVE_BUDGET_MS,      // v0.2.14：单波连续重试上限
+          replyParkPlanMs: REPLY_PARK_PLAN_MS.join('/'), // v0.2.14：波间停顿计划
           from: hasUserSettings ? 'panel' : 'plugin',
           at: Date.now(),
         },
@@ -2636,7 +2709,7 @@
     { key: 'lanes', label: '并发路数（已停用）', min: 1, max: LANES_HARD_MAX, step: 1, title: '顶层列表已固定单路：实测同签名并发会被服务端合并成同一页，4 路并发反而少采约 30%。此设置保留兼容，不再影响采集。' },
     { key: 'replyLanes', label: '回复并发', min: 1, max: LANES_HARD_MAX, step: 1, title: '二级回复同时拉几条线程：1~8，内置默认 4' },
     { key: 'replyGapMs', label: '回复间隔 ms', min: 0, max: 60000, step: 100, title: '同一线程两次回复请求之间的间隔，内置默认 600ms' },
-    { key: 'replyThrottleSec', label: '限流等待 s', min: 10, max: 600, step: 10, title: '撞上服务端限流时，最多等这么久再重试（内置 10 秒，只能放宽不能更短）' },
+    { key: 'replyThrottleSec', label: '限流等待 s', min: 10, max: 600, step: 10, title: '服务端暂时不回数据时，本轮**总共**最多等这么久（分波重试：单波 12 秒，波间停 15/30/60 秒）。内置 120 秒；设 10 = 老行为「十秒不行就收尾」' },
   ];
 
   function clampInt(v, lo, hi, dflt) {
@@ -2723,6 +2796,7 @@
           replyGapMs: st.replyGapMs,
           replyWarmupMs: RS.replyWarmupMs,
           replyThrottleMaxWaitMs: st.replyThrottleMaxWaitMs,
+          replyGlobalGapMs: RS.replyGlobalGapMs,   // 面板不管这项，别在保存时丢掉
         };
         noteText = '设置已保存：并发 ' + st.lanes + ' 路 · 目标 ' +
           (st.maxCount > 0 ? st.maxCount + ' 条' : '不限') + ' · 回复并发 ' + st.replyLanes +

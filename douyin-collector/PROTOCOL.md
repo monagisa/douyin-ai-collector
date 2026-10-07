@@ -439,7 +439,7 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
 - `window.addEventListener('message', ...)`：只处理 `d.__dts_collector === 'DTS_COLLECTOR' && d.dir === 'up'`。
 - **必须校验 `event.source === window`**，防止 iframe 伪造。
 
-### 3.8 二级回复补采（v0.1.5 新增）
+### 3.8 二级回复补采（v0.1.5 新增；**v0.2.14 起限流改「分波停顿重试」+ 总窗口 120 秒**）
 
 顶层列表触底后**不直接结束**，而是进入第二阶段补采二级回复：
 
@@ -493,19 +493,37 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
    - 进入补采前先 `REPLY_WARMUP_MS = 1500` 停顿，让刚被列表扫描用掉的配额回血；
    - 单页失败按 `REPLY_BACKOFF_BASE_MS = 1000` 起指数退避（上限
      `REPLY_BACKOFF_MAX_MS = 3000`，即 1s → 2s → 3s → 3s…）**持续重试**（不是只重试固定次数）；
-     退避压到 3s 上限是因为总预算只有 10 秒，拖长只会让用户干等；
+     退避压到 3s 上限是因为**单波**预算只有 12 秒（v0.2.14），拖长只会让用户干等；
    - 连续失败累计到 `REPLY_FAIL_STREAK_STOP = 3` 才做 `REPLY_COOLDOWN_MS = 1500` 冷却；
    - 冷却后用**列表接口做签名存活探测**（`sigAliveProbe()` → `requestReplay(0, 20)`，多路共用
      一次探测以免 `requestReplay` 按 cursor 去重互相踩）。**判死判据只有 `sigLooksDead()`**：
      `NO_SIGNED_URL` / `BAD_SIGNED_URL` / HTTP 401·403 / 传输层错误（fetch 失败、abort、超时）；
      **`STATUS_5`、`STATUS_NULL`、`EMPTY_BODY` 一律算「限流、签名还活着」**→ 继续退避重试，
-     面板只说「回复接口正在限流（…），自动退避重试中，最多试 10 秒（无需你操作）」，
-     **不要求用户做任何事**；
-   - **整段「等限流窗口」的墙钟上限是 `REPLY_THROTTLE_MAX_WAIT_MS = 10 秒`**（v0.1.8：
-     用户明确要求「限流十秒不行就停掉」）。记在 `replyThrottledMs`，**含退避睡眠本身**；
-     上限在**退避内层循环里也判一次**，到点立刻 `{ throttled: true }` 收尾，不等冷却点。
-     面板说明「回复接口正在限流…重试 N 秒仍未成功，本轮补采到此为止…稍后再点『开始采集』
-     会接着补，已采到的不重复拉」；
+     面板只说「服务端暂时不回数据（…），自动退避重试中，这一波最多试 12 秒（无需你操作；
+     不成会停一会儿再自动来一波）」；
+   - **`EMPTY_BODY` 的判据是「服务端回了 200、body 0 字节」**（`hook.js` 只在 `await res.text()`
+     拿到空串时产生它，并把往返 `ms` 记在返回值里）；「本地请求没回来 / 太慢」是**另一个错误码**
+     `REPLAY_TIMEOUT`。2026-10-07 真机 A/C/D 三轮的 `replyLastError` 从头到尾只有 `EMPTY_BODY`，
+     一次 `REPLAY_TIMEOUT` 都没有；同一天用页面主世界手动重放改写后的回复 URL 是
+     `200 / status_code:0 / 58276 字节 / 366~1666 ms`（`_rl_direct.mjs`，6 轮全绿）
+     ⇒ **不是本地抢跑**，不能拿它当「扩展太快」的证据。
+   - **单波预算 `REPLY_WAVE_BUDGET_MS = 12 秒`，波间停顿重试（v0.2.14）**：一波撞满预算后
+     不再收尾，而是 `flushComments(0)` 先落盘 → 停 `REPLY_PARK_PLAN_MS = [15, 30, 60] 秒`
+     （最后一档重复）→ 复位 `replyFailStreak` / `replyThrottleStartAt` / `replyThrottledMs` /
+     `replyLastError` → 用**剩余总窗口**再算一次本波预算（下限 6 秒）→ `runRound()` 重打一波；
+     `wouldWait + REPLY_WAVE_BUDGET_MS > RS.replyThrottleMaxWaitMs` 才收尾。
+     依据（同一视频 `7692405235813272867`、同一份代码、250ms 闸门）：
+     A 轮会话内连撞 **108 秒 / 48 次请求全被拒**，**11 秒后**新会话的 B 轮 **39/39 线程、302 条零失败**；
+     C 轮把窗口放宽到 300 秒、**一口气硬撞 125 秒**仍一次没放行 ⇒ 硬撞没用，停一会儿再打才有用；
+     D 轮跨 8.5 分钟 4 波全被拒，随后新会话 x1 轮 **23/23 线程全成**。
+   - **整段「等服务端窗口」的总墙钟上限是 `replyThrottleMaxWaitMs`（内置
+     `REPLY_THROTTLE_MAX_WAIT_MS = 120 秒`，v0.2.14 起从 10 秒改成 120 秒；面板可设 10~600 秒）**。
+     累计等待记在 `replyParkedMs`（波间停顿）+ `replyThrottledMs`（波内退避），**含退避睡眠本身**；
+     单波上限在**退避内层循环里也判一次**，到点立刻 `{ throttled: true }` 返回——但那是「这一波结束」，
+     不是「本轮结束」；是否再打一波由上面那条循环决定。
+     面板说明「服务端始终没放行回复接口（本轮共等 N 秒、分 M 波重试；x/y 个线程…）。
+     再点一次『开始采集』会从断点续补采，已采到的不重复拉；面板『限流等待 s』可调
+     （内置 120 秒，设 10 秒 = v0.2.13 及更早的老行为：十秒不行就收尾）」；
    - **只有「列表接口也失败」或 `NO_SIGNED_URL` 才判定签名真的没了** → 才转 `waiting-sign`。
 8. **限流收尾后用户再点「开始采集」（续采，v0.2.2）**：
    - 限流收尾后 `startLoop` 会 **`setPhase('done')`**，**不是** `paused`。
@@ -518,9 +536,19 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
    去重；重扫要 ~18s，而且刚轰完列表接口正是回复请求被拒的高发期。
 10. **可恢复**：`replyDoneSet` 记录已拉完的线程，暂停后再点「开始采集」不会重复拉。
 11. **收尾（整轮必须以 done 结束）**：`endNote()` 追加「二级回复已补采 N 条…」；
-    限流时 `replyNote()` 说明「…过一会儿再点『开始采集』会从断点续补采二级回复（不重扫顶层）」。
+    限流时 `replyNote()` 说明「…本轮共等 N 秒、分 M 波重试…过一会儿再点『开始采集』会从断点续补采
+    二级回复（不重扫顶层）」，并写清服务端回的是「HTTP 200 + 0 字节 body」（不是本地请求没回来）。
     补采返回后 `startLoop()` **照常 `setPhase('done')`**，**绝不能永远卡在 `replies`**。
-12. **诊断**：`replyLastError` / `replyThrottledMs` 镜像进 `__DTS_COLLECTOR_STATUS__`。
+    **实现要点（v0.2.14）**：`collectReplies()` 正常收尾（非 `needSignStop`）时**必须把阶段交回**
+    ——裸赋值 `phase = 'collecting';`（不能走 `setPhase`：会把刚写好的 `noteText` 覆盖掉、也会清掉 `errText`），
+    否则第二阶段收尾的 `phase === 'collecting'` 门槛不成立、整轮永远不置 `done`
+    （真机 y1 轮实测：补采完成后 `phase` 停在 `replies` / 随后被签名抖动拽成 `waiting-sign`，
+    DSH 采集器一直等到「无进展 900 秒」或 120 秒空窗才收工，整轮白拖 8.5 分钟；修完 z1 轮 25 秒结束）。
+    另：`runRound()` 的 worker 里**任一回复线程成功就清 `errText`**（`if (errText) errText = '';`）——
+    这一波先撞了几次 `EMPTY_BODY`、后面又成功时，面板那行红字不清会一直挂着，用户会以为「一直在限流」。
+12. **诊断**：`replyLastError` / `replyThrottledMs` / `replyParkedMs` / `replyWaves` 镜像进
+    `__DTS_COLLECTOR_STATUS__`；生效的波策略另见 `dts_settings_effective.replyWaveBudgetMs` /
+    `replyParkPlanMs`。
 
 **为什么值得做**：实测差额的 76% 就是这些回复；剩下 ~24% 是已删除评论
 （`folded_comment_count = 0`，接口层没有「折叠评论」这回事），任何接口都拿不到。
@@ -533,7 +561,7 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
 |---|---|
 | `dts_settings` | 外部写入的运行时设置；`startLoop()` **每轮开头**读一次 |
 | `dts_user_settings` | v0.2.4：**面板设置**（v0.2.5 起入口是标题栏齿轮 `⚙`）写入的用户设置；优先级高于 `dts_settings`（`chrome.storage.local.remove('dts_user_settings')` 即恢复插件/内置值） |
-| `dts_settings_effective` | 本轮**实际**用的值 + 时间戳（`{lanes, lanesWanted, lanesNote, maxCount, replyLanes, replyGlobalGapMs, replyGapMs, replyThrottleMaxWaitMs, from: 'panel'\|'plugin', at}`），回写给调用方核对。**v0.2.12 起**：`lanes` **恒为 1**（顶层列表固定单路）、`lanesWanted` 是本次请求的原始值（1~8，没写就是内置 4）、`lanesNote` 是停用说明字符串（形如「顶层列表固定单路：多路并发会被服务端合并成同一响应，lanes 已停用」）。**v0.2.13 起**：`maxCount` 是真正下发的目标条数，DSH 插件据此判断「扩展是否自己管住了 max」（读不到就退回插件侧点暂停的兜底逻辑） |
+| `dts_settings_effective` | 本轮**实际**用的值 + 时间戳（`{lanes, lanesWanted, lanesNote, maxCount, replyLanes, replyGlobalGapMs, replyGapMs, replyThrottleMaxWaitMs, replyWaveBudgetMs, replyParkPlanMs, from: 'panel'\|'plugin', at}`），回写给调用方核对。**v0.2.12 起**：`lanes` **恒为 1**（顶层列表固定单路）、`lanesWanted` 是本次请求的原始值（1~8，没写就是内置 4）、`lanesNote` 是停用说明字符串（形如「顶层列表固定单路：多路并发会被服务端合并成同一响应，lanes 已停用」）。**v0.2.13 起**：`maxCount` 是真正下发的目标条数，DSH 插件据此判断「扩展是否自己管住了 max」（读不到就退回插件侧点暂停的兜底逻辑）。**v0.2.14 起**：`replyWaveBudgetMs`（单波预算，12 秒）与 `replyParkPlanMs`（波间停顿计划 `15/30/60`）也回写，排查「到底打了几波、每波多久」时一眼可见 |
 
 **取值优先级（v0.2.4 起）**：面板 `dts_user_settings` > 外部 `dts_settings` > 内置常量。逐字段判断，
 面板里没填的字段继续用外部值 / 内置值（`loadRuntimeSettings()` 里对每个 key 先看面板那份、再看插件那份）。
@@ -547,15 +575,19 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
 | `lanes` | 顶层列表采集的并发路数（v0.2.2）——**v0.2.12 起已停用**：顶层列表固定单路，该键仍可读写、仍会下发给扩展，但**不再影响采集**（仅保留兼容；详见本节后面的实测原因） | `MAX_LANES = 4`（已不再被使用） | `1..LANES_HARD_MAX (= 8)`（钳位保留兼容） |
 | `replyLanes` | 二级回复的并发线程数（v0.2.3）；**v0.2.13 起撞限流会自动降 1 路**（下限 1） | `REPLY_LANES = 4` | `1..8` |
 | `replyGapMs` | 同一回复线程两页之间的间隔（v0.2.3） | `REPLY_GAP_MS = 600` | `0..60000` |
-| `replyGlobalGapMs` | v0.2.13：**跨线程**的全局最小间隔（真正只有这一个 `await replyGate()` 闸门，取到线程就发的老行为没了） | `REPLY_GLOBAL_GAP_MS = 250` | `0..2000`（`0` = 用内置 250ms；撞限流时闸门自动翻倍，上限 `REPLY_GLOBAL_GAP_MAX_MS = 1000`） |
+| `replyGlobalGapMs` | v0.2.13：**跨线程**的全局最小间隔（真正只有这一个 `await replyGate()` 闸门，取到线程就发的老行为没了） | `REPLY_GLOBAL_GAP_MS = 250` | `0..2000`（**`0` = 用内置 250ms**，v0.2.14 起真的如此——v0.2.13 及更早把 `0` 当成「关掉闸门」，与 DSH 设置页/MCP/本文档的说法相反，AI 一条 `ai_set_settings{replyGlobalGapMs:0}` 就能静默关掉限速；撞限流时闸门自动翻倍，上限 `REPLY_GLOBAL_GAP_MAX_MS = 1000`） |
 | `replyWarmupMs` | 进入补采前的静默时间（v0.2.3） | `REPLY_WARMUP_MS = 1500` | `0..600000` |
-| `replyThrottleMaxWaitMs` | 整段「等限流窗口」的墙钟上限（v0.2.3） | `REPLY_THROTTLE_MAX_WAIT_MS = 10 * 1000` | `10000..600000` |
+| `replyThrottleMaxWaitMs` | **总**窗口上限：整轮「等服务端放行回复接口」的墙钟上限（v0.2.3；**v0.2.14 起从「一波判决」变成「总窗口」**，波内退避 + 波间停顿都算在里面） | `REPLY_THROTTLE_MAX_WAIT_MS = 120 * 1000`（v0.2.14 起；v0.2.3~v0.2.13 是 `10 * 1000`） | `10000..600000`（下限仍是 10 秒：设 10 = 老行为「十秒不行就收尾」） |
 
 面板设置（v0.2.4 文字按钮 → v0.2.5 标题栏齿轮 `⚙`）暴露的是其中 5 项（`maxCount`（标签 `目标条数 max`） /
 `lanes` / `replyLanes` / `replyGapMs` / `replyThrottleSec`＝秒，存盘时换算成 `replyThrottleMaxWaitMs`），
 存进 `dts_user_settings`；`replyGlobalGapMs` 与 `replyWarmupMs` **不在面板里**（面板尽量少占高度），
 要改走 DSH 插件设置表 / MCP / 直接写 `dts_settings`。其中 `lanes` 这一项**自 v0.2.12 起已停用**（顶层列表固定单路）：界面里仍能改、
 也仍会存进 `dts_user_settings`，但采集不再读它，仅保留兼容。
+`replyThrottleSec` 自 **v0.2.14 起语义是「本轮总共最多等多久」**（不是「一波最多等多久」）：
+单波撞满 `REPLY_WAVE_BUDGET_MS = 12 秒` 后会按 `REPLY_PARK_PLAN_MS` 停 15/30/60 秒再来一波，
+直到总窗口用完；面板 title 写明「内置 120 秒；设 10 = 老行为」。面板保存时重建 `RS`，
+**必须把不在面板里的 `replyGlobalGapMs` 原样带过去**（否则面板一存就把全局限速丢了）。
 
 - 读取点：`startLoop()` 进入时 `RS = await loadRuntimeSettings()`（内部 `chrome.storage.local.get([USER_SETTINGS_KEY, RUNTIME_SETTINGS_KEY])`，逐字段按上面的优先级合并），
   之后本轮所有限速点都读 `RS.*`。同一轮内不再重读；下一轮（含暂停后续采）会再读一次 ⇒ 改完**下一轮生效**，不用刷新页面。
@@ -567,15 +599,18 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
   **v0.2.4~v0.2.12 的实现是错的**：那个 `break` 写在 `collectReplies()` 调用点之前，直接退出了整个循环 ⇒
   设了目标条数的用户**一条二级回复都采不到**（真机：`max=100` 交付 896 条、二级 0 条、面板「已手动暂停」）。
 - 合法性：按上表范围钳位（取整）；字段缺失 / 非数字 / `<= 0` 一律回退内置默认。
-  `replyThrottleMaxWaitMs` 的下限刻意就是内置的 10 秒：放宽可以，**不允许调得比原来更早放弃**
-  （「限流十秒不行就停」是原先定的策略，放宽是给「撞上窗口、想再等等」留的口子）。
+  `replyThrottleMaxWaitMs` 的下限**刻意写死成字面量 10000（10 秒）**，而内置默认已改成 120 秒：
+  放宽可以，**不允许调得比原来更早放弃**（「限流十秒不行就停」是 v0.1.8 的策略；v0.2.14 的真机证据
+  表明那个策略会漏采，但用户若明确想要老行为，面板「限流等待 s」设 10 即回到它）。
+  另外 `replyGlobalGapMs` 的 `0` **不再**解析成「关闸门」，而是「用内置 250ms」。
 - **v0.2.12 起顶层列表固定单路（见 3.2）**：列表扫描一次只发一个 `requestReplay(c, COUNT)`，用服务端返回的
   `next` 推进；`lanesWanted` 不再参与 `Math.min(...)`，只用于回写 `dts_settings_effective.lanesWanted`。
   原因：真机实测（2026-10-06，视频 `7692405235813272867`）同一个签名在同一时刻发多路分页请求会被服务端
   **合并成同一响应**（4 路 5 轮只有 **492 条**、且 **0 个失败请求**；单路串行 18 步 **714~744 条**；
   每路**错峰 200ms** 才恢复正常，4 页 = 200 条唯一），并发越高反而越少采。
 - 默认行为与老版本**在数据上不再一致**：没有 `dts_settings` 时顶层同样是单路（等价于旧 `MAX_LANES = 1`），
-  `REPLY_LANES = 4` / `REPLY_GAP_MS = 600` / `REPLY_THROTTLE_MAX_WAIT_MS = 10s` 不变
+  `REPLY_LANES = 4` / `REPLY_GAP_MS = 600` / `REPLY_THROTTLE_MAX_WAIT_MS = 120s`（v0.2.14 起；
+  v0.2.3~v0.2.13 是 10s）不变
   （扩展单独使用时也固定单路）。代价是慢：同一视频 4 路 **20.1s** → 单路 **70.4s**，
   换来 **768 → 945 条**（一级 586 → 753、二级 182 → 192）。
 - 单一事实来源仍是 `content.js`；`MAX_LANES` 常量保留但**已不再被使用**（`LANES_HARD_MAX` 只用于

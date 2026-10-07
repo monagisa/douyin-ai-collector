@@ -158,8 +158,8 @@ export const Config = Schema ? Schema.object({
     .description('回复请求「跨线程」的全局最小间隔毫秒（默认 0 = 用扩展内置的 250ms ≈ ≤4 次/秒）。实测 4 路各自零间隔发（≈20 次/秒）会撞成片拒绝，0.2.13 起按这个间隔全局限速；0 = 不指定')
     .default(0).min(0).max(2000).step(50)),
   replyThrottleSec: vol(Schema.number()
-    .description('二级回复被限流时，最多等多少秒（默认 10，扩展内置值）。限流窗口实测几秒才开，10 秒常整轮白跑，可放宽到 60~300 后用「再点一次」断点续采')
-    .default(10).min(10).max(600).step(1)),
+    .description('二级回复被服务端拒（HTTP 200 + 0 字节 body）时，本轮**总共**最多等多少秒（默认 120）。v0.2.14 起扩展分波重试：单波最多 12 秒，波间停 15/30/60 秒再打一波，总等待封顶在这个值 ⇒ 实测「等十几秒窗口就开了」的情况不用再靠手动点第二次；设 10 = 老行为「十秒不行就收尾」')
+    .default(120).min(10).max(600).step(1)),
   replyNoProgressSec: vol(Schema.number()
     .description('二级回复阶段多久没有新数据就收工（秒，默认 900 = 15 分钟）。退避重试期间条数本来就长时间不动，太小会导致回复采不到就收工')
     .default(900).min(60).max(7200).step(10)),
@@ -200,7 +200,7 @@ export function readSettings(config) {
     replyLanes: Math.max(1, Math.min(8, Math.round(readCfg(cfg, 'replyLanes', Number(DEFAULTS.replyLanes) > 0 ? Number(DEFAULTS.replyLanes) : 4)))),
     // v0.5.11：回复请求全局限速（0 = 用扩展内置的 250ms）
     replyGlobalGapMs: Math.max(0, Math.min(2000, Math.round(readCfg(cfg, 'replyGlobalGapMs', Number(DEFAULTS.replyGlobalGapMs) > 0 ? Number(DEFAULTS.replyGlobalGapMs) : 0)))),
-    replyThrottleSec: Math.max(10, Math.round(readCfg(cfg, 'replyThrottleSec', Number(DEFAULTS.replyThrottleSec) > 0 ? Number(DEFAULTS.replyThrottleSec) : 10))),
+    replyThrottleSec: Math.max(10, Math.round(readCfg(cfg, 'replyThrottleSec', Number(DEFAULTS.replyThrottleSec) > 0 ? Number(DEFAULTS.replyThrottleSec) : 120))),
     replyNoProgressSec: Math.max(60, Math.round(readCfg(cfg, 'replyNoProgressSec', Number(DEFAULTS.replyNoProgressSec) > 0 ? Number(DEFAULTS.replyNoProgressSec) : 900))),
   };
 }

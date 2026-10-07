@@ -5,6 +5,32 @@
 - **不破解签名** · **不绕过登录** · **不伪造请求**  
 - 复用页面自己生成的签名请求，只改分页 `cursor` / `count`  
 - 数据只落在本机 `chrome.storage.local`，可导出后自行分析  
+- v0.2.14：**「服务端不回数据」不再一波判终局；修掉「0 = 关闸门」与文档的矛盾**（用户 2026-10-07 报
+  「我怀疑这个限速是假限速，有时候我自己点就可以拿到」，随后又猜「请求过快、还没拿到返回结果就说是限流」）——
+  ① 先说清事实：判「限流」的唯一依据是 **HTTP 200 + body 0 字节**（`hook.js` 里只有 `await res.text()`
+  拿到空串才产生 `EMPTY_BODY`，并把往返 `ms` 记下来）；「没拿到返回」是另一个错误码 `REPLAY_TIMEOUT`，
+  真机 A/C/D 三轮（同一视频 `7692405235813272867`）**从未出现过** ⇒ 不是「本地抢跑」。
+  ② 但「等 10 秒就收尾」确实是**假终局**：A 轮会话内连撞 **108 秒 / 48 次请求全被拒**，
+  **11 秒后新会话**的 B 轮 **39/39 线程、302 条回复一次没失败**；C 轮把预算放宽到 300 秒、
+  连撞 **125 秒 / 200+ 次请求**仍一次没放行（所以「一口气硬撞」也没用）；D 轮跨 **8.5 分钟 4 波**全被拒，
+  随后新会话 x1 轮 **23/23 线程全成**。⇒ 服务端状态确实在起作用（窗口几秒~十几分钟自己开），
+  而旧实现把它当成了「本轮结束」。
+  ③ 因此改成**分波停顿重试**：单波最多撞 `REPLY_WAVE_BUDGET_MS = 12 秒`，
+  波与波之间停 `REPLY_PARK_PLAN_MS = [15, 30, 60] 秒`（最后一档重复），
+  **总等待封顶 `replyThrottleMaxWaitMs`**（内置 **10 秒 → 120 秒**；面板「限流等待 s」可设 10~600 秒，
+  设 10 = 老行为「十秒不行就收尾」）。每波开始前先 `flushComments(0)` 落盘，
+  用户中途关页面/切视频也不丢已拿到的。收尾文案改为如实报**本轮共等 N 秒 / 分 M 波 / 还剩几个线程**，
+  并说明服务端回的是「HTTP 200 + 0 字节 body」（旧文案只说「已重试 N 秒」——那只是**最后一波**的秒数，
+  A 轮实际等了 108 秒却报 14 秒）。
+  ④ 修 `replyGlobalGapMs` 的语义矛盾：旧版把 **0 当「关掉闸门」**，而 DSH 设置页 / MCP /
+  `PROTOCOL.md` / README 全写「0 = 用扩展内置 250ms」⇒ AI 一条 `ai_set_settings{replyGlobalGapMs:0}`
+  就能静默关掉限速。现在 **0 / 缺省一律等于内置 250ms**（跟文档一致）。
+  ⑤ 顺手修掉两个「看起来一直在限流」的假象：面板那行**暂态红字**（这一波先撞了几次空 body、后面又成功）
+  现在有任意一个线程成功就立刻清掉，不再一直挂着；补采阶段结束时把**阶段交回主循环**，
+  于是「到量停止顶层扫描」的收尾能真正置 `done`（旧版停在 `replies`，面板一直显示「补采二级回复」、
+  DSH 采集器还要空等到「无进展 900 秒」才收工——真机 y1 轮 `ok=true` 却 `phase=waiting-sign`、白等 120 秒）。
+  **真机 z1 轮（v0.2.14）：25 秒跑完、`phase=done`、`count=334`（一级 50 + 二级 284，28/28 线程）**。
+  离线自测 **161/161 全绿**。
 - v0.2.13：**修两个严重缺陷：目标条数一到量就丢掉全部二级回复；回复请求没有任何跨线程限速**（用户 2026-10-07 报告）——
   ① 面板齿轮的**目标条数**（以及插件/MCP 下发的 `maxCount`）旧实现是在主循环里直接 `break` 收工，
   而补采二级回复的分支写在那个 `break` **之后**，所以只要设了目标条数，**二级回复一条都采不到**
@@ -53,9 +79,10 @@
   DSH 插件 `dsh-douyin-comments` 在「设置 → 插件」里改的就是它
   ——**v0.2.12 起该设置已停用**（顶层列表固定单路，仅保留兼容；原因见本条最上面的 v0.2.12）
 - v0.2.3：二级回复的四档限速同样可被外部覆盖（`replyLanes` 并发线程数、`replyGapMs` 同线程页间隔、
-  `replyWarmupMs` 进补采前的静默、`replyThrottleMaxWaitMs` 等限流窗口的墙钟上限）；
-  不写就等价于老版本（4 / 600ms / 1500ms / 10s），扩展单独使用时行为不变。
-  v0.2.13 起另有 `replyGlobalGapMs`（跨线程全局限速，0 = 用内置 250ms）——见上一条
+  `replyWarmupMs` 进补采前的静默、`replyThrottleMaxWaitMs` 等窗口的**总**墙钟上限）；
+  不写就等价于老版本（4 / 600ms / 1500ms / 10s）。
+  v0.2.13 起另有 `replyGlobalGapMs`（跨线程全局限速，0 = 用内置 250ms）；
+  v0.2.14 起 `replyThrottleMaxWaitMs` 从「10 秒一波判决」变成「总窗口」（内置 120 秒，分波停顿重试）——见上一条
 - v0.2.4：**面板上多了「设置」按钮**（就在「开始采集/暂停」下面一行），点开可直接改
   目标条数 / 并发路数 / 回复并发 / 回复间隔 / 限流等待，存到 `chrome.storage.local.dts_user_settings`；
   优先级 **面板设置 > `dts_settings`（外部/插件写入）> 内置默认**；目标条数到量**只停顶层扫描、二级回复仍会补完**
@@ -226,6 +253,90 @@ is_reply, parent_cid
 - 导出成功 = 文件**真正写盘**；中断不会谎报「已导出」  
 
 **JSON** 含 `videoId` / `count` / `topLevelCount` / `replyCount` / `comments[]` 等字段。
+
+### v0.2.14：服务端不回数据时不再「一波判终局」；0 = 用内置 250ms
+
+用户 2026-10-07 连续两条反馈：「我怀疑这个**限速是假限速**，有时候我自己点就可以拿到」
+→「有没有可能是因为，**请求过快，还没拿到返回结果就说是限流**」。两条假设我都用真机探针查了。
+
+**先证伪「抢跑」这条**：判「服务端没放行」的唯一依据是 `hook.js` 里
+
+```js
+const t = await res.text();          // ← 已经拿到完整 HTTP 响应
+if (!t) return { ok: false, error: 'EMPTY_BODY', ms: Date.now() - t0 };   // body 是 0 字节
+```
+
+只有**服务端回了 200、body 长度 0** 才会产生 `EMPTY_BODY`，并且把往返 `ms` 一起记下来；
+「请求没回来 / 太慢」是另一个错误码 `REPLAY_TIMEOUT`（`content.js` 的 `REPLAY_TIMEOUT_MS`）。
+真机 A/C/D 三轮的 `replyLastError` **从头到尾只有 `EMPTY_BODY`**，一次 `REPLAY_TIMEOUT` 都没出现。
+另外用探针 `_rl_direct.mjs` 在页面主世界**手动重放**改写后的回复 URL（`getSigned()` → 改 path 为
+`/aweme/v1/web/comment/list/reply/`、补 `item_id/comment_id/cursor/count/cut_version`，其余参数原样）：
+
+```
+HTTP 200 · status_code:0 · body 58276 字节 · 366~1666 ms   ← 6 轮 × 2 个请求全绿
+```
+
+⇒ 空 body 是**服务端真的没给数据**，不是本地「还没拿到结果就判限流」。
+
+**再证伪「限速是假的」……但只对一半**。同一个视频 `7692405235813272867`、同一份代码、同样的
+250ms 全局闸门，四轮真机（`_rl_probe.mjs`，每秒采样 `getStatus()`）：
+
+| 轮次 | 参数 | 结果 |
+| --- | --- | --- |
+| A | `max=100 clearBefore=true` | 回复请求 **48 次全被拒**（始终 `EMPTY_BODY`），会话内连撞 **108 秒**，二级回复 **0 条** |
+| B | 在 A 结束 **11 秒后**开新会话 | **39/39 线程、302 条回复一次没失败**（`rqPg=48`），速率中位 3.98 次/秒 |
+| C | `max=100 clearBefore=true replyThrottleSec=300` | 连撞 **125 秒 / 200+ 次请求**仍一次没放行（降速生效：速率中位 1.99 次/秒） |
+| D | `max=100 clearBefore=true` | 跨 **8.5 分钟 4 波**全被拒（每波 ~14 秒预算） |
+| x1 | D 之后新会话，手动重放对照 | 改写后的回复请求 **全部 200 / 58276 字节**；该轮采集 **23/23 线程、265 条** |
+
+⇒ ① **限速本身是真的**（B 轮实测 ≈4 次/秒，与 250ms 闸门吻合；1 秒采样跨界的 4.99 是噪声）；
+② 但**「等 10 秒就收尾」是假的终局**：A 轮窗口在 108 秒后又开了（B 轮 11 秒后全成），
+C 轮「一口气硬撞 125 秒」却没用 ⇒ 该做的是**停下、歇一会儿、再打一波**，不是一路硬撞、也不是一波判死。
+
+**修法（`content.js`）**：
+
+1. 新增两个常量：`REPLY_WAVE_BUDGET_MS = 12 * 1000`（**单波**连续重试上限）、
+   `REPLY_PARK_PLAN_MS = [15000, 30000, 60000]`（波间停顿计划，最后一档重复）；
+   `REPLY_THROTTLE_MAX_WAIT_MS` 从 `10s` 改成 **`120s`**，语义从「一波预算」改成「**总**窗口上限」。
+2. `recoverReply()` 判上限改用**本波预算** `replyWaveBudgetMs`（由 `collectReplies()` 按剩余总窗口算，
+   下限 6 秒），到点照旧返回 `{ givingUp, throttled }`——但不再等于终局。
+3. `collectReplies()` 在原来的「失败线程退避 2.5s 重试一轮」之后加**停顿重试循环**：
+   每轮先 `flushComments(0)` 落盘（用户这时关页面/切视频也不丢），
+   面板写「服务端还没放行回复接口（本轮已等 N 秒，还剩 K 个线程）：M 秒后自动再试一波，不用你操作……」，
+   停 `parkMs` 后把波次 +1、状态复位（`replyFailStreak/replyThrottleStartAt/replyThrottledMs/replyLastError`）
+   再 `runRound(failed, …)`；`wouldWait + REPLY_WAVE_BUDGET_MS > RS.replyThrottleMaxWaitMs` 就收尾。
+4. `loadRuntimeSettings()` 的 `replyThrottleMaxWaitMs` 下限改成字面量 `10000`（内置默认却变成 120 秒），
+   这样**面板「限流等待 s」设 10 就能回到老行为**（面板 title 也改成「本轮总共最多等这么久」）。
+5. **修语义矛盾**：`replyGlobalGapMs` 旧版把 **0 当「关掉闸门」**，而 DSH 设置页 / MCP /
+   `PROTOCOL.md` / 本 README 全写「0 = 用扩展内置 250ms」⇒ AI 一条 `ai_set_settings{replyGlobalGapMs:0}`
+   就能静默关掉限速。现在 `var gap = pick('replyGlobalGapMs', 0, 2000, 0); out.replyGlobalGapMs = gap > 0 ? gap : REPLY_GLOBAL_GAP_MS;`
+   ——**0 / 缺省一律等于内置 250ms**（与全部文档一致）。
+6. 收尾文案不再只报**最后一波**的秒数：面板与交付 note 改为
+   「服务端始终没放行回复接口（本轮共等 N 秒、分 M 波重试；x/y 个线程、共 Z 条已采到，请求 P 次）。
+   再点一次「开始采集」会从断点续补采……想让它等更久/更短，面板「限流等待 s」可调（内置 120 秒，设 10 秒 = 老行为）」；
+   并说明服务端回的是「HTTP 200 + 0 字节 body」而不是本地抢跑。
+7. `dts_settings_effective` 追加 `replyWaveBudgetMs` / `replyParkPlanMs`，排查时一眼能看到生效的波策略。
+8. **暂态红字不再假挂**：`runRound()` 的 worker 里，任一回复线程成功就 `if (errText) errText = '';`
+   —— 这一波先撞了几次「服务端暂时不回数据」、后面又成了的话，面板不再一边写「已完成」一边挂着红字
+   （真机 y1 轮读到 `error: "服务端暂时不回数据（EMPTY_BODY）…"` 而同一时刻 `note` 已是「补采完成」）。
+9. **补采结束把阶段交回调用方**：正常收尾（非 `needSignStop`）时裸赋值 `phase = 'collecting'`（不走 `setPhase`，
+   免得清掉刚写好的 `noteText`/`errText`），让主循环第二阶段的 `phase === 'collecting'` 收尾门槛成立，
+   从而 `setPhase('done', '', doneNote)` 真正执行。旧版停在 `replies` ⇒ 面板永远显示「补采二级回复」，
+   DSH 采集器只能等「无进展 900 秒」（`collector.mjs` 的 `stallLimit`）才收工，期间还可能被签名抖动
+   拽成 `waiting-sign` 再空等 120 秒；真机 y1 轮就是这么跑掉 8.5 分钟的。修完 z1 轮 **25 秒**结束。
+
+**真机验收（2026-10-07，v0.2.14）**：
+
+| 轮次 | 参数 | 结果 |
+| --- | --- | --- |
+| y1（修 8 之前） | `max=20 clearBefore=true` | `ok=true count=316`，但 `phase=waiting-sign`、回复补采完成后**白等 120 秒**、整轮 **8.5 分钟** |
+| **z1（修完）** | 同样 `max=20 clearBefore=true` | **25 秒**跑完、`phase=done`、`count=334` = 一级 50 + 二级 284（28/28 个线程、37 次回复请求）；面板文案「一级评论已到目标 20 条（去重后 50 条），已停止顶层扫描；has_more=0 结束，已采 334/2034 条；二级回复已补采 284 条…」；同轮对照实验 `reply-rewritten → 200 / 58276 字节 / 436ms` |
+| 生效值 | `dts_settings_effective` | `maxCount:20 / replyGlobalGapMs:250 / replyThrottleMaxWaitMs:120000 / replyWaveBudgetMs:12000 / replyParkPlanMs:'15000/30000/60000'` |
+
+**自测**：离线 `node verify-tool.mjs` **164/164 全绿**（v0.2.14 共新增 11 条断言：单波/停顿常量、
+`recoverReply` 用本波预算、停顿重试循环存在且先落盘、总预算下限仍是 10 秒、收尾文案报总等待、
+0 = 用内置 250ms、插件描述如实写「总共多等多少秒」、版本 0.5.12 / 0.2.14 对得上、
+暂态红字清空、补采收尾交回 `collecting` 且收尾门槛仍在）。
 
 ### v0.2.13：目标条数不再吞掉二级回复；回复请求加全局限速
 

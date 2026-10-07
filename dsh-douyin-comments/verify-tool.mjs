@@ -300,9 +300,9 @@ check('回复限流预算、并发、间隔都能被 dts_settings 覆盖（不�
   /RS\.replyThrottleMaxWaitMs/.test(contentSrc) && /RS\.replyLanes/.test(contentSrc) && /RS\.replyGapMs/.test(contentSrc)
   && /RS\.replyWarmupMs/.test(contentSrc),
   ['replyThrottleMaxWaitMs', 'replyLanes', 'replyGapMs', 'replyWarmupMs'].filter((k) => contentSrc.includes('RS.' + k)).join(','));
-check('内置默认值没被改坏（不装插件单用扩展还是原行为）',
+check('内置默认：回复并发 4、间隔 600ms、等窗口总预算 120 秒（v0.2.14；面板可设回 10 秒）',
   /const REPLY_LANES = 4;/.test(contentSrc) && /const REPLY_GAP_MS = 600;/.test(contentSrc)
-  && /const REPLY_THROTTLE_MAX_WAIT_MS = 10 \* 1000;/.test(contentSrc),
+  && /const REPLY_THROTTLE_MAX_WAIT_MS = 120 \* 1000;/.test(contentSrc),
   (contentSrc.match(/const REPLY_LANES = \d+;.*/) || [''])[0]);
 check('装出来的扩展 ≥ 0.2.3（0.2.2 不认识回复限流设置）',
   /^0\.2\.(3|[4-9]|\d\d+)$/.test(String(targetManifest.version)) || Number(String(targetManifest.version).split('.')[1]) >= 3,
@@ -441,12 +441,53 @@ check('撞限流自动把全局限速翻倍、并发降 1 路（worker 按 reply
   && /if \(myLane >= \(replyLaneLimit > 0 \? replyLaneLimit : RS\.replyLanes\)\) return;/.test(contentSrc)
   && /replyBackOff\(err\);/.test(contentSrc));
 check('replyGlobalGapMs 可被 dts_settings 覆盖（面板 > 插件 > 内置 250ms）',
-  /out\.replyGlobalGapMs = pick\('replyGlobalGapMs', 0, 2000, REPLY_GLOBAL_GAP_MS\)/.test(contentSrc)
+  /var gap = pick\('replyGlobalGapMs', 0, 2000, 0\);/.test(contentSrc)
+  && /out\.replyGlobalGapMs = gap > 0 \? gap : REPLY_GLOBAL_GAP_MS;/.test(contentSrc)
   && /replyGlobalGapMs: REPLY_GLOBAL_GAP_MS/.test(contentSrc)
-  && /replyGateMs = RS\.replyGlobalGapMs;\s*\n\s*replyGateAt = 0;\s*\n\s*replyLaneLimit = 0;/.test(contentSrc));
+  && /replyGateMs = RS\.replyGlobalGapMs;\s*\n\s*replyGateAt = 0;\s*\n\s*replyLaneLimit = 0;/.test(contentSrc),
+  'v0.2.14 起 0 / 缺省 = 用内置 250ms（旧版把 0 当「关闸门」，与设置页/MCP/PROTOCOL 的文案矛盾）');
+// ---------- 3a-2d) 服务端不回数据时「分波停顿重试」，不再一波判终局（v0.2.14，用户 2026-10-07 报「假限流」） ----------
+// 真机依据（同一视频 7692405235813272867）：A 轮会话内连续重试 108 秒、48 次回复请求全是
+// HTTP 200 + 0 字节 body；11 秒后新会话的 B 轮 39/39 线程全成、302 条；C 轮把预算放宽到 300 秒
+// 连撞 125 秒 / 200+ 次请求仍一次没放行；D 轮跨 8.5 分钟 4 波全被拒，随后新会话 x1 轮 23/23 全成。
+// ⇒ 空 body 是服务端真没给数据（超时另有错误码 REPLAY_TIMEOUT，从未出现），但「10 秒」是假终局。
+check('单波预算与停顿计划是常量（12 秒/波 + 15/30/60 秒停），且有波次/停顿状态',
+  /const REPLY_WAVE_BUDGET_MS = 12 \* 1000;/.test(contentSrc)
+  && /const REPLY_PARK_PLAN_MS = \[15000, 30000, 60000\];/.test(contentSrc)
+  && /var replyParkedMs = 0;/.test(contentSrc) && /var replyWaves = 0;/.test(contentSrc)
+  && /var replyWaveBudgetMs = REPLY_WAVE_BUDGET_MS;/.test(contentSrc));
+check('recoverReply 用「本波预算」判上限（不再拿总窗口当单波预算）',
+  /var waveBudget = replyWaveBudgetMs > 0 \? replyWaveBudgetMs : RS\.replyThrottleMaxWaitMs;/.test(contentSrc)
+  && /if \(Date\.now\(\) - throttleStart >= waveBudget\) \{/.test(contentSrc)
+  && /if \(replyThrottledMs >= waveBudget\) \{/.test(contentSrc)
+  && !/replyThrottledMs >= RS\.replyThrottleMaxWaitMs/.test(contentSrc));
+check('collectReplies 撞拒后先落盘、停顿、再打一波（总等待封顶 RS.replyThrottleMaxWaitMs）',
+  /while \(throttledStop && failed\.length && !needSignStop && !stopFlag\) \{/.test(contentSrc)
+  && /REPLY_PARK_PLAN_MS\[Math\.min\(replyWaves - 1, REPLY_PARK_PLAN_MS\.length - 1\)\]/.test(contentSrc)
+  && /if \(wouldWait \+ REPLY_WAVE_BUDGET_MS > RS\.replyThrottleMaxWaitMs\) break;/.test(contentSrc)
+  && /await flushComments\(0\);   \/\/ 先落盘：用户这时关页面\/切视频也不会丢已拿到的/.test(contentSrc)
+  && /failed = await runRound\(failed, '停顿 ' \+ Math\.round\(parkMs \/ 1000\) \+ 's 后重试'\);/.test(contentSrc));
+check('总预算下限仍是 10 秒（面板/插件可设回老行为），内置默认 120 秒',
+  /pick\('replyThrottleMaxWaitMs', 10000, 600000, REPLY_THROTTLE_MAX_WAIT_MS\)/.test(contentSrc)
+  && /const REPLY_THROTTLE_MAX_WAIT_MS = 120 \* 1000;/.test(contentSrc)
+  && /key: 'replyThrottleSec', label: '限流等待 s', min: 10, max: 600/.test(contentSrc));
+check('收尾文案如实报「本轮共等 N 秒 / 分 M 波」与剩余线程（不再只报最后一波）',
+  /本轮共等 '/.test(contentSrc) && /分 ' \+ replyWaves/.test(contentSrc)
+  && /HTTP 200 \+ 0 字节 body/.test(contentSrc)
+  && /function replyNote\(\)/.test(contentSrc)
+  && /replyWaveBudgetMs: REPLY_WAVE_BUDGET_MS,/.test(contentSrc));
+check('任一回复线程成功后清掉面板那行暂态红字（不然「这一波撞过限流、后来成了」会一直挂红）',
+  /if \(errText\) errText = '';/.test(contentSrc)
+  && /replyDoneSet\.add\(cid\);[\s\S]{0,400}?if \(errText\) errText = '';/.test(contentSrc));
+check('补采收尾把阶段交回 collecting，让「到量停顶层」的 done 收尾能生效（真机 y1：补完停在 replies，'
+  + '面板一直显示「补采二级回复」、采集器空等 120 秒）',
+  /phase = 'collecting';\s*\n\s*render\(\);/.test(contentSrc)
+  && /补采阶段到此结束，把「阶段」交回调用方/.test(contentSrc));
+check('收尾门槛仍在（phase === \'collecting\' 才置 done，避免覆盖 waiting-sign / paused）',
+  /phase === 'collecting' &&\s*\n\s*replyTargets\.size > replyDoneSet\.size/.test(contentSrc)
+  && /if \(!stopFlag && epoch === collectEpoch && phase === 'collecting'\) \{/.test(contentSrc));
 check('浮层里有「当前：…」生效值一行（v0.2.5 从按钮行移入浮层）',
-  /'当前：' \+ settingsSummaryText\(\)/.test(contentSrc) && /refs\.summary = sbox\.cur;/.test(contentSrc));
-check('设置浮层有样式（.dts-settings / .dts-input / .dts-hidden）',
+  /'当前：' \+ settingsSummaryText\(\)/.test(contentSrc) && /refs\.summary = sbox\.cur;/.test(contentSrc));check('设置浮层有样式（.dts-settings / .dts-input / .dts-hidden）',
   /\.dts-settings\b/.test(cssSrc) && /\.dts-input\b/.test(cssSrc) && /\.dts-hidden\b/.test(cssSrc));
 check('浮层打开时面板撑高、且浮层子项不被压扁（修「当前：…」被 flex 挤成一条缝）',
   contentSrc.includes("classList.add('dts-settings-open')") && /\.dts-settings-open\b/.test(cssSrc)
@@ -722,9 +763,26 @@ check('插件设置表单/执行链都带上 replyGlobalGapMs（0 = 用扩展内
 check('插件描述如实写「到量只停顶层扫描、继续补二级回复」（0.5.11 起）',
   /到量就\*\*停止顶层扫描、继续把二级回复补完\*\*/.test(String(def.description || ''))
   && /0\.5\.11 起真正生效/.test(String(def.description || '')));
-check('插件 package.json / 扩展 manifest 版本对得上（0.5.11 / 0.2.13）',
-  manifest.version === '0.5.11' && targetManifest.version === '0.2.13',
+check('插件 package.json / 扩展 manifest 版本对得上（0.5.12 / 0.2.14）',
+  manifest.version === '0.5.12' && targetManifest.version === '0.2.14',
   `plugin=${manifest.version} ext=${targetManifest.version}`);
+// ---------- 3d) v0.5.12 / 扩展 0.2.14：「假限流」三处修正 ----------
+// 用户 2026-10-07 报「我怀疑这个限速是假限速，有时候我自己点就可以拿到」，随后又猜
+// 「请求过快、还没拿到返回结果就说是限流」。真机三轮探针（_rl_probe/_rl_direct）证伪了后者：
+// EMPTY_BODY 只可能来自「HTTP 200 + body 0 字节」（hook.js 里 res.text() 拿到空串），
+// 超时是另一个错误码 REPLAY_TIMEOUT，A/C/D 三轮从未出现；但「10 秒判终局」确实是假的——
+// A 轮连撞 108 秒全拒，11 秒后新会话 B 轮 39/39 全成。
+check('插件设置项说明如实写「总等待」，不再写「十秒不行就停」式文案',
+  /本轮\*\*总共\*\*最多等多少秒/.test(indexSrc),
+  'index.js 的 replyThrottleSec 描述');
+check('扩展默认：单波 12 秒 + 停顿 15/30/60 秒 + 总窗口 120 秒 (0.2.14)',
+  /const REPLY_WAVE_BUDGET_MS = 12 \* 1000;/.test(contentSrc)
+  && /const REPLY_PARK_PLAN_MS = \[15000, 30000, 60000\];/.test(contentSrc)
+  && /const REPLY_THROTTLE_MAX_WAIT_MS = 120 \* 1000;/.test(contentSrc));
+check('「0 = 用内置 250ms」在扩展侧与设置页/MCP 文案一致（0 不再等于关闸门）',
+  /out\.replyGlobalGapMs = gap > 0 \? gap : REPLY_GLOBAL_GAP_MS;/.test(contentSrc)
+  && /0=用扩展内置 250ms|0 = 用扩展内置 250ms/.test(bgSrc)
+  && !/const REPLY_GLOBAL_GAP_MS = 250;        \/\/ 所有回复请求（跨线程）的最小间隔；0 = 关闭限速/.test(contentSrc));
 
 // ---------- 4) 可选：真跑一次 ----------
 const liveIdx = process.argv.indexOf('--live');

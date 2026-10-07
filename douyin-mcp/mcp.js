@@ -28,7 +28,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-const VERSION = '0.3.4';
+const VERSION = '0.3.5';
 const HUB_NAME = 'douyin-collector-mcp';
 
 const argv = process.argv.slice(2);
@@ -499,15 +499,17 @@ const SETTINGS_PROPS = {
   max: { type: 'number', description: '目标条数上限（一级评论），0=不限；等价面板齿轮里的「目标条数 max」。扩展 0.2.13 起真正生效：到量只停顶层扫描、二级回复仍补完，实际条数通常多于它' },
   maxCount: { type: 'number', description: '同 max（扩展里的原始字段名），两者都传时以 max 为准' },
   lanes: { type: 'number', description: '【已停用】顶层扫描并发路数。扩展 0.2.12 起顶层列表固定单路：实测同一签名下同时发多个分页请求会被服务端合并成同一页，4 路并发反而少采约 30%。此键保留兼容（仍可下发、仍会落进 dts_settings_effective），但不影响采集' },
-  replyLanes: { type: 'number', description: '二级回复并发路数 1~8（默认 4）。扩展 0.2.13 起回复请求有**全局节流**（replyGlobalGapMs，默认 250ms ≈ ≤4 次/秒）'
-    + '并在撞限流时自动降 1 路，所以这里主要决定「同时几条线程在飞」；实测 4 路各自零间隔发（≈16~20 次/秒）会撞成片拒绝（EMPTY_BODY，'
-    + '惩罚态可持续数分钟），建议 1~2' },
+  replyLanes: { type: 'number', description: '二级回复并发路数 1~8（默认 4）。扩展 0.2.13 起回复请求有**全局节流**（replyGlobalGapMs，默认 250ms ≈ ≤4 次/秒，**与路数无关**）'
+    + '并在撞限流时自动降 1 路，所以这里主要决定「同时几条线程在飞」；0.2.14 起被拒也不再「十秒判终局」（见 replyThrottleMaxWaitMs），'
+    + '但早期实测「4 路各自零间隔发 ≈16~20 次/秒」会撞成片拒绝（EMPTY_BODY，惩罚态可持续数分钟），建议 1~2' },
   replyGapMs: { type: 'number', description: '回复同线程翻页间隔 ms 0~60000（默认 600）。只在同一条评论有多页回复时生效；'
     + '跨线程的限速用 replyGlobalGapMs（0.2.13 起默认 250ms）' },
   replyGlobalGapMs: { type: 'number', description: '回复请求**跨线程**的全局最小间隔 ms 0~2000（0 = 用扩展内置的 250ms ≈ ≤4 次/秒）。'
     + '扩展 0.2.13 起所有回复请求都过这个闸门（旧版单页线程等于零间隔），撞限流还会自动翻倍到上限 1000ms' },
   replyWarmupMs: { type: 'number', description: '进补采前的静默 ms 0~600000（默认 1500）' },
-  replyThrottleMaxWaitMs: { type: 'number', description: '整段等限流窗口的墙钟上限 ms 10000~600000（默认 10000）' }
+  replyThrottleMaxWaitMs: { type: 'number', description: '回复请求被拒时「等窗口」的**总**墙钟预算 ms 10000~600000（扩展 0.2.14 起内置 120000）。'
+    + '扩展 0.2.14 不再一波判终局：单波最多撞 12 秒，波间停 15/30/60 秒再打一波，总等待封顶在这个预算上；'
+    + '设 10000 = 旧行为（十秒不行就收尾，再点一次「开始采集」断点续补采）' }
 };
 
 const SETTINGS_KEYS = ['maxCount', 'lanes', 'replyLanes', 'replyGlobalGapMs', 'replyGapMs', 'replyWarmupMs', 'replyThrottleMaxWaitMs'];
