@@ -1,6 +1,6 @@
 {
   "name": "dsh-douyin-comments",
-  "version": "0.5.14",
+  "version": "0.5.15",
   "description": "DeepSeek Harness tool plugin: collect Douyin video comments with a bundled Chrome extension (registers the douyin_comments tool)",
   "type": "module",
   "main": "index.js",

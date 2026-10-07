@@ -216,7 +216,7 @@ async function download(text, filename, mime) {
   return { ok: false, error: '下载中断：' + (final.error || final.state) };
 }
 
-// 导出实现（面板 dts-export 与 Hub(AI/MCP) 命令 export 共用一份，v0.2.11 起）：
+// 导出实现（面板 dts-export 与 Hub(AI/MCP) 命令 export 共用一份，v0.5.9 起）：
 //   scope=video（默认）：只导 opts.videoId 这一个桶；
 //   scope=all（opts.all === true）：把本地所有视频的评论合成一份，每条评论标上 videoId，
 //     CSV 末尾追加 video_id 列（前 17 列契约不变），JSON 里给 per-video 摘要。
@@ -452,7 +452,7 @@ const KEY_EFFECTIVE_SETTINGS = 'dts_settings_effective';
 // 与 content.js 的硬上限保持一致（改这里要同步改那边）
 const SETTINGS_FIELDS = {
   maxCount: { min: 0, max: 1000000, desc: '目标条数，0=不限' },
-  lanes: { min: 1, max: 8, desc: '顶层列表路数（v0.2.15 起生效：错峰多路，默认 3；1=单路）' },
+  lanes: { min: 1, max: 8, desc: '顶层列表路数（v0.5.13 起生效：错峰多路，默认 3；1=单路）' },
   replyLanes: { min: 1, max: 8, desc: '二级回复并发路数' },
   replyGlobalGapMs: { min: 0, max: 2000, desc: '回复请求跨线程的全局最小间隔 ms（0=用扩展内置 250ms）' },
   replyGapMs: { min: 0, max: 60000, desc: '回复同线程请求间隔 ms' },
@@ -707,7 +707,7 @@ async function executeAiCommand(cmd) {
     }
 
     case 'export': {
-      // v0.2.11：与面板「导出」同一份实现（exportComments）。
+      // v0.5.9：与面板「导出」同一份实现（exportComments）。
       // args.all === true 时不传 videoId 也能导：把本地所有视频的评论合成一份，
       // CSV 末尾追加 video_id 列。成功按 Hub 约定把主体放进 result（scope / videoCount /
       // count / replyCount / filename / bytes / path），失败保持顶层 error+hint

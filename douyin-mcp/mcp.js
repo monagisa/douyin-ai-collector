@@ -28,7 +28,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-const VERSION = '0.3.6';
+const VERSION = '0.5.15';
 const HUB_NAME = 'douyin-collector-mcp';
 
 const argv = process.argv.slice(2);
@@ -496,19 +496,19 @@ function createHubServer() {
 // 与扩展 content.js 的硬上限一致（扩展侧还会再钳一次，这里只是给 AI 写清范围）。
 // `max` 是给 AI 用的别名 → 扩展里的字段名是 `maxCount`（面板齿轮里显示为「目标条数 max」）。
 const SETTINGS_PROPS = {
-  max: { type: 'number', description: '目标条数上限（一级评论），0=不限；等价面板齿轮里的「目标条数 max」。扩展 0.2.13 起真正生效：到量只停顶层扫描、二级回复仍补完，实际条数通常多于它' },
+  max: { type: 'number', description: '目标条数上限（一级评论），0=不限；等价面板齿轮里的「目标条数 max」。v0.5.11 起真正生效：到量只停顶层扫描、二级回复仍补完，实际条数通常多于它' },
   maxCount: { type: 'number', description: '同 max（扩展里的原始字段名），两者都传时以 max 为准' },
-  lanes: { type: 'number', description: '顶层列表路数（默认 3，错峰多路：每路错开 200ms；1 = 单路）。扩展 0.2.15 起真正生效——2026-10-07 实测扫完 21 页单路 15.8s vs 错峰 7.7s、唯一条数一样多；同时发（不错峰）才会被服务端并成同一页，扩展发现后会自动降回单路并在 lanesNote 里说明' },
-  replyLanes: { type: 'number', description: '二级回复并发路数 1~8（默认 4）。扩展 0.2.13 起回复请求有**全局节流**（replyGlobalGapMs，默认 250ms ≈ ≤4 次/秒，**与路数无关**）'
-    + '并在撞限流时自动降 1 路，所以这里主要决定「同时几条线程在飞」；0.2.14 起被拒也不再「十秒判终局」（见 replyThrottleMaxWaitMs），'
+  lanes: { type: 'number', description: '顶层列表路数（默认 3，错峰多路：每路错开 200ms；1 = 单路）。v0.5.13 起真正生效——2026-10-07 实测扫完 21 页单路 15.8s vs 错峰 7.7s、唯一条数一样多；同时发（不错峰）才会被服务端并成同一页，扩展发现后会自动降回单路并在 lanesNote 里说明' },
+  replyLanes: { type: 'number', description: '二级回复并发路数 1~8（默认 4）。v0.5.11 起回复请求有**全局节流**（replyGlobalGapMs，默认 250ms ≈ ≤4 次/秒，**与路数无关**）'
+    + '并在撞限流时自动降 1 路，所以这里主要决定「同时几条线程在飞」；0.5.12 起被拒也不再「十秒判终局」（见 replyThrottleMaxWaitMs），'
     + '但早期实测「4 路各自零间隔发 ≈16~20 次/秒」会撞成片拒绝（EMPTY_BODY，惩罚态可持续数分钟），建议 1~2' },
   replyGapMs: { type: 'number', description: '回复同线程翻页间隔 ms 0~60000（默认 600）。只在同一条评论有多页回复时生效；'
-    + '跨线程的限速用 replyGlobalGapMs（0.2.13 起默认 250ms）' },
+    + '跨线程的限速用 replyGlobalGapMs（0.5.11 起默认 250ms）' },
   replyGlobalGapMs: { type: 'number', description: '回复请求**跨线程**的全局最小间隔 ms 0~2000（0 = 用扩展内置的 250ms ≈ ≤4 次/秒）。'
-    + '扩展 0.2.13 起所有回复请求都过这个闸门（旧版单页线程等于零间隔），撞限流还会自动翻倍到上限 1000ms' },
+    + 'v0.5.11 起所有回复请求都过这个闸门（旧版单页线程等于零间隔），撞限流还会自动翻倍到上限 1000ms' },
   replyWarmupMs: { type: 'number', description: '进补采前的静默 ms 0~600000（默认 1500）' },
-  replyThrottleMaxWaitMs: { type: 'number', description: '回复请求被拒时「等窗口」的**总**墙钟预算 ms 10000~600000（扩展 0.2.14 起内置 120000）。'
-    + '扩展 0.2.14 不再一波判终局：单波最多撞 12 秒，波间停 15/30/60 秒再打一波，总等待封顶在这个预算上；'
+  replyThrottleMaxWaitMs: { type: 'number', description: '回复请求被拒时「等窗口」的**总**墙钟预算 ms 10000~600000（v0.5.12 起内置 120000）。'
+    + 'v0.5.12 不再一波判终局：单波最多撞 12 秒，波间停 15/30/60 秒再打一波，总等待封顶在这个预算上；'
     + '设 10000 = 旧行为（十秒不行就收尾，再点一次「开始采集」断点续补采）' }
 };
 
@@ -590,7 +590,7 @@ const TOOLS = [
     description: '把已采集的评论导出为 CSV 或 JSON，写入浏览器下载目录，并返回文件名/路径/字节数。'
       + '默认导某一个 videoId（scope=video）；传 all:true 时把本地所有视频合成一份（scope=all，CSV 末尾多一列 video_id，'
       + '回包带 videoCount），此时 videoId 可以不传。本地没有数据时返回 EMPTY_POOL（不会生成只有表头的空文件）。'
-      + '全部视频导出需要扩展 >= 0.2.11。',
+      + '全部视频导出需要扩展 v0.5.9 或更新。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -670,9 +670,9 @@ async function callTool(name, args) {
           }), true);
         }
         const r = await callExtension('export', a);
-        // 旧扩展（< 0.2.11）的 Hub export 不认 all，会回 MISSING_VIDEO_ID —— 别让用户以为是自己的参数问题
+        // 旧扩展（< v0.5.9）的 Hub export 不认 all，会回 MISSING_VIDEO_ID —— 别让用户以为是自己的参数问题
         if (r && r.ok === false && r.error === 'MISSING_VIDEO_ID' && a.all === true) {
-          r.hint = '扩展可能太旧（< 0.2.11）：「全部视频导出」是 0.2.11 起才有的，请更新扩展后重试。';
+          r.hint = '扩展可能太旧（< v0.5.9）：「全部视频导出」是 v0.5.9 起才有的，请更新扩展后重试。';
         }
         // 成功时按 Hub 约定主体在 result 里（scope/videoCount/count/filename/bytes/path），拍平给模型
         return toolResult(JSON.stringify(r && r.result ? r.result : r, null, 2));
