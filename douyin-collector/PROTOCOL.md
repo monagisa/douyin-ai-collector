@@ -445,13 +445,21 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
 
 1. **记录待采线程**：`accept()` 处理顶层评论时，凡 `reply_comment_total > 0` 就把
    `cid → 期望条数` 记进 `replyTargets`。
-2. **进入条件**：主循环判定触底（`laneEnd`）且 `replyTargets.size > replyDoneSet.size`
-   → `setPhase('replies', ...)` → `collectReplies()`。
+2. **进入条件（v0.2.13 起挪到循环外的第二阶段）**：顶层 while 结束的两条路径（列表触底 / `maxCount` 到量）
+   都落到循环外同一段：`if (phase === 'collecting' && replyTargets.size > replyDoneSet.size)`
+   → `setPhase('replies', ...)` → `collectReplies()`。**旧版把这段写在 `laneEnd` 分支里**，
+   `maxCount` 的 `break` 在它之前执行 ⇒ 设了目标条数就永远采不到回复（v0.2.13 修）。
 3. **并发模型**：`REPLY_LANES = 4` 个 worker 从同一个 `todo` 队列取线程，每个线程
    自己按 `cursor` 翻到 `has_more === 0`；单页 `REPLY_COUNT = 20`，同一线程两页间隔
    `REPLY_GAP_MS = 600`。历史：v0.1.7 曾因 **4 路 × 120ms** 突发触发限流（`probe-replyburst.mjs`）
    降到 2 路；后按用户要求恢复 **4 路**，但 **间隔仍保留 600ms**，不回到 4×120ms 那档。
    若再次出现大面积空 body / `status_code=5`，应优先降 `REPLY_LANES` 或加大 `REPLY_GAP_MS`。
+   **v0.2.13 起多了一道全局闸门**：每次回复请求（含 `fetchThread` 翻页、`recoverReply` 重试）前都
+   `await replyGate()`，保证**跨线程**任意两次请求间隔 ≥ `RS.replyGlobalGapMs`（默认 250ms）——
+   旧实现是「worker 取到线程就立刻发」，单页线程（大多数）之间**零间隔** ⇒ 实际速率 ≈ `replyLanes / RTT`
+   ≈ 20 次/秒；真机同一视频两轮因此波动极大（一轮 0/46 个线程、另一轮 ~139 条二级回复）。
+   撞上 `STATUS_5` / `STATUS_NULL` / `EMPTY_BODY` 时 `replyBackOff(err)` 把闸门**翻倍**
+   （250 → 500 → 1000ms 封顶）并把本次的并发上限**降 1 路**（`replyLaneLimit`，下限 1，worker 自己让位）。
 4. **落库**：回复与顶层评论**同一个池子**（`dts_c_<vid>`），键仍是自己的 `cid`，
    额外打两个字段：`is_reply: true`、`parent_cid: <顶层 cid>`。
 5. **去重**：复用同一个 `seen` 集合 —— 回复的 cid 与顶层不重叠，天然安全。
@@ -525,7 +533,7 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
 |---|---|
 | `dts_settings` | 外部写入的运行时设置；`startLoop()` **每轮开头**读一次 |
 | `dts_user_settings` | v0.2.4：**面板设置**（v0.2.5 起入口是标题栏齿轮 `⚙`）写入的用户设置；优先级高于 `dts_settings`（`chrome.storage.local.remove('dts_user_settings')` 即恢复插件/内置值） |
-| `dts_settings_effective` | 本轮**实际**用的值 + 时间戳（`{lanes, lanesWanted, lanesNote, maxCount, replyLanes, replyGapMs, replyThrottleMaxWaitMs, from: 'panel'\|'plugin', at}`），回写给调用方核对。**v0.2.12 起**：`lanes` **恒为 1**（顶层列表固定单路）、`lanesWanted` 是本次请求的原始值（1~8，没写就是内置 4）、`lanesNote` 是停用说明字符串（形如「顶层列表固定单路：多路并发会被服务端合并成同一响应，lanes 已停用」） |
+| `dts_settings_effective` | 本轮**实际**用的值 + 时间戳（`{lanes, lanesWanted, lanesNote, maxCount, replyLanes, replyGlobalGapMs, replyGapMs, replyThrottleMaxWaitMs, from: 'panel'\|'plugin', at}`），回写给调用方核对。**v0.2.12 起**：`lanes` **恒为 1**（顶层列表固定单路）、`lanesWanted` 是本次请求的原始值（1~8，没写就是内置 4）、`lanesNote` 是停用说明字符串（形如「顶层列表固定单路：多路并发会被服务端合并成同一响应，lanes 已停用」）。**v0.2.13 起**：`maxCount` 是真正下发的目标条数，DSH 插件据此判断「扩展是否自己管住了 max」（读不到就退回插件侧点暂停的兜底逻辑） |
 
 **取值优先级（v0.2.4 起）**：面板 `dts_user_settings` > 外部 `dts_settings` > 内置常量。逐字段判断，
 面板里没填的字段继续用外部值 / 内置值（`loadRuntimeSettings()` 里对每个 key 先看面板那份、再看插件那份）。
@@ -535,23 +543,29 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
 
 | 字段 | 含义 | 内置默认 | 允许范围 |
 |---|---|---|---|
-| `maxCount` | v0.2.4：去重后达到多少条就自动收工（`0` = 不限） | `0` | `0..MAX_COUNT_HARD_MAX (= 1000000)` |
+| `maxCount` | v0.2.4：**一级评论**去重后达到多少条就**停止顶层扫描**（`0` = 不限）；已采到的线程二级回复仍补完（v0.2.13 起；v0.2.4~v0.2.12 实际会连回复一起丢，见下） | `0` | `0..MAX_COUNT_HARD_MAX (= 1000000)` |
 | `lanes` | 顶层列表采集的并发路数（v0.2.2）——**v0.2.12 起已停用**：顶层列表固定单路，该键仍可读写、仍会下发给扩展，但**不再影响采集**（仅保留兼容；详见本节后面的实测原因） | `MAX_LANES = 4`（已不再被使用） | `1..LANES_HARD_MAX (= 8)`（钳位保留兼容） |
-| `replyLanes` | 二级回复的并发线程数（v0.2.3） | `REPLY_LANES = 4` | `1..8` |
+| `replyLanes` | 二级回复的并发线程数（v0.2.3）；**v0.2.13 起撞限流会自动降 1 路**（下限 1） | `REPLY_LANES = 4` | `1..8` |
 | `replyGapMs` | 同一回复线程两页之间的间隔（v0.2.3） | `REPLY_GAP_MS = 600` | `0..60000` |
+| `replyGlobalGapMs` | v0.2.13：**跨线程**的全局最小间隔（真正只有这一个 `await replyGate()` 闸门，取到线程就发的老行为没了） | `REPLY_GLOBAL_GAP_MS = 250` | `0..2000`（`0` = 用内置 250ms；撞限流时闸门自动翻倍，上限 `REPLY_GLOBAL_GAP_MAX_MS = 1000`） |
 | `replyWarmupMs` | 进入补采前的静默时间（v0.2.3） | `REPLY_WARMUP_MS = 1500` | `0..600000` |
 | `replyThrottleMaxWaitMs` | 整段「等限流窗口」的墙钟上限（v0.2.3） | `REPLY_THROTTLE_MAX_WAIT_MS = 10 * 1000` | `10000..600000` |
 
-面板设置（v0.2.4 文字按钮 → v0.2.5 标题栏齿轮 `⚙`）暴露的就是上表的前 5 项（`maxCount`（标签 `目标条数 max`） /
+面板设置（v0.2.4 文字按钮 → v0.2.5 标题栏齿轮 `⚙`）暴露的是其中 5 项（`maxCount`（标签 `目标条数 max`） /
 `lanes` / `replyLanes` / `replyGapMs` / `replyThrottleSec`＝秒，存盘时换算成 `replyThrottleMaxWaitMs`），
-存进 `dts_user_settings`。其中 `lanes` 这一项**自 v0.2.12 起已停用**（顶层列表固定单路）：界面里仍能改、
+存进 `dts_user_settings`；`replyGlobalGapMs` 与 `replyWarmupMs` **不在面板里**（面板尽量少占高度），
+要改走 DSH 插件设置表 / MCP / 直接写 `dts_settings`。其中 `lanes` 这一项**自 v0.2.12 起已停用**（顶层列表固定单路）：界面里仍能改、
 也仍会存进 `dts_user_settings`，但采集不再读它，仅保留兼容。
 
 - 读取点：`startLoop()` 进入时 `RS = await loadRuntimeSettings()`（内部 `chrome.storage.local.get([USER_SETTINGS_KEY, RUNTIME_SETTINGS_KEY])`，逐字段按上面的优先级合并），
   之后本轮所有限速点都读 `RS.*`。同一轮内不再重读；下一轮（含暂停后续采）会再读一次 ⇒ 改完**下一轮生效**，不用刷新页面。
-- `maxCount` 到量自动收工：顶层循环里 `await flushComments(...)` 之后判
-  `if (RS.maxCount > 0 && seen.size >= RS.maxCount) { setPhase('done', …); break; }` —— 只在**顶层**判，
-  不会掐掉正在补采的二级回复（语义与 DSH 插件的 `max` 一致）。
+- `maxCount` 到量**只停顶层扫描、不吞二级回复**（v0.2.13 起；`seen` 混一二级，所以计数改用 `topSeenCount`）：
+  顶层循环里判 `if (RS.maxCount > 0 && topSeenCount >= RS.maxCount) { topCapReached = true; …; break; }`，
+  只跳出**顶层** while；跳出后由循环外的第二阶段补采二级回复
+  （`if (phase === 'collecting' && replyTargets.size > replyDoneSet.size) await collectReplies();`），
+  最后才 `setPhase('done', …)`。语义与 DSH 插件的 `max` 一致。
+  **v0.2.4~v0.2.12 的实现是错的**：那个 `break` 写在 `collectReplies()` 调用点之前，直接退出了整个循环 ⇒
+  设了目标条数的用户**一条二级回复都采不到**（真机：`max=100` 交付 896 条、二级 0 条、面板「已手动暂停」）。
 - 合法性：按上表范围钳位（取整）；字段缺失 / 非数字 / `<= 0` 一律回退内置默认。
   `replyThrottleMaxWaitMs` 的下限刻意就是内置的 10 秒：放宽可以，**不允许调得比原来更早放弃**
   （「限流十秒不行就停」是原先定的策略，放宽是给「撞上窗口、想再等等」留的口子）。

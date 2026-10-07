@@ -8,6 +8,8 @@
 > `hook.js` 由 manifest 在主世界 `document_start` 注入；v0.1.15 起面板固定紧凑档（宽约 236px）；  
 > v0.2.2 起并发路数可由 `chrome.storage.local.dts_settings = {lanes}` 设置（1~8，默认 4，见 PROTOCOL §3.9；**v0.2.12 起该设置已停用，顶层列表固定单路**）；  
 > v0.2.3 起二级回复的四档限速也能从 `dts_settings` 覆盖（`replyLanes` / `replyGapMs` / `replyWarmupMs` / `replyThrottleMaxWaitMs`，默认值不变，见 PROTOCOL §3.9）；  
+> **v0.2.13 起**再加一道**跨线程全局闸门** `replyGlobalGapMs`（默认 250ms、范围 0~2000；撞限流自动翻倍到 1000ms 封顶、并把并发降 1 路），
+> 且 `maxCount`（目标条数）**只停顶层扫描、二级回复仍会补完**（v0.2.4~v0.2.12 的旧实现会把回复一起丢掉）；  
 > v0.2.4 起面板自带「设置」按钮（改 目标条数/并发路数/回复并发/回复间隔/限流等待），存 `dts_user_settings`，**优先级：面板 > `dts_settings` > 内置默认**；  
 > v0.2.5 起入口改为**标题栏齿轮 ⚙**（在「—」左边，不占按钮行），浮层第一项标签就是 `max` 目标条数，当前生效值显示在浮层顶部；  
 > v0.2.6 起 AI 桥可**读写设置**（`get_settings` / `set_settings`，`start_collect` 可带 `settings`），配套 MCP `douyin-mcp` 0.3.0 的 `ai_get_settings` / `ai_set_settings`（见 PROTOCOL §7.9）。  
@@ -72,7 +74,7 @@ content script 把裁剪后的字段交给 background，写入 `chrome.storage.l
 | `dts_ai_bridge` | 可选：MCP Hub 地址（`host/port/enabled`） |
 | `dts_settings` | v0.2.2 起：外部写进来的运行时设置（`{lanes, replyLanes, replyGapMs, replyWarmupMs, replyThrottleMaxWaitMs}`，都可选）；缺字段就用内置默认（`lanes=4`、`replyLanes=4`、`replyGapMs=600`、`replyWarmupMs=1500`、`replyThrottleMaxWaitMs=10000`）。**v0.2.12 起 `lanes` 已停用**：顶层列表固定单路，`lanes` 仍可读写、仅保留兼容，不影响采集。v0.2.6 起 AI 经 MCP 的 `ai_set_settings` / `ai_start_collect` 写的就是它 |
 | `dts_user_settings` | v0.2.4 起：**面板「设置」按钮**写进去的用户设置（`{maxCount, lanes, replyLanes, replyGapMs, replyThrottleMaxWaitMs}`）；优先级高于 `dts_settings`，删掉它就回到插件/内置值（`maxCount=0` 表示不限条数） |
-| `dts_settings_effective` | v0.2.3：本轮**实际**用的值 `{lanes, lanesWanted, lanesNote, maxCount, replyLanes, replyGapMs, replyThrottleMaxWaitMs, from: 'panel'\|'plugin', at}`，回写给调用方核对；**v0.2.12 起 `lanes` 恒为 1（顶层固定单路）、`lanesWanted` 是请求值、`lanesNote` 是停用说明** |
+| `dts_settings_effective` | v0.2.3：本轮**实际**用的值 `{lanes, lanesWanted, lanesNote, maxCount, replyLanes, replyGlobalGapMs, replyGapMs, replyThrottleMaxWaitMs, from: 'panel'\|'plugin', at}`，回写给调用方核对；**v0.2.12 起 `lanes` 恒为 1（顶层固定单路）、`lanesWanted` 是请求值、`lanesNote` 是停用说明**；**v0.2.13 起 `maxCount` 是真正下发的目标条数**（插件据此判断扩展是否自己管住了 max） |
 
 单视频上限 `MAX_COMMENTS_PER_VIDEO = 80000`（`background.js`），超出时按 `create_time` 淘汰最早数据。  
 落库条数同步到扩展图标角标。
