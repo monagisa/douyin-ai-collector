@@ -137,11 +137,11 @@ export const Config = Schema ? Schema.object({
   max: vol(Schema.number()
     .description('一级评论的目标条数：到量就停止顶层扫描、继续补二级回复（默认 80000 = 扩展单视频评论池的防御上限）。0.5.11 起真正生效（下发给扩展 maxCount）')
     .default(80000).min(1).max(1000000).step(1)),
-  // ⚠️ 0.5.10 起顶层列表固定单路（实测同签名并发会被服务端合并成同一页）：这项设置保留兼容
-  // （仍可读写、仍会下发给扩展），但不再影响采集。
+  // 0.5.13（扩展 0.2.15）起顶层列表**错峰多路**：每路错开 200ms，实测比单路快 2.04× 且数量一样。
+  // 同一瞬间发多路才会被服务端并成同一页（0.5.10 因此固定过单路）；扩展发现同页会自动降回单路。
   lanes: vol(Schema.number()
-    .description('并发路数（已停用）：0.5.10 起顶层列表固定单路——实测同一签名下同时发多个分页请求会被服务端合并成同一页，4 路并发反而少采约 30%。此设置保留兼容，不再影响采集')
-    .default(1).min(1).max(8).step(1)),
+    .description('顶层列表路数：错峰多路推进（默认 3，每路错开 200ms）；1 = 单路。0.5.13 起真正生效——2026-10-07 实测扫完 21 页单路 15.8s vs 错峰 7.7s，唯一条数一样多')
+    .default(3).min(1).max(8).step(1)),
   timeoutMs: vol(Schema.number()
     .description('单次采集总超时毫秒（默认 1800000 = 30 分钟）；到点也会把已采到的评论落盘')
     .default(1800000).min(60000).max(14400000).step(1000)),
@@ -193,7 +193,7 @@ export function readSettings(config) {
   const cfg = (config && typeof config === 'object') ? config : (RAW_CONFIG.value || {});
   return {
     max: readCfg(cfg, 'max', Number(DEFAULTS.max) > 0 ? Number(DEFAULTS.max) : 80000),
-    lanes: Math.max(1, Math.min(8, Math.round(readCfg(cfg, 'lanes', Number(DEFAULTS.lanes) > 0 ? Number(DEFAULTS.lanes) : 1)))),
+    lanes: Math.max(1, Math.min(8, Math.round(readCfg(cfg, 'lanes', Number(DEFAULTS.lanes) > 0 ? Number(DEFAULTS.lanes) : 3)))),
     timeoutMs: readCfg(cfg, 'timeoutMs', Number(DEFAULTS.timeoutMs) > 0 ? Number(DEFAULTS.timeoutMs) : 1800000),
     waitLoginSec: Math.max(0, Math.round(readCfg(cfg, 'waitLoginSec', Number.isFinite(Number(DEFAULTS.waitLoginSec)) ? Number(DEFAULTS.waitLoginSec) : 180))),
     clearBefore: readCfgBool(cfg, 'clearBefore', !!DEFAULTS.clearBefore),
@@ -233,7 +233,7 @@ export function apply(ctx, config = {}) {
       '若返回 phase=need-login，说明等不到登录：把返回的 error 原样转达给使用者，让他在那个（已保持打开的）浏览器窗口里用抖音 App 扫码，扫完再调用一次；不要重复空转，也不要另开窗口。',
       '只交付本次新采的数据：默认不清空扩展缓存（清空会毁掉断点续采进度），结束时按 cid 差集剔除旧数据；一条新数据都没有就返回失败并说明原因。要强制清空就把 clearBefore 设为 true。',
       'max 是「一级评论」的目标值：到量就**停止顶层扫描、继续把二级回复补完**再收工（0.5.11 起真正生效：下发给扩展 maxCount，旧版既不封一级、又会在回复阶段点暂停）。实际条数通常多于 max，返回值 count 是真实条数。',
-      '插件设置（DSH「设置 → 插件 → dsh-douyin-comments」）里可以改目标条数 max（默认 80000）、并发路数 lanes（已停用：顶层列表固定单路，仅保留兼容）、总超时 timeoutMs、等扫码秒数 waitLoginSec、是否先清空 clearBefore、二级回复的并发 replyLanes、回复请求全局限速 replyGlobalGapMs（0 = 用扩展内置 250ms）、限流等待 replyThrottleSec、回复阶段无进展收工 replyNoProgressSec，改完立即生效；本次调用的工具参数只覆盖当次，不改设置。顶层列表已固定单路：同一个签名下并发分页会被服务端合并成同一页（实测 4 路反而少采约 30%，2026-10-06），所以并发路数 lanes 已停用、不影响采集。',
+      '插件设置（DSH「设置 → 插件 → dsh-douyin-comments」）里可以改目标条数 max（默认 80000）、顶层列表路数 lanes（默认 3，错峰多路；1 = 单路）、总超时 timeoutMs、等扫码秒数 waitLoginSec、是否先清空 clearBefore、二级回复的并发 replyLanes、回复请求全局限速 replyGlobalGapMs（0 = 用扩展内置 250ms）、限流等待 replyThrottleSec、回复阶段无进展收工 replyNoProgressSec，改完立即生效；本次调用的工具参数只覆盖当次，不改设置。顶层列表 0.5.13 起改回**错峰多路**（每路错开 200ms）：2026-10-07 实测扫完 21 页单路 15.8s vs 错峰 7.7s、唯一条数一样多；同一瞬间发多路才会被服务端并成同一页，扩展发现后会自动降回单路并在面板说明。',
     ].join(' '),
     parameters: {
       url: {
@@ -242,7 +242,7 @@ export function apply(ctx, config = {}) {
         description: '抖音视频链接（https://www.douyin.com/video/<id>、带 modal_id 的浮层链接，或直接给 15~25 位 aweme id）。',
       },
       max: { type: 'integer', description: '本次「一级评论」目标条数：到量就停止顶层扫描、继续把二级回复补完（不传 = 用插件设置里的值，出厂默认 80000）；实际条数通常多于它。' },
-      lanes: { type: 'integer', description: '已停用：顶层列表固定单路（同一签名下并发的分页请求会被服务端合并成同一页），传什么都不影响采集，仅保留兼容。' },
+      lanes: { type: 'integer', description: '顶层列表路数（默认 3，错峰多路；1 = 单路）。0.5.13 起真正生效：每路错开 200ms 出发，扩展若发现两路拿到同一页会自动降回单路。' },
       replies: { type: 'boolean', description: '是否等二级回复补采（默认 true；false 时只采一级评论，更快）。' },
       clearBefore: { type: 'boolean', description: '本次是否先清空扩展里该视频的旧数据（默认 false = 不清空，保留断点续采，结束时按 cid 差集只交付新采的）。' },
       timeoutMs: { type: 'integer', description: '本次总超时毫秒（不传 = 用插件设置里的值，出厂默认 1800000 = 30 分钟），到点也会把已采到的评论落盘。' },
@@ -263,7 +263,7 @@ export function apply(ctx, config = {}) {
           csvPath: { type: 'string', required: true },
           jsonPath: { type: 'string', required: true },
           phase: { type: 'string', required: true, description: '收工时的扩展状态' },
-          lanes: { type: 'integer', required: true, description: '顶层列表实际用的路数（扩展写回的 dts_settings_effective，v0.2.12 起固定为 1；读不到时为本次请求值）' },
+          lanes: { type: 'integer', required: true, description: '顶层列表实际用的路数（扩展写回的 dts_settings_effective；v0.2.15 起 = 设置值或检测到同页后自降的 1，读不到时为本次请求值）' },
           note: { type: 'string', required: true, description: '扩展面板的说明文字' },
           durationSec: { type: 'number', required: true },
           extensionVersion: { type: 'string', required: true, description: '安装进浏览器的扩展版本' },
@@ -332,7 +332,7 @@ export function apply(ctx, config = {}) {
       const outDir = resolveOutDir({ explicit: args.outDir, exec, fallback: DEFAULTS.outDir });
       onLog('输出目录：' + outDir
         + (args.outDir ? '（显式指定）' : sessionWorkspaceCwd(exec) ? '（当前会话工作区）' : '（全局默认：本会话没带工作区）'));
-      onLog('本次设置：max=' + maxUsed + '，并发路数=' + lanesUsed + (lanesUsed > 1 ? '（已停用：顶层固定单路）' : '') + '，超时=' + timeoutMsUsed + 'ms，等扫码=' + waitLoginSecUsed + 's'
+      onLog('本次设置：max=' + maxUsed + '，顶层列表路数=' + lanesUsed + (lanesUsed > 1 ? '（错峰多路，每路错开 200ms）' : '（单路）') + '，超时=' + timeoutMsUsed + 'ms，等扫码=' + waitLoginSecUsed + 's'
         + '，先清空=' + (clearBeforeUsed ? '是' : '否') + '，回复并发=' + replyLanesUsed
         + '，回复全局限速=' + (replyGlobalGapMsUsed > 0 ? replyGlobalGapMsUsed + 'ms' : '扩展内置 250ms')
         + '，回复限流等待=' + replyThrottleSecUsed + 's，回复无进展收工=' + replyNoProgressSecUsed + 's'
@@ -387,7 +387,7 @@ export function apply(ctx, config = {}) {
   if (ctx.logger && typeof ctx.logger.info === 'function') {
     const s = readSettings();
     ctx.logger.info('[douyin] douyin_comments 工具已注册（自带扩展副本，运行时自动装进浏览器）；'
-      + '当前设置：max=' + s.max + '，并发路数=' + s.lanes + '（已停用，顶层固定单路）' + '，超时=' + s.timeoutMs + 'ms，等扫码=' + s.waitLoginSec + 's'
+      + '当前设置：max=' + s.max + '，顶层列表路数=' + s.lanes + (s.lanes > 1 ? '（错峰多路）' : '（单路）') + '，超时=' + s.timeoutMs + 'ms，等扫码=' + s.waitLoginSec + 's'
       + '，先清空=' + (s.clearBefore ? '是' : '否') + '，回复并发=' + s.replyLanes
       + '，回复全局限速=' + (s.replyGlobalGapMs > 0 ? s.replyGlobalGapMs + 'ms' : '扩展内置 250ms')
       + '，回复限流等待=' + s.replyThrottleSec + 's，回复无进展收工=' + s.replyNoProgressSec + 's'

@@ -1,12 +1,12 @@
 # 安装 · 使用 · 打包
 
-> 抖音评论采集器 **v0.2.14** — 无 npm 依赖、无构建步骤。  
+> 抖音评论采集器 **v0.2.15** — 无 npm 依赖、无构建步骤。  
 > **适用浏览器：Chrome 111+ / Edge（Chromium）**；**不支持** Firefox / Safari（详见 README「适用范围」）。  
 > v0.2.x：AI Bridge（本地 MCP，见 `../douyin-mcp/README.md`）；采集核心仍为「复用页面签名、只改 cursor」。  
 > 历史要点：v0.1.5 起采二级回复；v0.1.11 起面板绝对坐标拖动 + 开始采集时自动打开评论区；  
 > v0.1.12 起按 DOM 判页面形态（关注/朋友/我的可用）；v0.1.13 起换视频/清空后自动重取签名、  
 > `hook.js` 由 manifest 在主世界 `document_start` 注入；v0.1.15 起面板固定紧凑档（宽约 236px）；  
-> v0.2.2 起并发路数可由 `chrome.storage.local.dts_settings = {lanes}` 设置（1~8，默认 4，见 PROTOCOL §3.9；**v0.2.12 起该设置已停用，顶层列表固定单路**）；  
+> v0.2.2 起并发路数可由 `chrome.storage.local.dts_settings = {lanes}` 设置（1~8，见 PROTOCOL §3.9；**v0.2.12~v0.2.14 该设置被固定成单路，v0.2.15 起重新生效**）；  
 > v0.2.3 起二级回复的四档限速也能从 `dts_settings` 覆盖（`replyLanes` / `replyGapMs` / `replyWarmupMs` / `replyThrottleMaxWaitMs`，默认值不变，见 PROTOCOL §3.9）；  
 > **v0.2.13 起**再加一道**跨线程全局闸门** `replyGlobalGapMs`（默认 250ms、范围 0~2000；撞限流自动翻倍到 1000ms 封顶、并把并发降 1 路），
 > 且 `maxCount`（目标条数）**只停顶层扫描、二级回复仍会补完**（v0.2.4~v0.2.12 的旧实现会把回复一起丢掉）；  
@@ -28,11 +28,16 @@
 > **两步确认**——第一次点只把按钮「上膛」成 `确认全部清空？`、数据一条不动，5 秒内再点一次才真清掉
 > 所有视频的评论与去重表（`dts_user_settings` 保留），超时自动复原；全清不受 video ID 护栏限制。
 > 装上新扩展后 **F5 刷新抖音页**（在扩展页点过「重新加载」的旧 content script 会作废）即可看到两个按钮。  
-> v0.2.12 起**顶层列表扫描固定单路**（`lanes` 并发路数设置**已停用**——仍可读写、仍会下发给扩展，仅保留兼容）：
-> 真机实测（2026-10-06）同一个签名在同一时刻发多路分页请求会被服务端**合并成同一响应**，4 路 5 轮只拿到 492 条
-> 一级评论**且 0 个失败请求**；单路串行 18 步拿到 **714~744 条**，每路错峰 200ms 则恢复正常。
-> 同一视频实测：修复前（0.2.11 / 4 路）**768 条**、20.1s → 修复后（0.2.12 / 单路）**945 条**、70.4s
-> （一级 586→753、二级 182→192）；离线自测 **141/141 全绿**。  
+> **v0.2.15 起**顶层列表改回**错峰多路**（`lanes` 默认 **3**，每路错开 **200ms**；`lanes: 1` = 老的单路串行），
+> 单路模式的礼貌间隔也从 400ms 降到 **150ms**：2026-10-07 探针实测扫完 21 页单路 15.79s vs 错峰 4 路 7.72s
+> （**2.04×**，唯一 cid 907 vs 912 一样多）。合并的真正触发条件是「同一签名 + ~200ms 内**同时**发」
+> （同时发 4 个 cursor：Σ200 条、去重后只剩 **56** 条，且 `next` 字段还是对的 ⇒ 静默少采），错峰就正常；
+> 扩展一旦发现两路拿到逐条相同的页会**当轮降回单路**并把原因写进 `dts_settings_effective.lanesNote`。
+> 离线自测 **172/172 全绿**。  
+> v0.2.12 起曾**顶层列表扫描固定单路**（`lanes` 设置被停用）：真机实测（2026-10-06）同一个签名在同一时刻发多路
+> 分页请求会被服务端**合并成同一响应**，4 路 5 轮只拿到 492 条一级评论**且 0 个失败请求**；单路串行 18 步
+> 拿到 **714~744 条**，每路错峰 200ms 则恢复正常。同一视频实测：修复前（0.2.11 / 4 路）**768 条**、20.1s →
+> 修复后（0.2.12 / 单路）**945 条**、70.4s（一级 586→753、二级 182→192）。  
 > v0.2.11 起**导出只有一份实现、AI/MCP 也能「全部视频」导出**：面板「导出 CSV/JSON」按钮与
 > Hub(AI/MCP) 的 `export` 命令现在共用 `background.js` 的 `exportComments(opts)`，行为完全一致；
 > `export` 新增 `all:true`——不传 `videoId` 也能把本地所有视频合成一份导出（每条评论标 `videoId`，
@@ -79,9 +84,9 @@ content script 把裁剪后的字段交给 background，写入 `chrome.storage.l
 | `dts_videos` | `{ [videoId]: { title, total, count, hasMore, phase, signedUrlAt, … } }` |
 | `dts_c_<videoId>` | `{ [cid]: 评论对象 }` —— 按 cid 去重 |
 | `dts_ai_bridge` | 可选：MCP Hub 地址（`host/port/enabled`） |
-| `dts_settings` | v0.2.2 起：外部写进来的运行时设置（`{lanes, replyLanes, replyGapMs, replyWarmupMs, replyThrottleMaxWaitMs, replyGlobalGapMs}`，都可选）；缺字段就用内置默认（`lanes=4`、`replyLanes=4`、`replyGapMs=600`、`replyWarmupMs=1500`、`replyThrottleMaxWaitMs=120000`、`replyGlobalGapMs=250`）。**v0.2.12 起 `lanes` 已停用**：顶层列表固定单路，`lanes` 仍可读写、仅保留兼容，不影响采集。**v0.2.14 起 `replyThrottleMaxWaitMs` 是「分波重试的总窗口」**（单波 12 秒、波间停 15/30/60 秒），默认 120 秒；`replyGlobalGapMs` 的 0 = 用内置 250ms（v0.2.13 及更早把 0 当关闸门）。v0.2.6 起 AI 经 MCP 的 `ai_set_settings` / `ai_start_collect` 写的就是它 |
+| `dts_settings` | v0.2.2 起：外部写进来的运行时设置（`{lanes, replyLanes, replyGapMs, replyWarmupMs, replyThrottleMaxWaitMs, replyGlobalGapMs}`，都可选）；缺字段就用内置默认（`lanes=3`（v0.2.15 起；v0.2.2~0.2.14 是 4，其中 0.2.12~0.2.14 实际被固定成 1）、`replyLanes=4`、`replyGapMs=600`、`replyWarmupMs=1500`、`replyThrottleMaxWaitMs=120000`、`replyGlobalGapMs=250`）。**`lanes` 自 v0.2.15 起重新生效**（顶层错峰多路，默认 3 路、每路错开 200ms；`1` = 单路）；**v0.2.14 起 `replyThrottleMaxWaitMs` 是「分波重试的总窗口」**（单波 12 秒、波间停 15/30/60 秒），默认 120 秒；`replyGlobalGapMs` 的 0 = 用内置 250ms（v0.2.13 及更早把 0 当关闸门）。v0.2.6 起 AI 经 MCP 的 `ai_set_settings` / `ai_start_collect` 写的就是它 |
 | `dts_user_settings` | v0.2.4 起：**面板「设置」按钮**写进去的用户设置（`{maxCount, lanes, replyLanes, replyGapMs, replyThrottleMaxWaitMs}`）；优先级高于 `dts_settings`，删掉它就回到插件/内置值（`maxCount=0` 表示不限条数；面板里不暴露 `replyGlobalGapMs` / `replyWarmupMs`，保存时不会把它们带进来，所以插件下发的值会保留） |
-| `dts_settings_effective` | v0.2.3：本轮**实际**用的值 `{lanes, lanesWanted, lanesNote, maxCount, replyLanes, replyGlobalGapMs, replyGapMs, replyThrottleMaxWaitMs, replyWaveBudgetMs, replyParkPlanMs, from: 'panel'\|'plugin', at}`，回写给调用方核对；**v0.2.12 起 `lanes` 恒为 1（顶层固定单路）、`lanesWanted` 是请求值、`lanesNote` 是停用说明**；**v0.2.13 起 `maxCount` 是真正下发的目标条数**（插件据此判断扩展是否自己管住了 max）；**v0.2.14 起多两个只读键**：`replyWaveBudgetMs`（单波预算，12000）、`replyParkPlanMs`（停顿计划 `"15000/30000/60000"`） |
+| `dts_settings_effective` | v0.2.3：本轮**实际**用的值 `{lanes, lanesWanted, lanesNote, maxCount, replyLanes, replyGlobalGapMs, replyGapMs, replyThrottleMaxWaitMs, replyWaveBudgetMs, replyParkPlanMs, from: 'panel'\|'plugin', at}`，回写给调用方核对；**v0.2.15 起 `lanes` = 本轮实际路数**（正常 = 设置值，检测到「两路同一页」就地降为 1）、`lanesWanted` 是设置值、`lanesNote` 平时空串、被降路时写明原因；**v0.2.13 起 `maxCount` 是真正下发的目标条数**（插件据此判断扩展是否自己管住了 max）；**v0.2.14 起多两个只读键**：`replyWaveBudgetMs`（单波预算，12000）、`replyParkPlanMs`（停顿计划 `"15000/30000/60000"`） |
 
 单视频上限 `MAX_COMMENTS_PER_VIDEO = 80000`（`background.js`），超出时按 `create_time` 淘汰最早数据。  
 落库条数同步到扩展图标角标。
