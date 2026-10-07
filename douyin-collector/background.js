@@ -454,6 +454,7 @@ const SETTINGS_FIELDS = {
   maxCount: { min: 0, max: 1000000, desc: '目标条数，0=不限' },
   lanes: { min: 1, max: 8, desc: '顶层并发路数' },
   replyLanes: { min: 1, max: 8, desc: '二级回复并发路数' },
+  replyGlobalGapMs: { min: 0, max: 2000, desc: '回复请求跨线程的全局最小间隔 ms（0=用扩展内置 250ms）' },
   replyGapMs: { min: 0, max: 60000, desc: '回复同线程请求间隔 ms' },
   replyWarmupMs: { min: 0, max: 600000, desc: '进补采前的静默 ms' },
   replyThrottleMaxWaitMs: { min: 10000, max: 600000, desc: '整段等限流窗口的墙钟上限 ms' }

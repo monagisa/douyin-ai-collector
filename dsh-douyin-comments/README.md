@@ -1,7 +1,27 @@
 # dsh-douyin-comments
 
 DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**，注册一个工具 `douyin_comments`。
-（插件版本 0.5.10，内置扩展「抖音评论采集器」v0.2.12。）
+（插件版本 0.5.11，内置扩展「抖音评论采集器」v0.2.13。）
+
+**0.5.11 新增**（配套 MCP `douyin-mcp` 升到 **0.3.4**；修用户 2026-10-07 报的两个严重缺陷）：
+
+1. **`max`（目标条数）真正生效了，而且不再吞掉二级回复**。旧版（≤ 0.5.10）的 `max` 有两处错：
+   ① 插件**从不把 `maxCount` 下发给扩展**（`collector.mjs` 只推 `{lanes}`），于是扩展按自己的默认
+   （0 = 不限）把顶层列表**跑完整轮**；② 插件在扩展进入 `replies` 阶段后点「暂停」收工，
+   于是**二级回复被拦腰截断**——实测 `max=100` 返回 **896 条 / 50.3s**、面板显示「已手动暂停」。
+   现在插件把 `max` 作为 `maxCount` 下发（`if (max > 0) extSettings.maxCount = max;`），
+   扩展 0.2.13 到量后**只停止顶层扫描、继续把二级回复补完**；判定用的是**一级去重计数**
+   （新上报的 `topSeen`，旧扩展不报时自动退回 `unique` 兜底）。旧扩展（≤ 0.2.12）不认识 `maxCount`，
+   插件会自检 `dts_settings_effective.maxCount` 是否真被接受，**没被接受才**退回旧行为（点「暂停」）
+   并把原因写进日志——老扩展 + 新插件不会静默跑飞。
+2. **回复请求加了跨线程全局限速 + 撞限流自动降路**（扩展 0.2.13）：新设置项 **`replyGlobalGapMs`**
+   （0~2000，0 = 用扩展内置的 **250ms** ≈ ≤4 次/秒）。旧版 `replyLanes` 条线程各自「取到线程就发」，
+   单页线程之间零间隔（总速率 ≈20 次/秒），同一条视频两轮能差到「0/46 线程」与「~139 条二级回复」；
+   现在所有回复请求（含失败重试）都过全局闸门，撞限流还会把间隔翻倍（封顶 1000ms）并**降 1 路**。
+   插件设置表单、`douyin_comments` 工具参数与返回日志都能看到这一项。
+3. **自测**：`node verify-tool.mjs` **153/153 全绿**（0.5.10 为 141；新增 6 条断言盯着上面的语义）。
+4. **配套 MCP 升到 0.3.4**：`max` / `replyLanes` / `replyGapMs` 的说明改写（`replyGapMs` 不再说
+   「限速请调 `replyLanes`」），`SETTINGS_PROPS` / `SETTINGS_KEYS` 新增 `replyGlobalGapMs`。
 
 **0.5.10 新增**（内置扩展升到 **0.2.12**：顶层列表**固定单路**、`lanes` 并发路数**已停用**；配套 MCP `douyin-mcp` 升到 **0.3.3**）：
 
@@ -71,8 +91,9 @@ DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**
   「确认全部清空？」，`CLEAR_ALL_CONFIRM_MS = 5000` 内再点一次才真清），后台 `dts-clear` 仍要求
   显式 `all:true`，空 videoId 绝不兜底成全清。
 - **内置扩展升到 0.2.10**（插件 0.5.8 自带的那份）。
-- **自测**：`node verify-tool.mjs` 全绿 **141/141**（当前版本；0.5.8 的清空自检 5 条断言之后，0.5.9 再 +2 条导出断言 → 137，
-  0.5.10 顶层固定单路再 +4 条 → 141，见上方「0.5.10 新增」；更早一版 130/130。0.5.8 的这 5 条是：
+- **自测**：`node verify-tool.mjs` 全绿（当前版本 **153/153**；0.5.8 的清空自检 5 条断言之后，0.5.9 再 +2 条导出断言 → 137，
+  0.5.10 顶层固定单路再 +4 条 → 141，**0.5.11 再 +6 条**（max 语义 / 补采在循环外 / 全局限速 / 撞限流降路 / `replyGlobalGapMs` 三端下发）→ 153，
+  见上方「0.5.11 新增」；更早一版 130/130。0.5.8 的这 5 条是：
   `sendClear` 等后台回包、清空后读回 storage 自检、失败文案带 `edge://extensions` 重新加载 + F5 指引、
   统计请求序号作废在途旧回包、失败文案必须走 `setPhase` 的 `err` 参数（否则会被随后清成空串、
   面板既不报成功也不报失败——这条是补跑真机失败路径时踩出来的）。
@@ -379,12 +400,13 @@ dsh plugin --profile web add file:D:\dycopy\dsh-douyin-comments
 
 | 设置项 | 默认 | 说明 |
 | --- | --- | --- |
-| `max` | 80000 | 目标条数（**一级评论**）：采到这么多就让扩展点「暂停」并落盘；二级回复仍会补完 |
+| `max` | 80000 | 目标条数（**一级评论**，按去重后的一级计数）：采到这么多就**停止顶层扫描**并落盘，**已采到的线程的二级回复仍会补完**（0.5.11 + 扩展 0.2.13 起真正如此；0.5.4~0.5.10 实际会连二级回复一起丢掉） |
 | `lanes` | 4 | **已停用**（扩展 0.2.12 起顶层列表固定单路）：仍可读写、仍会下发给扩展，但**不影响采集**，仅保留兼容 |
 | `timeoutMs` | 1800000 | 单次采集总超时（30 分钟）；到点也会把已采到的评论落盘 |
 | `waitLoginSec` | 180 | 未登录时等你扫码的秒数；0 = 不等，直接返回 `need-login` |
 | `clearBefore` | false | 是否先清空扩展里该视频的旧数据。**默认 false**：保留断点续采进度，结束时按 `cid` 差集只交付本轮新采的 |
-| `replyLanes` | 4 | 二级回复的并发线程数 1~8 |
+| `replyLanes` | 4 | 二级回复的并发线程数 1~8；**撞限流时扩展会自动降 1 路**（下限 1），限流过去后重新开始一轮补采才恢复 |
+| `replyGlobalGapMs` | 0 | 回复请求**跨线程的全局最小间隔** ms（0~2000）；**0 = 用扩展内置的 250ms**（≈ ≤4 次/秒）。设了就是硬下限，撞限流时扩展会在此基础上翻倍（封顶 1000ms） |
 | `replyThrottleSec` | 10 | 撞上限流窗口时最多等几秒（10~600；下限就是内置值，只能放宽） |
 | `replyNoProgressSec` | 900 | 回复阶段连续多久没新数据就收工（60~7200） |
 
@@ -393,8 +415,11 @@ dsh plugin --profile web add file:D:\dycopy\dsh-douyin-comments
 - 字段都是 `volatile`：`execute()` **每次调用现读一遍**（volatile 值在 cordis 里是只有 `get` 的只读引用，
   缓存快照会读到旧值），所以改完下一次调用就生效。
 - 工具参数（`max`/`lanes`/`timeoutMs`/`waitLoginSec`/`clearBefore`）**只覆盖当次调用**，不会改设置。
-- 表单里改的路数由插件在点「开始采集」前写进扩展：`chrome.storage.local.dts_settings = {lanes, replyLanes?, replyThrottleMaxWaitMs?}`；
+- 表单里改的路数由插件在点「开始采集」前写进扩展：`chrome.storage.local.dts_settings = {maxCount?, lanes, replyLanes?, replyGlobalGapMs?, replyThrottleMaxWaitMs?}`；
   扩展每轮读它（读不到或越界就退回内置值），并把实际用的值写回 `dts_settings_effective`，插件据此回报返回值里的 `lanes`。
+  **注意（0.5.11 起）**：`max` 会作为 `maxCount` 下发给扩展（0.5.10 及以前**从不下发**，所以旧版 `max` 完全不封一级）。
+  写下去后插件会读回 `dts_settings_effective.maxCount` 自检：**旧扩展（≤ 0.2.12）不认识这个键**，
+  自检不过才退回旧行为（进入回复阶段时点「暂停」）并把原因写进日志。
   **注意（0.5.10 起）**：`lanes` **已停用**——扩展 0.2.12 起顶层列表固定单路（多路并发会被服务端合并成同一页，
   4 路少采约 30%），所以返回值里的 `lanes` 恒为 1，写进去的路数只在 `dts_settings_effective.lanesWanted` 里回显。
   **注意**：扩展面板自己的设置（0.2.4 文字按钮 → 0.2.5 标题栏齿轮 `⚙`，存 `dts_user_settings`）
@@ -406,7 +431,7 @@ dsh plugin --profile web add file:D:\dycopy\dsh-douyin-comments
 | 参数 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `url` | string | — | **必填**。`https://www.douyin.com/video/<id>`、带 `modal_id` 的浮层链接，或直接给 15~25 位 aweme id |
-| `max` | integer | 设置里的值（出厂 80000） | 目标条数（一级评论），到量即暂停并落盘（实际条数通常略多于 max；二级回复仍会补完） |
+| `max` | integer | 设置里的值（出厂 80000） | 目标条数（一级评论，按去重后的一级计数），到量**只停止顶层扫描**、已采到线程的二级回复仍补完（实际条数通常多于 max） |
 | `lanes` | integer | 设置里的值（出厂 4） | **已停用**（扩展 0.2.12 起顶层列表固定单路，并发会被服务端合并成同一页、4 路少采约 30%）：传了不报错、也不改设置，但采集固定单路，只在返回值 / `dts_settings_effective.lanesWanted` 里回显 |
 | `replies` | boolean | true | 是否补采二级回复；`false` 只采一级，更快 |
 | `timeoutMs` | integer | 设置里的值（出厂 1800000） | 总超时；到点也会把已采到的评论落盘 |
@@ -468,6 +493,16 @@ node _test_freshness.mjs https://www.douyin.com/video/7660328050596371819 60 300
 node _test_nosig.mjs https://www.douyin.com/video/7660328050596371819              # 负向：没签名必须失败
 node _demo_autoinstall.mjs https://www.douyin.com/video/7660328050596371819        # 删掉已装扩展，验证「从零自动装上」
 ```
+
+实测记录（2026-10-07，v0.5.11 + 扩展 0.2.13）：
+
+| 用例 | 结果 |
+| --- | --- |
+| 离线自检 `node verify-tool.mjs` | **153/153 全绿**（0.5.10 为 141；本次 +6 条：`max` 口径改用 `topSeenCount`（一级去重）、到量只停顶层扫描、二级补采挪到循环外第二阶段、回复全局限速闸门 `replyGate()`、撞限流翻倍 + 降 1 路、`replyGlobalGapMs` 三端下发） |
+| **真机 `max=100` 验收**（视频 `7692405235813272867`，`clearBefore=true`，扩展 0.2.13） | **PASS**：`count=403` = **一级 103 + 二级 300**、`phase=done`、**345.4s**（单路顶层扫描 + 38 个线程回复补采、86 次回复请求）。面板文案：「一级评论已到目标 100 条（去重后 103 条），已停止顶层扫描；二级回复已补采 300 条（38/38 个线程，请求 86 次）。再点「开始采集」会从断点继续」。对照旧行为（0.5.10 + 0.2.12，同样 `max=100`）：**896 条、二级回复 0 条**、面板「已手动暂停」 |
+| **打包验收（全新 profile 从 tgz 装）** | **PASS**（2026-10-07）：`dsh plugin --profile pkgtest add file:D:\dycopy\release\dsh-douyin-comments-v0.5.11\dsh-douyin-comments-0.5.11.tgz` → pkgtest 0.5.5 → **0.5.11**、`--dump-config` 认到 `dsh-douyin-comments`（id `douyin-comments`）；headless 真采视频 `7660328050596371819`（`max=30`、先清空）→ `ok=true`、`count=266` = **一级 50 + 二级 216**、`phase=done`、扩展 `0.2.13`（`source: 插件自带（随包分发）`）。面板文案：「一级评论已到目标 30 条（去重后 50 条），已停止顶层扫描；has_more=0 结束，已采 266/1970 条；二级回复已补采 216 条（27/27 个线程，请求 46 次）。再点「开始采集」会从断点继续」——回复摘要只出现一次，`；；` 重复问题在打包前已修掉 |
+| 同轮冒烟（MCP 侧） | `node test-settings.js` **15/15**（参数清单已含 `replyGlobalGapMs`）、`node test-hub.js` **exit 0**（version `0.3.4`）、`node test-mcp-handshake.js` **`ALL MCP HANDSHAKE: PASS`**（`hasMaxParam=true`、`hasExportAll=true`） |
+| 排障记录（两次失败都不是本版缺陷） | ① 第一次真机 run 撞签名抖动：`phase=paused`、`note=还没拿到签名：没能自动找到评论入口…`、`count=2`（重跑即正常）；② 第二次没带 `clearBefore`：顶层那批 cid 还在上一轮的桶里，被新鲜度差集剔掉，只剩 292 条新二级回复，且顶层列表侧长退避使 unique 120s 无增长 → 采集器按 `phase=collecting` 的 stall 上限收工。带 `clearBefore=true` 重跑即得上表结果 |
 
 实测记录（2026-10-06，v0.5.9 + v0.5.10）：
 
@@ -550,20 +585,21 @@ node sync-extension.mjs D:\path\to\ext
 ## 打包 / 发布
 
 **正式分发走 GitHub Releases**（仓库里不放二进制包，`release/` 只在本地做打包输出）：
-<https://github.com/monagisa/douyin-ai-collector/releases> —— 当前版本 [v0.5.10](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.10)，
-附件有 `dsh-douyin-comments-v0.5.10.zip`（整目录单文件）、`dsh-douyin-comments-0.5.10.tgz`、
-`douyin-collector-extension-v0.2.12.zip`、`douyin-collector-mcp-v0.3.3.zip`、`USAGE-zh-CN.md`（中文说明，zip 里叫 `使用说明.md`）、`SHA256SUMS.txt`。
+<https://github.com/monagisa/douyin-ai-collector/releases> —— 当前版本 [v0.5.11](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.11)，
+附件有 `dsh-douyin-comments-v0.5.11.zip`（整目录单文件）、`dsh-douyin-comments-0.5.11.tgz`、
+`douyin-collector-extension-v0.2.13.zip`、`douyin-collector-mcp-v0.3.4.zip`、`USAGE-zh-CN.md`（中文说明，zip 里叫 `使用说明.md`）、`SHA256SUMS.txt`。
+更早一版是 [v0.5.10](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.10)（扩展 0.2.12 / MCP 0.3.3）。
 
-本地发布物在 `D:\dycopy\release\dsh-douyin-comments-v0.5.10\`：
+本地发布物在 `D:\dycopy\release\dsh-douyin-comments-v0.5.11\`：
 
 | 文件 | 说明 |
 | --- | --- |
-| `dsh-douyin-comments-0.5.10.tgz` | 插件本体，14 个文件（`index.js`/`collector.mjs`/`cordis.patch.yml`/`README.md`/`package.json` + `client/client.js` + `extension/` 8 个） |
-| `douyin-collector-extension-v0.2.12.zip` | 单独的扩展 zip，顶层目录 `douyin-collector/`（8 个文件），供 `chrome://extensions` 手动「加载已解压的扩展程序」 |
+| `dsh-douyin-comments-0.5.11.tgz` | 插件本体，14 个文件（`index.js`/`collector.mjs`/`cordis.patch.yml`/`README.md`/`package.json` + `client/client.js` + `extension/` 8 个） |
+| `douyin-collector-extension-v0.2.13.zip` | 单独的扩展 zip，顶层目录 `douyin-collector/`（8 个文件），供 `chrome://extensions` 手动「加载已解压的扩展程序」 |
 | `使用说明.md` | 给收件人看的中文说明（安装/扫码/两处设置/参数/FAQ/macOS） |
 | `SHA256SUMS.txt` | 三个文件的 SHA256 |
 
-再外面还有 `D:\dycopy\release\dsh-douyin-comments-v0.5.10.zip`（把上面整目录打成一个单文件，方便直接发给人）。
+再外面还有 `D:\dycopy\release\dsh-douyin-comments-v0.5.11.zip`（把上面整目录打成一个单文件，方便直接发给人）。
 
 更早的草稿目录（`D:\dycopy\release\dsh-douyin-comments-v0.5.7\` 及以前）都保留作对照，不删。
 
@@ -571,13 +607,13 @@ node sync-extension.mjs D:\path\to\ext
 
 ```powershell
 cd D:\dycopy\dsh-douyin-comments
-npm pack --pack-destination D:\dycopy\release\dsh-douyin-comments-v0.5.10
+npm pack --pack-destination D:\dycopy\release\dsh-douyin-comments-v0.5.11
 
 # 扩展开 zip（顶层目录名必须是 douyin-collector；只装 8 个运行文件，别把 md 打进去）。
 # 用 .NET ZipFile 逐个 CreateEntry 造，避免 Compress-Archive 多套一层目录：
-$rel = 'D:\dycopy\release\dsh-douyin-comments-v0.5.10'
+$rel = 'D:\dycopy\release\dsh-douyin-comments-v0.5.11'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-$zip = [IO.Compression.ZipFile]::Open("$rel\douyin-collector-extension-v0.2.12.zip", 'Create')
+$zip = [IO.Compression.ZipFile]::Open("$rel\douyin-collector-extension-v0.2.13.zip", 'Create')
 Get-ChildItem D:\dycopy\douyin-collector -File |
   Where-Object { $_.Extension -in '.js','.json','.css','.html' } |
   ForEach-Object { [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $_.FullName, "douyin-collector/$($_.Name)") | Out-Null }
@@ -587,7 +623,7 @@ $zip.Dispose()
 **注意**：清空发布目录时别用 `Remove-Item "$rel\*" -Recurse -Force` —— 它不进回收站，会把里面刚写好的
 `使用说明.md` 一起删掉（v0.5.2 打包时踩过，靠旧的外层 zip 解出来才恢复）。要保留的文件先复制到别处。
 
-打包验收（**全新 profile 从 tgz 装**，2026-10-05 对 v0.5.5 实测通过，日志 `_accept_tgz.txt`；v0.5.10 打包后按同样三步验收）：
+打包验收（**全新 profile 从 tgz 装**，2026-10-05 对 v0.5.5 实测通过，日志 `_accept_tgz.txt`；v0.5.11 打包后按同样三步验收）：
 
 ```powershell
 mkdir C:\Users\mo\.dsh\profiles\pkgtest     # package.json：dsh.profile.bundles = ["@deepseek-ai/dsh-base","@deepseek-ai/dsh-headless"]
@@ -598,10 +634,15 @@ dsh --profile pkgtest headless '用 douyin_comments 工具采集 https://www.dou
 ```
 
 > 上面那段是 **v0.5.5 的历史实测记录**（命令里的 `v0.5.5` 路径是当时的真实命令，刻意不改）。
-> v0.5.10 打包后照抄同样三步，只把包路径换成本版：
+> v0.5.11 打包后照抄同样三步，只把包路径换成本版：
 
 ```powershell
-dsh plugin --profile pkgtest add file:D:\dycopy\release\dsh-douyin-comments-v0.5.10\dsh-douyin-comments-0.5.10.tgz
+dsh plugin --profile pkgtest add file:D:\dycopy\release\dsh-douyin-comments-v0.5.11\dsh-douyin-comments-0.5.11.tgz
+dsh --profile pkgtest --dump-config | Select-String dsh-douyin-comments
+dsh --profile pkgtest headless '用 douyin_comments 工具采集 https://www.douyin.com/video/7660328050596371819 （max=30，先清空）。工具返回后只回复三行：ok=、count=、csvPath=。'
+# ⇒ ok=true count=266（一级 50 + 二级 216，27/27 个线程）phase=done，扩展 0.2.13
+#   csv：D:\dycopy\douyin-comments\douyin-comments-7660328050596371819-2026-10-07T02-57-16.csv
+#   （headless 的 cwd 是 D:\dycopy，所以没传 outDir 时 CSV 落在工作目录的 douyin-comments\ 下）
 ```
 
 - 依赖 `playwright-core ^1.63.0`（13 MB，只有驱动、不含浏览器）由 `dsh plugin add` 自动装进 profile；
@@ -610,7 +651,7 @@ dsh plugin --profile pkgtest add file:D:\dycopy\release\dsh-douyin-comments-v0.5
 
 ## 与其他组件的关系
 
-- 浏览器里跑的扩展本体在 `D:\dycopy\douyin-collector\`（权威开发目录，v0.2.11）；插件里的 `extension/`
+- 浏览器里跑的扩展本体在 `D:\dycopy\douyin-collector\`（权威开发目录，v0.2.13）；插件里的 `extension/`
   由 `node sync-extension.mjs` 单向同步过去（同步后会反向清理白名单外的旧文件；别再手动复制）。
   插件每次启动都会把扩展 hash 记进 `~/.dsh/douyin-collector/extension.launched.json`，一变就清掉
   profile 里的旧脚本缓存再开浏览器。**注意清的范围**：要清 `Default/Code Cache` + **整个**

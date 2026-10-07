@@ -98,11 +98,11 @@ const Cfg = mod.Config;
 check('导出了 Config（设置表单靠它生成）', !!Cfg && 'toJSON' in Cfg && Cfg.type === 'object',
   Cfg ? `type=${Cfg.type} keys=${Object.keys(Cfg.dict || {}).join(',')}` : '没有 Config');
 const cfgKeys = Object.keys((Cfg && Cfg.dict) || {});
-check('设置项含 max/lanes/timeoutMs/waitLoginSec/clearBefore/replyLanes/replyThrottleSec/replyNoProgressSec',
-  ['max', 'lanes', 'timeoutMs', 'waitLoginSec', 'clearBefore', 'replyLanes', 'replyThrottleSec', 'replyNoProgressSec']
+check('设置项含 max/lanes/timeoutMs/waitLoginSec/clearBefore/replyLanes/replyGlobalGapMs/replyThrottleSec/replyNoProgressSec',
+  ['max', 'lanes', 'timeoutMs', 'waitLoginSec', 'clearBefore', 'replyLanes', 'replyGlobalGapMs', 'replyThrottleSec', 'replyNoProgressSec']
     .every((k) => cfgKeys.includes(k)), cfgKeys.join(','));
 const volKeys = cfgKeys.filter((k) => Cfg.dict[k].meta && Cfg.dict[k].meta.volatile === true);
-check('设置项全部 volatile（改完立即生效、不用重启）', cfgKeys.length === volKeys.length && cfgKeys.length >= 8,
+check('设置项全部 volatile（改完立即生效、不用重启）', cfgKeys.length === volKeys.length && cfgKeys.length >= 9,
   `${volKeys.length}/${cfgKeys.length}: ${volKeys.join(',')}`);
 let rebuiltCfg = null;
 let rebuiltErr = '';
@@ -320,8 +320,8 @@ check('桥命令 get_settings / set_settings（写 dts_settings，可 clear 恢�
 check('start_collect 支持带 settings（先写 dts_settings 再触发开始）',
   /case 'start_collect'[\s\S]{0,700}?args\.settings/.test(bgSrc) && /clampSettings/.test(bgSrc));
 check('status 回包带设置快照（AI 一眼看到当前生效设置）', /settings: await readSettingsSnapshot\(\)/.test(bgSrc));
-check('设置项硬上限与 content.js 同源（六项都在，含 maxCount 与 replyThrottleMaxWaitMs）',
-  ['maxCount', 'lanes', 'replyLanes', 'replyGapMs', 'replyWarmupMs', 'replyThrottleMaxWaitMs']
+check('设置项硬上限与 content.js 同源（七项都在，含 maxCount / replyGlobalGapMs / replyThrottleMaxWaitMs）',
+  ['maxCount', 'lanes', 'replyLanes', 'replyGlobalGapMs', 'replyGapMs', 'replyWarmupMs', 'replyThrottleMaxWaitMs']
     .every((k) => bgSrc.includes(k + ': { min:')),
   'SETTINGS_FIELDS');
 check('start_collect 的 appliedSettings 会透到桥回包（拍平 result 时不能丢）',
@@ -397,10 +397,53 @@ const iPluginPick = contentSrc.indexOf('if (s && s[key] !== undefined');
 check('面板设置优先于 DSH 插件下发的 dts_settings（逐项 pick：面板 > 插件 > 内置）',
   iUserPick > 0 && iPluginPick > iUserPick,
   `user@${iUserPick} plugin@${iPluginPick}`);
-check('可调参数里有 max（第一项标签「目标条数 max」），到量自动收工且不掐二级回复',
-  /maxCount', label: '目标条数 max'/.test(contentSrc)
-  && /RS\.maxCount > 0 && seen\.size >= RS\.maxCount/.test(contentSrc)
-  && /resetSettings/.test(contentSrc));
+check('可调参数里有 max（第一项标签「目标条数 max」）',
+  /maxCount', label: '目标条数 max'/.test(contentSrc) && /resetSettings/.test(contentSrc));
+// ---------- 3a-2b) maxCount 到量「只停顶层、二级回复补完」（v0.2.13，用户 2026-10-07 报的严重缺陷） ----------
+// 旧实现把到量判断放在主循环里直接 break，而调 collectReplies() 的分支在 break 之后 ⇒ 目标条数一设，
+// 二级回复永远是 0 条；老断言只匹配了那行字面（见 m07215 审计）所以自检全绿却行为错。现在分三段验：
+//   ① 到量判断用一级口径 topSeenCount（不是一二级同池的 seen.size）；
+//   ② 到量只 break 顶层扫描，不再直接收工；
+//   ③ 循环结束后（catch 之前）统一进第二阶段补回复，再按 topCapReached 写收尾 note。
+const iMaxCap = contentSrc.indexOf('RS.maxCount > 0 && topSeenCount >= RS.maxCount');
+const iReplyCall = contentSrc.lastIndexOf('await collectReplies();');
+const iPostStage = contentSrc.indexOf("if (!stopFlag && epoch === collectEpoch && phase === 'collecting' &&");
+check('到量判断用一级去重口径 topSeenCount（旧版误用一二级同池的 seen.size）',
+  iMaxCap > 0 && !/seen\.size >= RS\.maxCount/.test(contentSrc)
+  && /topSeenCount\+\+/.test(contentSrc)
+  && /topSeen: topSeenCount/.test(contentSrc),
+  `maxCap@${iMaxCap}`);
+check('到量只停顶层扫描（topCapReached + 回到 collecting），不在这里收工',
+  /topCapReached = true;/.test(contentSrc)
+  && /topCapReached = true;[\s\S]{0,400}?setPhase\('collecting'\)[\s\S]{0,140}?break;/.test(contentSrc)
+  && !/replyTargets\.size > replyDoneSet\.size && !stopFlag/.test(contentSrc),
+  'break 前必须 setPhase(\'collecting\')，且 laneEnd 里不再直接调 collectReplies');
+check('二级回复补采移到循环外第二阶段（catch 之前），收尾 note 交代 topCapReached / 回复进度',
+  iPostStage > iMaxCap && iReplyCall > iPostStage
+  && /replyTargets\.size > replyDoneSet\.size\) \{\s*\n\s*await collectReplies\(\);/.test(contentSrc)
+  && /topCapReached\) \{[\s\S]{0,400}?setPhase\('done', '', doneNote\);/.test(contentSrc),
+  `maxCap@${iMaxCap} postStage@${iPostStage} lastReplyCall@${iReplyCall}`);
+// ---------- 3a-2c) 回复请求全局限速 + 撞限流自动降路（v0.2.13，用户 2026-10-07 报的缺陷4） ----------
+// 旧实现：replyLanes 个 worker 取到线程就立刻 fetchThread，唯一 sleep 是同线程翻页的 replyGapMs(600ms)，
+// 单页线程（大多数）等于零间隔 ⇒ ≈ lanes/RTT ≈ 20 次/秒，两轮实测 0/46 线程 vs ~139 条回复。
+check('回复请求有跨线程全局闸门（REPLY_GLOBAL_GAP_MS 250ms，fetchThread/recoverReply 都过闸）',
+  /const REPLY_GLOBAL_GAP_MS = 250;/.test(contentSrc)
+  && /const REPLY_GLOBAL_GAP_MAX_MS = 1000;/.test(contentSrc)
+  && /async function replyGate\(\)/.test(contentSrc)
+  && /if \(guard\+\+ >= REPLY_MAX_PAGES_PER_THREAD\) break;/.test(contentSrc)
+  && (contentSrc.match(/await replyGate\(\);/g) || []).length >= 2,
+  '闸门调用点 ' + ((contentSrc.match(/await replyGate\(\);/g) || []).length));
+check('撞限流自动把全局限速翻倍、并发降 1 路（worker 按 replyLaneLimit 自觉退出）',
+  /function replyBackOff\(reason\) \{/.test(contentSrc)
+  && /replyGateMs = Math\.min\(REPLY_GLOBAL_GAP_MAX_MS, Math\.max\(REPLY_GLOBAL_GAP_MS, replyGateMs \* 2\)\)/.test(contentSrc)
+  && /replyLaneLimit > 0 \? replyLaneLimit : RS\.replyLanes/.test(contentSrc)
+  && /async function worker\(myLane\)/.test(contentSrc)
+  && /if \(myLane >= \(replyLaneLimit > 0 \? replyLaneLimit : RS\.replyLanes\)\) return;/.test(contentSrc)
+  && /replyBackOff\(err\);/.test(contentSrc));
+check('replyGlobalGapMs 可被 dts_settings 覆盖（面板 > 插件 > 内置 250ms）',
+  /out\.replyGlobalGapMs = pick\('replyGlobalGapMs', 0, 2000, REPLY_GLOBAL_GAP_MS\)/.test(contentSrc)
+  && /replyGlobalGapMs: REPLY_GLOBAL_GAP_MS/.test(contentSrc)
+  && /replyGateMs = RS\.replyGlobalGapMs;\s*\n\s*replyGateAt = 0;\s*\n\s*replyLaneLimit = 0;/.test(contentSrc));
 check('浮层里有「当前：…」生效值一行（v0.2.5 从按钮行移入浮层）',
   /'当前：' \+ settingsSummaryText\(\)/.test(contentSrc) && /refs\.summary = sbox\.cur;/.test(contentSrc));
 check('设置浮层有样式（.dts-settings / .dts-input / .dts-hidden）',
@@ -656,6 +699,32 @@ if (fs.existsSync(path.join(devExtDir, 'manifest.json'))) {
 } else {
   console.log('ℹ️ 跳过扩展副本一致性校验（找不到开发目录 ' + devExtDir + '，非开发机上属正常）');
 }
+
+// ---------- 3c) v0.5.11：插件真的把 maxCount / replyGlobalGapMs 下发，且对旧扩展有兜底 ----------
+// 旧版（≤ v0.5.10）只推 `const extSettings = { lanes }`，max 根本没进 dts_settings：一级跑完整轮，
+// 一进 replies 阶段就被点「暂停」截断 ⇒ 实测 max=100 返回 896 条、用时 50.3s（m07215 审计）。
+check('插件把 max 作为 maxCount 下发（旧版从不推 maxCount）',
+  /if \(max > 0\) extSettings\.maxCount = max;/.test(collectorSrc)
+  && /if \(replyGlobalGapMs > 0\) extSettings\.replyGlobalGapMs = replyGlobalGapMs;/.test(collectorSrc)
+  && /const extSettings = \{ lanes \};|extSettings\.lanes = lanes;/.test(collectorSrc));
+check('max 用一级计数 topSeen（旧扩展回包没有 topSeen 时才退回 unique 兜底）',
+  /const uTop = typeof s\.topSeen === 'number' \? s\.topSeen : u;/.test(collectorSrc)
+  && /if \(uTop >= max && !\(await extHandlesMax\(\)\)\)/.test(collectorSrc));
+check('装了旧扩展（不认 maxCount）时插件仍会点「暂停」兜底，并把原因写进日志',
+  /const extHandlesMax = async \(\) => \{/.test(collectorSrc)
+  && /extMaxOk = !!\(eff && Number\(eff\.maxCount\) > 0 && Number\(eff\.maxCount\) === max\)/.test(collectorSrc)
+  && /dts_settings_effective/.test(collectorSrc));
+check('插件设置表单/执行链都带上 replyGlobalGapMs（0 = 用扩展内置 250ms）',
+  /replyGlobalGapMs: Math\.max\(0, Math\.min\(2000, Math\.round\(readCfg\(cfg, 'replyGlobalGapMs'/.test(indexSrc)
+  && /const replyGlobalGapMsUsed = settings\.replyGlobalGapMs;/.test(indexSrc)
+  && /replyGlobalGapMs: replyGlobalGapMsUsed,/.test(indexSrc)
+  && cfgKeys.includes('replyGlobalGapMs'));
+check('插件描述如实写「到量只停顶层扫描、继续补二级回复」（0.5.11 起）',
+  /到量就\*\*停止顶层扫描、继续把二级回复补完\*\*/.test(String(def.description || ''))
+  && /0\.5\.11 起真正生效/.test(String(def.description || '')));
+check('插件 package.json / 扩展 manifest 版本对得上（0.5.11 / 0.2.13）',
+  manifest.version === '0.5.11' && targetManifest.version === '0.2.13',
+  `plugin=${manifest.version} ext=${targetManifest.version}`);
 
 // ---------- 4) 可选：真跑一次 ----------
 const liveIdx = process.argv.indexOf('--live');

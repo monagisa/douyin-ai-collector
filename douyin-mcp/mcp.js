@@ -28,7 +28,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-const VERSION = '0.3.3';
+const VERSION = '0.3.4';
 const HUB_NAME = 'douyin-collector-mcp';
 
 const argv = process.argv.slice(2);
@@ -496,19 +496,21 @@ function createHubServer() {
 // 与扩展 content.js 的硬上限一致（扩展侧还会再钳一次，这里只是给 AI 写清范围）。
 // `max` 是给 AI 用的别名 → 扩展里的字段名是 `maxCount`（面板齿轮里显示为「目标条数 max」）。
 const SETTINGS_PROPS = {
-  max: { type: 'number', description: '目标条数上限（一级评论），0=不限；等价面板齿轮里的「目标条数 max」' },
+  max: { type: 'number', description: '目标条数上限（一级评论），0=不限；等价面板齿轮里的「目标条数 max」。扩展 0.2.13 起真正生效：到量只停顶层扫描、二级回复仍补完，实际条数通常多于它' },
   maxCount: { type: 'number', description: '同 max（扩展里的原始字段名），两者都传时以 max 为准' },
   lanes: { type: 'number', description: '【已停用】顶层扫描并发路数。扩展 0.2.12 起顶层列表固定单路：实测同一签名下同时发多个分页请求会被服务端合并成同一页，4 路并发反而少采约 30%。此键保留兼容（仍可下发、仍会落进 dts_settings_effective），但不影响采集' },
-  replyLanes: { type: 'number', description: '二级回复并发路数 1~8（默认 4）。实测（2026-10-06，RTT≈245ms）：每路恒定约 4 次/秒（=1/RTT），'
-    + '总速率≈路数×4 次/秒（4 路≈16 次/秒、2 路≈8 次/秒，是两倍关系）；4 路连跑两组后回复接口会限流（回 0 字节，'
-    + '报 EMPTY_BODY），端点惩罚态可持续数分钟。建议 1~2' },
-  replyGapMs: { type: 'number', description: '回复同线程翻页间隔 ms 0~60000（默认 600）。只在同一条评论有多页回复时生效，'
-    + '单页评论之间没有全局节流 —— 它不能当限速用，限速请调 replyLanes' },
+  replyLanes: { type: 'number', description: '二级回复并发路数 1~8（默认 4）。扩展 0.2.13 起回复请求有**全局节流**（replyGlobalGapMs，默认 250ms ≈ ≤4 次/秒）'
+    + '并在撞限流时自动降 1 路，所以这里主要决定「同时几条线程在飞」；实测 4 路各自零间隔发（≈16~20 次/秒）会撞成片拒绝（EMPTY_BODY，'
+    + '惩罚态可持续数分钟），建议 1~2' },
+  replyGapMs: { type: 'number', description: '回复同线程翻页间隔 ms 0~60000（默认 600）。只在同一条评论有多页回复时生效；'
+    + '跨线程的限速用 replyGlobalGapMs（0.2.13 起默认 250ms）' },
+  replyGlobalGapMs: { type: 'number', description: '回复请求**跨线程**的全局最小间隔 ms 0~2000（0 = 用扩展内置的 250ms ≈ ≤4 次/秒）。'
+    + '扩展 0.2.13 起所有回复请求都过这个闸门（旧版单页线程等于零间隔），撞限流还会自动翻倍到上限 1000ms' },
   replyWarmupMs: { type: 'number', description: '进补采前的静默 ms 0~600000（默认 1500）' },
   replyThrottleMaxWaitMs: { type: 'number', description: '整段等限流窗口的墙钟上限 ms 10000~600000（默认 10000）' }
 };
 
-const SETTINGS_KEYS = ['maxCount', 'lanes', 'replyLanes', 'replyGapMs', 'replyWarmupMs', 'replyThrottleMaxWaitMs'];
+const SETTINGS_KEYS = ['maxCount', 'lanes', 'replyLanes', 'replyGlobalGapMs', 'replyGapMs', 'replyWarmupMs', 'replyThrottleMaxWaitMs'];
 
 /** 把工具参数里的设置项拣出来（max 归一成 maxCount），返回 { maxCount?, lanes?, … } */
 function pickSettings(a) {
@@ -684,7 +686,7 @@ async function callTool(name, args) {
           return toolResult(JSON.stringify({
             ok: false,
             error: 'NO_SETTINGS',
-            hint: '至少传一个设置项（max/lanes/replyLanes/replyGapMs/replyWarmupMs/replyThrottleMaxWaitMs），或 clear="external"|"user"|"all"。'
+            hint: '至少传一个设置项（max/lanes/replyLanes/replyGlobalGapMs/replyGapMs/replyWarmupMs/replyThrottleMaxWaitMs），或 clear="external"|"user"|"all"。'
           }), true);
         }
         const payload = { settings: s };

@@ -89,6 +89,17 @@
   const REPLY_BACKOFF_BASE_MS = 1000;     // 重试退避基数（1s 起，指数递增到上限后保持）
   const REPLY_BACKOFF_MAX_MS = 3000;      // 退避上限（3s：预算 10s 内只够试几次，不拖长）
   const REPLY_THROTTLE_MAX_WAIT_MS = 10 * 1000;       // 整段「等限流窗口」的墙钟上限（用户定的 10 秒）
+  // ================== 回复请求全局限速（v0.2.13） ==================
+  // 2026-10-07 定因（用户报「时不时触发回复限流，并发调低了也没用」）：
+  // 4 条 lane 各自「取到线程就发」，唯一间隔只有同线程翻页的 REPLY_GAP_MS，
+  // 而绝大多数线程只有一页 ⇒ 单线程等于**零间隔**，速率 ≈ replyLanes / RTT
+  // ≈ 20 次/秒（实测 4 路 × ~200ms）。同一视频两轮差距极大（一轮 0/46 线程被拒、
+  // 另一轮拿到 ~139 条）正是突发速率的典型特征，不是「设置没生效」。
+  // 策略：① 跨 lane 的**全局间隔**（默认 250ms ≈ ≤4 次/秒，落在用户给的 4~6 次/秒档）；
+  //       ② 撞限流（列表接口正常、回复被拒）时**自动降 1 路**并把全局间隔翻倍（上限 1000ms）——
+  //          越撞越慢，自然退到服务端能过的档位，而不是一路硬撞到预算耗尽。
+  const REPLY_GLOBAL_GAP_MS = 250;        // 所有回复请求（跨线程）的最小间隔；0 = 关闭限速
+  const REPLY_GLOBAL_GAP_MAX_MS = 1000;   // 自适应上限（每撞一次限流翻倍，封顶在这里）
 
   // ================== 并发重放（最快档） ==================
   // 2026-09-28 探针 probe-burst.mjs 实证（同一签名多路复用）：
@@ -124,6 +135,7 @@
     replyGapMs: REPLY_GAP_MS,
     replyWarmupMs: REPLY_WARMUP_MS,
     replyThrottleMaxWaitMs: REPLY_THROTTLE_MAX_WAIT_MS,
+    replyGlobalGapMs: REPLY_GLOBAL_GAP_MS,   // v0.2.13：回复请求跨线程的全局限速（0 = 关闭）
   };
   // 最近一次读设置时，面板（dts_user_settings）里是否有用户改动 —— 只用于面板上显示来源
   var hasUserSettings = false;
@@ -164,6 +176,9 @@
   // ================== 状态 ==================
   var phase = 'idle';
   var seen = new Set();      // cid 去重（协议 §3.3，background 里还会再兜一次）
+  // v0.2.13：`seen` 是一二级**同池**去重（accept 把回复 cid 也加进去），所以「目标条数 max」
+  // 不能再拿 seen.size 当一级计数 —— 单独记一个一级去重数（协议 §3.9 的 topSeen 字段）。
+  var topSeenCount = 0;      // 一级评论去重条数
   var cursor = 0;            // 下一个请求的 cursor
   // cursor / seen / replyTargets / replyDoneSet 这套进度属于**哪个 videoId**。
   // cursor 是全局变量，但它的语义是「在某个视频的评论列表里翻到哪儿了」——
@@ -194,6 +209,10 @@
   var replyTargets = new Map();   // 顶层 cid → 服务端报的回复数（reply_comment_total）
   var replyDoneSet = new Set();   // 已拉完的顶层 cid（重扫/暂停继续时不重复拉）
   var replyPages = 0;             // 已发起的回复请求数
+  // ---- v0.2.13：回复请求的全局限速 + 撞限流自动降速（跨 lane 共享）----
+  var replyGateAt = 0;            // 下一个回复请求最早可发的时刻（墙钟毫秒）
+  var replyGateMs = REPLY_GLOBAL_GAP_MS;        // 当前生效的全局间隔（撞限流翻倍，封顶 REPLY_GLOBAL_GAP_MAX_MS）
+  var replyLaneLimit = 0;         // 撞限流后「自动降 1 路」的实时并发上限；0 = 用设置里的 replyLanes
   var repliesCollected = 0;       // 本轮已入队的回复条数
   var pendingReplies = new Map(); // 在飞的回复请求，按 parentCid|cursor 索引
   var replyFailStreak = 0;        // 回复请求连续失败次数
@@ -1031,6 +1050,7 @@
         t.is_reply = true;
         t.parent_cid = String(parentCid);
       } else {
+        topSeenCount++;   // v0.2.13：一级去重计数（maxCount / 面板「目标条数」用它，不再用混池的 seen.size）
         var rct = Number(t.reply_comment_total);
         if (rct > 0) replyTargets.set(key, rct);   // 待补采的线程
       }
@@ -1311,6 +1331,7 @@
         }
         await sleep(Math.min(REPLY_BACKOFF_MAX_MS, REPLY_BACKOFF_BASE_MS * Math.pow(2, k)));
         k++;
+        await replyGate();   // v0.2.13：重试也要过全局闸门，否则「退避重试」本身又变成突发
         var r = await requestReplyReplay(parentCid, cur, REPLY_COUNT);
         replyPages++;
         if (r && r.ok) { replyThrottleStartAt = 0; replyThrottledMs = 0; return { r: r }; }
@@ -1332,6 +1353,8 @@
         return { needSign: true };
       }
       replyLastError = err + '（列表接口仍正常，判定为回复接口临时拒绝）';
+      // v0.2.13：确认只是「回复被限流」（签名还活着）→ 自动降速，别继续用同一个速率硬撞
+      replyBackOff(err);
       // 先判预算再报状态：否则刚说完「还在重试」下一行就收尾了
       if (replyThrottledMs >= RS.replyThrottleMaxWaitMs) {
         return { givingUp: true, throttled: true, error: '回复接口持续拒绝超过 '
@@ -1345,6 +1368,37 @@
   }
 
   /**
+   * v0.2.13：回复请求的**全局闸门**（跨 lane 共享）。
+   * 保证所有 lane 合起来的回复请求速率 ≤ 1/replyGateMs；单页线程也因此不再零间隔。
+   * JS 是单线程：成功分支里「读时刻 → 写下一个放行时刻」之间没有 await，
+   * 所以不会出现两条 lane 同时通过闸门的情况。
+   */
+  async function replyGate() {
+    if (!(replyGateMs > 0)) return;
+    for (;;) {
+      var now = Date.now();
+      var wait = replyGateAt - now;
+      if (wait <= 0) { replyGateAt = now + replyGateMs; return; }
+      await sleep(wait);
+    }
+  }
+
+  /**
+   * v0.2.13：判定为「回复接口被限流（列表接口仍正常）」时自动降速：
+   * 全局间隔翻倍（封顶 REPLY_GLOBAL_GAP_MAX_MS）+ 并发降 1 路（下限 1）。
+   * 只在 recoverReply 里「列表探活成功」之后调用 —— 签名真没了走 needSign，不该降速。
+   */
+  function replyBackOff(reason) {
+    var before = replyGateMs;
+    replyGateMs = Math.min(REPLY_GLOBAL_GAP_MAX_MS, Math.max(REPLY_GLOBAL_GAP_MS, replyGateMs * 2));
+    var lanes = replyLaneLimit > 0 ? replyLaneLimit : RS.replyLanes;
+    if (lanes > 1) replyLaneLimit = lanes - 1;
+    noteText = '回复接口被限流（' + (reason || '') + '）：已自动降速 —— 全局间隔 ' + before + '→'
+      + replyGateMs + 'ms，并发 ' + (replyLaneLimit || RS.replyLanes) + ' 路……';
+    render();
+  }
+
+  /**
    * 把一个顶层评论下的回复全部翻页拉完（协议 §3.8）。
    * 返回 { got, needSign?, failed?, stop? } —— 不抛异常，交给调用方决策。
    */
@@ -1353,6 +1407,7 @@
     while (!stopFlag) {
       if (replyPages >= REPLY_MAX_REQUESTS) return { got: got, stop: true };
       if (guard++ >= REPLY_MAX_PAGES_PER_THREAD) break;
+      await replyGate();   // v0.2.13：跨线程全局限速（单页线程以前等于零间隔，是撞限流的主因）
       var r = await requestReplyReplay(parentCid, cur, REPLY_COUNT);
       replyPages++;
 
@@ -1405,12 +1460,18 @@
     replyThrottledMs = 0;   // 每次进入补采重算「静默等待」预算
     replyThrottleStartAt = 0;
     replyStoppedByThrottle = false;
+    // v0.2.13：每次进入补采都把限速/降速状态复位（上一轮的降速不继承到这一轮）
+    replyGateMs = RS.replyGlobalGapMs;
+    replyGateAt = 0;
+    replyLaneLimit = 0;
 
     /** 跑一轮：REPLY_LANES 个 worker 从同一队列取线程；返回本轮失败的 cid */
     async function runRound(list, label) {
       var idx = 0, failed = [];
-      async function worker() {
+      async function worker(myLane) {
         while (!stopFlag && !needSignStop && !hardStop && !throttledStop) {
+          // v0.2.13：撞限流后 replyLaneLimit 会降到 1..n-1，多出来的 worker 主动退出
+          if (myLane >= (replyLaneLimit > 0 ? replyLaneLimit : RS.replyLanes)) return;
           // 补采可能跑很久（线程多），签名过期检查必须在这里也做一遍，
           // 否则会用死签名一直失败下去
           if (!signedAt || Date.now() - signedAt > SIGN_STALE_MS) { needSignStop = true; return; }
@@ -1431,8 +1492,9 @@
         }
       }
       var ws = [];
-      var lanes = Math.min(RS.replyLanes, list.length);
-      for (var i = 0; i < lanes; i++) ws.push(worker());
+      var laneBudget = replyLaneLimit > 0 ? replyLaneLimit : RS.replyLanes;
+      var lanes = Math.min(laneBudget, list.length);
+      for (var i = 0; i < lanes; i++) ws.push(worker(i));
       await Promise.all(ws);
       return failed;
     }
@@ -1622,6 +1684,7 @@
       // B 的），请求必然失败或返回不相干数据。background 侧按 cid 去重，重采不会产生
       // 重复行，所以清掉是安全的。
       seen.clear();
+      topSeenCount = 0;   // v0.2.13：一级计数与 seen 同生同灭
       replyTargets.clear();
       replyDoneSet.clear();
       savedCount = 0;
@@ -1654,6 +1717,7 @@
         replyGapMs: REPLY_GAP_MS,
         replyWarmupMs: REPLY_WARMUP_MS,
         replyThrottleMaxWaitMs: REPLY_THROTTLE_MAX_WAIT_MS,
+        replyGlobalGapMs: REPLY_GLOBAL_GAP_MS,   // v0.2.13：回复请求跨线程全局限速（0 = 关闭）
       };
       var clamp = function (v, lo, hi, dflt) {
         var n = Number(v);
@@ -1678,6 +1742,8 @@
           out.replyWarmupMs = pick('replyWarmupMs', 0, 600000, REPLY_WARMUP_MS);
           // 等限流窗口的预算：上限 10 分钟；下限仍是内置的 10 秒（只放宽、不提前放弃）
           out.replyThrottleMaxWaitMs = pick('replyThrottleMaxWaitMs', REPLY_THROTTLE_MAX_WAIT_MS, 600000, REPLY_THROTTLE_MAX_WAIT_MS);
+          // v0.2.13：回复请求全局限速。0 = 关闭（不建议）；上限 2 秒/次（再慢就不如调小并发）
+          out.replyGlobalGapMs = pick('replyGlobalGapMs', 0, 2000, REPLY_GLOBAL_GAP_MS);
           resolve(out);
         });
       } catch (e) {
@@ -1718,6 +1784,7 @@
             : '',
           maxCount: RS.maxCount,
           replyLanes: RS.replyLanes,
+          replyGlobalGapMs: RS.replyGlobalGapMs,
           replyGapMs: RS.replyGapMs,
           replyThrottleMaxWaitMs: RS.replyThrottleMaxWaitMs,
           from: hasUserSettings ? 'panel' : 'plugin',
@@ -1754,6 +1821,8 @@
         return;
       }
 
+      // v0.2.13：maxCount 到量只停**顶层扫描**，二级回复仍要补完（循环外的补采段负责）
+      var topCapReached = false;
       while (!stopFlag && epoch === collectEpoch) {
         if (phase !== 'collecting') break;
 
@@ -1872,13 +1941,17 @@
         await pushComments(freshAll, (laneEnd && !willRescan) ? 0 : 1);
         await flushComments((laneEnd && !willRescan) ? 0 : 1);
 
-        // 面板「设置 → 目标条数」到了就自动收工（0 = 不限）。
-        // 只在这里判、不在补采阶段判：maxCount 是**一级评论去重条数**的目标，到量后
-        // 已收集到的线程的二级回复仍要补完再停 —— 与 DSH 插件 max 的语义保持一致
-        // （不然「设了 300 条」会变成「二级回复一条都不要」，正是 Mac 报告里那个坑）。
-        if (RS.maxCount > 0 && seen.size >= RS.maxCount) {
-          setPhase('done', '', '已达到设置的目标条数 ' + RS.maxCount + ' 条（去重后 ' + seen.size +
-            ' 条），已自动停止；再点「开始采集」会从断点继续。');
+        // 面板「设置 → 目标条数」到了就**停止顶层扫描**（0 = 不限）。
+        // 0.2.13 修正：这里只跳出顶层 while，二级回复由循环外的补采段继续补完 ——
+        //   旧版在这一行直接 setPhase('done') + break，于是「设了目标条数」
+        //   就变成「二级回复一条都不要」，而注释恰恰写着「仍要补完再停」（Mac 报告里那个坑）。
+        // 计数用 topSeenCount（**一级**去重条数），不再用一二级混池的 seen.size。
+        if (RS.maxCount > 0 && topSeenCount >= RS.maxCount) {
+          topCapReached = true;
+          noteText = '一级评论已到目标 ' + RS.maxCount + ' 条（去重后 ' + topSeenCount +
+            ' 条），停止顶层扫描，继续补采二级回复……';
+          setPhase('collecting');
+          render();
           break;
         }
 
@@ -1893,15 +1966,8 @@
             await sleep(MIN_INTERVAL_MS + Math.random() * JITTER_MS);
             continue;
           }
-          // 顶层列表采完 → 若还有「带回复但没拉过」的线程，进入第二阶段补采（协议 §3.8）
-          if (replyTargets.size > replyDoneSet.size && !stopFlag) {
-            await collectReplies();
-            if (stopFlag) break;
-            // collectReplies 可能因签名失效把自己置成 waiting-sign / paused ——
-            // 不能再用 done 覆盖它，否则用户看到「已完成」却其实没采完（实测踩到过）
-            if (phase === 'waiting-sign' || phase === 'paused') break;
-          }
-          setPhase('done', '', endNote());
+          // 顶层列表采完 → 第二阶段（补采二级回复）统一交给循环外的补采段处理（v0.2.13 抽出，
+          // 这样「maxCount 到量」和「列表触底」两条路径共用同一段逻辑，不会再有一条漏掉回复）
           break;
         }
 
@@ -1942,6 +2008,27 @@
         await sleep(lanes > 1
           ? LANE_GAP_MS + Math.random() * 60
           : MIN_INTERVAL_MS + Math.random() * JITTER_MS);
+      }
+
+      // ---- 第二阶段：补采二级回复（协议 §3.8）----
+      // v0.2.13：顶层扫描结束的两条路径（列表触底 / maxCount 到量）都落到这里，
+      // 「设了目标条数」因此不会再丢掉二级回复。只在仍是 collecting 时收尾：
+      // 不覆盖 collectReplies 自己置的 waiting-sign / paused（实测踩到过「显示已完成却没采完」）。
+      if (!stopFlag && epoch === collectEpoch && phase === 'collecting' &&
+          replyTargets.size > replyDoneSet.size) {
+        await collectReplies();
+      }
+      if (!stopFlag && epoch === collectEpoch && phase === 'collecting') {
+        // endNote() 里已经带「二级回复已补采 N 条（x/y 个线程，请求 n 次）」，
+        // 这里只补「到量停止顶层扫描」的前缀，别再叠一份回复摘要（真机验收时叠出过「；；」）。
+        var doneNote = endNote();
+        if (topCapReached) {
+          doneNote = '一级评论已到目标 ' + RS.maxCount + ' 条（去重后 ' + topSeenCount
+            + ' 条），已停止顶层扫描；' + doneNote + '。再点「开始采集」会从断点继续';
+        } else if (replyTargets.size > 0) {
+          doneNote += '。';
+        }
+        setPhase('done', '', doneNote);
       }
     } catch (e) {
       // 循环本身出意外也要把状态落到面板上，不能变成未捕获的 Promise 拒绝
@@ -2911,6 +2998,8 @@
     down('status', {
       phase: phase, videoId: videoId, cursor: cursor, pages: pages,
       unique: seen.size, total: total, savedCount: savedCount,
+      // v0.2.13：**一级评论**去重条数（seen 混了一二级）——maxCount 与采集器的 max 都用它
+      topSeen: topSeenCount,
       localStats: localStats, exportAll: exportAll,
       lastMs: lastMs, failStreak: failStreak, running: running,
       signedAt: signedAt,
@@ -2998,6 +3087,7 @@
       cursor: cursor,
       pages: pages,
       unique: seen.size,
+      topSeen: topSeenCount,   // v0.2.13：一级去重条数（unique 含二级回复）
       total: total,
       savedCount: savedCount,
       lastMs: lastMs,
@@ -3055,6 +3145,7 @@
       cursor: cursor,
       pages: pages,
       unique: seen.size,
+      topSeen: topSeenCount,   // v0.2.13：一级去重条数（采集器的 max 用它判定，别用混池的 unique）
       total: total,
       savedCount: savedCount,
       lastMs: lastMs,
