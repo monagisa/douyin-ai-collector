@@ -522,6 +522,7 @@ node _demo_autoinstall.mjs https://www.douyin.com/video/7660328050596371819     
 | 真机五轮（A/B/C/D/x1，视频 `7692405235813272867`，扩展 0.2.13 作对照） | 会话内重试**从不恢复**（A 108 秒 / C 125 秒 / D 跨 8.5 分钟 4 波，全是 `EMPTY_BODY`），而新会话或十几秒后的窗口 **23/23、28/28 全成**；主世界手动重放改写后的回复 URL 始终 `HTTP 200 / status_code:0 / 58276 字节 / 366~1666ms`；五轮里 `REPLAY_TIMEOUT` **一次都没出现** ⇒ 不是本地抢跑、也不是「一波就该放弃」 |
 | **真机 z1（v0.5.12 + 扩展 0.2.14，`clearBefore=true`、`max=20`）** | **PASS**：`ok=true`、`count=334` = **一级 50 + 二级 284**、`phase=done`、**25 秒跑完**（对照 y1 轮同参数：`phase=waiting-sign`、白等 120 秒、整轮 8.5 分钟）。面板文案：「一级评论已到目标 20 条（去重后 50 条），已停止顶层扫描；has_more=0 结束，已采 334/2034 条；二级回复已补采 284 条（28/28 个线程，请求 37 次）。再点「开始采集」会从断点继续」。同轮对照实验：`reply-rewritten → 200 / 58276 字节 / 436ms`（列表重放 `200 / 21717 字节 / 1256ms`） |
 | 生效值核对（`dts_settings_effective`） | `at / from:'plugin' / lanes:1 / lanesWanted:1 / maxCount:20 / replyGapMs:600 / replyGlobalGapMs:250 / replyLanes:4 / replyThrottleMaxWaitMs:120000 / replyWaveBudgetMs:12000 / replyParkPlanMs:'15000/30000/60000'` ⇒ 新常量与新键真的下发到扩展 |
+| **打包验收（`pkgtest` profile 装 `dsh-douyin-comments-0.5.12.tgz` 后 headless 实采）** | **PASS**：`ok=true`、`count=264` = 一级 **50** + 二级 **214**（25/25 个线程、32 次回复请求）、`phase=done`、扩展自报 **0.2.14**（`extension.dir` = profile 里的 `node_modules\dsh-douyin-comments\extension`，`source:'插件自带（随包分发）'`）；对照 v0.5.11 同命令 `count=266` = 一级 50 + 二级 216（27/27）。CSV：`D:\dycopy\douyin-comments\douyin-comments-7660328050596371819-2026-10-07T03-57-39.csv` |
 
 实测记录（2026-10-07，v0.5.11 + 扩展 0.2.13）：
 
@@ -669,7 +670,8 @@ dsh --profile pkgtest headless '用 douyin_comments 工具采集 https://www.dou
 dsh plugin --profile pkgtest add file:D:\dycopy\release\dsh-douyin-comments-v0.5.12\dsh-douyin-comments-0.5.12.tgz
 dsh --profile pkgtest --dump-config | Select-String dsh-douyin-comments
 dsh --profile pkgtest headless '用 douyin_comments 工具采集 https://www.douyin.com/video/7660328050596371819 （max=30，先清空）。工具返回后只回复三行：ok=、count=、csvPath=。'
-# ⇒ ok=true、phase=done，扩展 0.2.14（对照 v0.5.11：count=266 = 一级 50 + 二级 216，27/27 个线程）
+# ⇒ ok=true、count=264 = 一级 50 + 二级 214（25/25 个线程、32 次回复请求）、phase=done，扩展自报 0.2.14
+#   （对照 v0.5.11：count=266 = 一级 50 + 二级 216，27/27 个线程）
 #   csv：D:\dycopy\douyin-comments\douyin-comments-<videoId>-<时间戳>.csv
 #   （headless 的 cwd 是 D:\dycopy，所以没传 outDir 时 CSV 落在工作目录的 douyin-comments\ 下）
 ```
