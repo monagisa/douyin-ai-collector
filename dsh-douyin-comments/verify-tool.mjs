@@ -7,6 +7,7 @@
 //   2) execute() 返回的对象键与 output.schema 完全一致（不多不少）；
 //   3) installExtension() 真把自带扩展同步到 ~/.dsh/douyin-collector/extension 且版本对得上；
 //   4) output.render 成功/失败两条路径都出人话。
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -483,9 +484,24 @@ check('启动后把这次用的扩展 hash 记进 extension.launched.json',
 // ---------- 3a-5) 读/写扩展 storage 只能落在「扩展自己的」SW 或扩展页上 ----------
 // 实测坑：ctx.serviceWorkers()[0] 可能是抖音页面自己的 sw.js，在里面 eval chrome.storage
 // 会 ReferenceError: chrome is not defined ⇒ 设置没写进去、落库读成 0 条、误判「本轮没新数据」。
+// 夹具改成跨平台：原来写死了某台机器的绝对路径与它算出来的 ID，
+// 在 macOS/Linux 上必红（path.resolve('C:\\...') 会变成 <cwd>/C:\...）。
+// 现在只钉「纯函数 + Chromium 定法」这两条与机器无关的性质。
+const idFixture = path.join(os.tmpdir(), 'dsh-verify-ext-fixture', 'extension');
+const idFixture2 = path.join(os.tmpdir(), 'dsh-verify-ext-fixture-2', 'extension');
+const idFixtureId = extensionIdFromPath(idFixture);
 check('扩展 ID 推导（SHA256(路径 UTF-16LE) 前 16 字节 → a-p）',
-  extensionIdFromPath('C:\\Users\\mo\\.dsh\\douyin-collector\\extension') === 'mffgocmhknhhomckdfkopddbjnfabkpn',
-  extensionIdFromPath('C:\\Users\\mo\\.dsh\\douyin-collector\\extension'));
+  /^[a-p]{32}$/.test(idFixtureId)
+  && extensionIdFromPath(idFixture) === idFixtureId
+  && extensionIdFromPath(idFixture2) !== idFixtureId,
+  `${idFixtureId}（32 位 a-p；同路径稳定、不同路径不同）`);
+// 独立复算一遍，钉住「取前 16 字节 + 半字节映射 a-p」这个 Chromium 定法（同样不依赖机器路径）
+{
+  const digest = crypto.createHash('sha256').update(Buffer.from(path.resolve(idFixture), 'utf16le')).digest();
+  let manual = '';
+  for (let i = 0; i < 16; i++) manual += String.fromCharCode(97 + (digest[i] >> 4)) + String.fromCharCode(97 + (digest[i] & 15));
+  check('扩展 ID 的位映射与 Chromium 定法一致（独立复算）', manual === idFixtureId, manual);
+}
 check('不再拿 ctx.serviceWorkers()[0] 当扩展 SW',
   !/ctx\.serviceWorkers\(\)\[0\]/.test(collectorSrc.replace(/\/\*\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')),
   '去掉注释后无残留');
