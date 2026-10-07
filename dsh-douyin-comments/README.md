@@ -1,7 +1,33 @@
 # dsh-douyin-comments
 
 DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**，注册一个工具 `douyin_comments`。
-（插件版本 0.5.13，内置扩展「抖音评论采集器」v0.2.15。）
+（插件版本 0.5.14，内置扩展「抖音评论采集器」v0.2.15。）
+
+**0.5.14 新增**（用户 2026-10-07 说「做个失败快照和日志吧」；扩展与 MCP 本次**未改动**，仍是 0.2.15 / 0.3.6）：
+
+1. **每次调用都写一份运行日志**：`~/.dsh/douyin-collector/logs/collect-<时间戳>-<pid>.log`，每行行首带相对时间
+   `[+22.9s]`，记全过程（装扩展 / 锁 / 启动浏览器 / 面板校验 / 后台探针 / 登录闸门 / 清空 / 下发设置 /
+   签名等待与 nudge / 轮询 / 收工原因 / 落盘）。返回值新增 `logPath`，成功路径的 render 也会打印它。
+   日志只保留最新 **50** 份（`RUN_LOG_KEEP`，每次写日志前顺手清理旧文件）。
+2. **失败或没采完时自动存「失败现场」**：目录 `~/.dsh/douyin-collector/failures/<时间戳>-<videoId>/`，四件套——
+   `status.json`（`reason` / `at` / `pageUrl` / 收工原因 `endedBy` / 面板 `status` 快照 / 日志尾部 80 行）、
+   `screenshot.png`、`page.html`、`run.log`。触发条件：总超时（`timeout`）、无进展（`stall`）、被取消（`abort`），
+   以及**任何抛错**（含「启动阶段失败」与主流程异常）。返回值新增 `snapshotDir`，失败时路径也拼进 `error`。
+   只保留最新 **20** 份（新设置 `keepSnapshots`）。
+3. **两个新设置**：`failSnapshot`（默认 **true**，失败/没采完时是否存现场；工具参数可按次关掉）、
+   `keepSnapshots`（默认 **20**，1~500）。采完且正常结束时 `snapshotDir` 是空串（不占空间）。
+4. **抛错也带人话**：主流程抛错时若异常文本里出现 `Execution context was destroyed` / `Target closed`，
+   会自动补一句「（页面在采集途中跳转或关闭了：视频可能已被删、需要重新登录，或浏览器窗口被手动操作过）」，
+   并把 `logPath` + `snapshotDir` 一起放进错误信息。
+5. **真机验收**（同一视频）：正常采完 `count=918 / 39.6s / phase=paused` ⇒ `snapshotDir=""`（不留现场）；
+   强压 `timeoutMs=22000` ⇒ 日志「收工原因：timeout」+ 现场四件套 + `snapshotDir` 指向它；
+   `failSnapshot=off` 同参数 ⇒ `snapshotDir=""`；无效视频 id 抛错 ⇒ 错误信息里带两个路径、现场四件套齐全。
+6. **插件层端到端**（`pkgtest` profile 装 `dsh-douyin-comments-0.5.14.tgz` 后 headless 真采）：
+   正常 `max=30` → **338 条 / 23s**，日志 `[+22.9s] 收工原因：done`；
+   `timeoutMs=15000` → **207 条 / 15.7s** + 工具文本照常给出「⚠️ 本轮没采完…现场快照：…」与「运行日志：…」。
+7. **自测**：`node verify-tool.mjs` **193/193 全绿**（0.5.13 为 172；新增 2f 段 21 条：设置项/参数/schema/描述、
+   `hints()` 拼接、`createRunLog` 边跑边写盘与 `ring()`、`captureFailureSnapshot` 无页面只留 `status.json` /
+   有页面四件套齐 / 目录名带 videoId / 自带 `run.log`、`pruneDir` 只留最新 N、日志封顶 50 份，以及 3 条源码护栏）。
 
 **0.5.13 新增**（配套 MCP `douyin-mcp` 升到 **0.3.6**；修用户 2026-10-07 追问的「单路太慢」）：
 老结论「多路并发会被服务端合并成同一页」只对了一半——**真凶是「同一签名 + ~200ms 内同时发」**，
@@ -134,11 +160,12 @@ DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**
   「确认全部清空？」，`CLEAR_ALL_CONFIRM_MS = 5000` 内再点一次才真清），后台 `dts-clear` 仍要求
   显式 `all:true`，空 videoId 绝不兜底成全清。
 - **内置扩展升到 0.2.10**（插件 0.5.8 自带的那份）。
-- **自测**：`node verify-tool.mjs` 全绿（当前版本 **172/172**；0.5.8 的清空自检 5 条断言之后，0.5.9 再 +2 条导出断言 → 137，
+- **自测**：`node verify-tool.mjs` 全绿（当前版本 **193/193**；0.5.8 的清空自检 5 条断言之后，0.5.9 再 +2 条导出断言 → 137，
   0.5.10 顶层固定单路再 +4 条 → 141，**0.5.11 再 +6 条**（max 语义 / 补采在循环外 / 全局限速 / 撞限流降路 / `replyGlobalGapMs` 三端下发）→ 153，
   **0.5.12 再 +11 条**（分波停顿重试 + 单波预算 + `replyThrottleMaxWaitMs` 总窗口默认 120 秒 / `0 = 内置 250ms` / 暂态红字清空 / 补采收尾交回 `collecting`）→ 164，
-  **0.5.13 再 +8 条**（错峰多路发送顺序 / `MAX_LANES=3` + `LANE_STAGGER_MS=200` + `MIN_INTERVAL_MS=150` / 合并检测降路 / `anyLaneHasMore` / 面板与摘要文案 / MCP `lanes` 描述与 `VERSION=0.3.6`）→ **172**，
-  见上方「0.5.13 新增」；更早一版 130/130。0.5.8 的这 5 条是：
+  **0.5.13 再 +8 条**（错峰多路发送顺序 / `MAX_LANES=3` + `LANE_STAGGER_MS=200` + `MIN_INTERVAL_MS=150` / 合并检测降路 / `anyLaneHasMore` / 面板与摘要文案 / MCP `lanes` 描述与 `VERSION=0.3.6`）→ 172，
+  **0.5.14 再 +21 条**（运行日志 + 失败现场快照：新增 2f 整段——设置项/参数/schema/描述、`hints()` 拼接、`createRunLog` 边跑边写盘与 `ring()`、日志封顶 50 份、`captureFailureSnapshot` 无页面只留 `status.json`／有页面四件套齐／目录名带 videoId／自带 `run.log`、`pruneDir` 只留最新 N、render 提示、3 条源码护栏）→ **193**，
+  见上方「0.5.14 新增」与「0.5.13 新增」；更早一版 130/130。0.5.8 的这 5 条是：
   `sendClear` 等后台回包、清空后读回 storage 自检、失败文案带 `edge://extensions` 重新加载 + F5 指引、
   统计请求序号作废在途旧回包、失败文案必须走 `setPhase` 的 `err` 参数（否则会被随后清成空串、
   面板既不报成功也不报失败——这条是补跑真机失败路径时踩出来的）。
@@ -331,7 +358,8 @@ DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**
    `chrome.storage.local.dts_settings`，扩展每轮都现读；返回值 `lanes` 是扩展写回的**实际**路数。
    **（0.5.10~0.5.12 该设置曾停用**：扩展 0.2.12 起顶层列表固定单路、`lanes` 仅保留兼容；
    **0.5.13 / 扩展 0.2.15 起重新生效**（默认 3、每路错峰 200ms）——原因见上方「0.5.13 新增」。）
-   环境变量 `DOUYIN_MAX` / `DOUYIN_LANES` / `DOUYIN_TIMEOUT_MS` 也能给出厂值兜底（设置没声明时用）。
+   环境变量 `DOUYIN_MAX` / `DOUYIN_LANES` / `DOUYIN_TIMEOUT_MS` 也能给出厂值兜底（设置没声明时用），
+   `DOUYIN_FAIL_SNAPSHOT=0` / `DOUYIN_KEEP_SNAPSHOTS=N` 可改失败快照的出厂默认。
 
 **0.4.1 修了什么**（0.4.0 发出去踩的两个坑）：
 
@@ -438,7 +466,8 @@ dsh plugin --profile web add file:D:\dycopy\dsh-douyin-comments
 环境变量覆盖：`DOUYIN_EXT_DIR`（扩展源目录）、`DOUYIN_COOKIES`（可选 cookies 文件）、
 `DOUYIN_PROFILE`（Chrome profile）、`DOUYIN_CHROME`（chrome.exe 绝对路径）、`DOUYIN_OUT_DIR`（输出目录）、
 `DOUYIN_CDP_PORT`（默认 9510）、`DOUYIN_WAIT_LOGIN_SEC`（默认 180）、`DOUYIN_ALLOW_ANONYMOUS=1`（未登录也照采，默认关）、
-`DOUYIN_MAX` / `DOUYIN_LANES` / `DOUYIN_TIMEOUT_MS`（出厂默认值兜底，设置表单里改的优先）。
+`DOUYIN_MAX` / `DOUYIN_LANES` / `DOUYIN_TIMEOUT_MS`（出厂默认值兜底，设置表单里改的优先）；
+`DOUYIN_FAIL_SNAPSHOT=0`（等同把 `failSnapshot` 默认关掉）、`DOUYIN_KEEP_SNAPSHOTS=<N>`（失败现场保留份数，默认 20）。
 
 ## 插件设置（DSH「设置 → 插件 → dsh-douyin-comments」）
 
@@ -456,6 +485,8 @@ dsh plugin --profile web add file:D:\dycopy\dsh-douyin-comments
 | `replyGlobalGapMs` | 0 | 回复请求**跨线程的全局最小间隔** ms（0~2000）；**0 = 用扩展内置的 250ms**（≈ ≤4 次/秒）。设了就是硬下限，撞限流时扩展会在此基础上翻倍（封顶 1000ms） |
 | `replyThrottleSec` | 120 | 撞上限流窗口时本轮**总共**最多等几秒（10~600）。扩展 0.2.14 起分波重试：单波最多 12 秒，波间停 15/30/60 秒再打一波，总等待封顶在这个值；**设 10 = 老行为**（十秒不行就收尾） |
 | `replyNoProgressSec` | 900 | 回复阶段连续多久没新数据就收工（60~7200） |
+| `failSnapshot` | true | **0.5.14 新增**：失败或没采完（超时/无进展/被取消）或抛错时，自动存一份现场到 `~/.dsh/douyin-collector/failures/<时间戳>-<videoId>/`（截图 + 页面 HTML + 状态 JSON + 日志副本）。正常采完不留；工具参数 `failSnapshot` 可按次覆盖 |
+| `keepSnapshots` | 20 | **0.5.14 新增**：失败现场最多保留几份（1~500），超出的按目录名（时间戳）从旧到新删 |
 
 细节：
 
@@ -488,11 +519,13 @@ dsh plugin --profile web add file:D:\dycopy\dsh-douyin-comments
 | `clearBefore` | boolean | 设置里的值（出厂 false） | 是否先清空扩展里该视频的旧数据；默认 false = 保留断点续采，只交付本轮新采的 |
 | `outDir` | string | **当前会话工作区**/`douyin-comments` | 输出目录。默认写进调用者自己的工作区，CSV/JSON 就在他的项目目录里；取不到会话工作区（非 agent 调用）时退回 `~/.dsh/douyin-collector/out` |
 | `keepOpen` | boolean | false | 调试：采完不关窗口 |
+| `failSnapshot` | boolean | 设置里的值（出厂 true） | **0.5.14 新增**：本次失败/没采完时是否存现场快照；**运行日志每次调用都会写**（不受它影响） |
 
 ## 返回值
 
 `ok`、`error`、`videoId`、`title`、`count`、`csvPath`、`jsonPath`、`phase`、`lanes`、`note`、
-`durationSec`、`extensionVersion`、`extensionInstalled`、`sample`（前 5 条预览）。
+`durationSec`、`extensionVersion`、`extensionInstalled`、`sample`（前 5 条预览）、
+`logPath`（0.5.14 新增：本次运行日志文件）、`snapshotDir`（0.5.14 新增：失败现场目录，正常采完是空串）。
 
 `csvPath` / `jsonPath` 默认指向**调用方自己会话的工作区**：`<workspace>\douyin-comments\douyin-comments-<videoId>-<时间>.{csv,json}`
 （会话工作区取自 `exec.agent.session.header.cwd`；取不到才退回 `~/.dsh/douyin-collector/out`）。
@@ -500,6 +533,11 @@ dsh plugin --profile web add file:D:\dycopy\dsh-douyin-comments
 - `ok=false` 时 `error` 是可操作的原因（例如「本轮从头到尾没拿到页面签名（<面板说明>）」），
   此时 `csvPath`/`jsonPath` 为空串，**不会写文件**。
 - `extensionInstalled=true` 表示本次把扩展重新装进了浏览器（首次调用、或扩展版本变了）。
+- `logPath`（0.5.14 起）：**每次调用都会写**的运行日志（`~/.dsh/douyin-collector/logs/collect-<时间戳>-<pid>.log`），
+  行首是相对时间 `[+22.9s]`，含全过程与「收工原因：done / max-cap / top-done / stall / timeout / abort」。只保留最新 50 份。
+- `snapshotDir`（0.5.14 起）：**失败或没采完时**才有值（超时 / 无进展 / 被取消 / 抛错），目录里是
+  `status.json`（收工原因 `endedBy`、面板 `status` 快照、日志尾部 80 行）+ `screenshot.png` + `page.html` + `run.log`；
+  正常采完是空串。保留份数由设置 `keepSnapshots`（默认 20）决定。抛错时这两个路径也会拼进 `error` 文本。
 
 ## 输出格式
 
@@ -516,6 +554,20 @@ dsh plugin --profile web add file:D:\dycopy\dsh-douyin-comments
 | CSV 列 | 17 列（同上，列序冻结） | **18 列：末尾追加 `video_id`**；前 17 列的顺序与含义完全不变，老读者按位置读前 17 列仍然正确 |
 | JSON | `{exportedAt, videoId, title, count, …comments[]}` | 顶层多 `scope: "all"` 与 `videos: [{ videoId, title, count }]`；每条评论也带 `videoId` |
 | 文件名 | `douyin-comments-<videoId>-<时间戳>.csv\|json` | `douyin-comments-all-<时间戳>.csv\|json` |
+
+## 运行日志与失败现场（0.5.14 起）
+
+排查「采不到 / 卡住 / 条数不对」时，**先看这两样，不要再让对方复述面板文字**：
+
+| 位置 | 何时产生 | 里面有什么 |
+| --- | --- | --- |
+| `~/.dsh/douyin-collector/logs/collect-<时间戳>-<pid>.log` | **每次调用都写**（返回值 `logPath`） | 全过程逐行 + 相对时间戳；末尾一定有 `收工原因：<done\|max-cap\|top-done\|stall\|timeout\|abort>`（旧版没有这一行）；只保留最新 50 份 |
+| `~/.dsh/douyin-collector/failures/<时间戳>-<videoId>/` | 仅当**失败或没采完**（超时 / 无进展 / 被取消 / 抛错），返回值 `snapshotDir` | `status.json`（`reason`、`endedBy`、`pageUrl`、面板 `status` 快照含 `phase`/`unique`/`savedCount`/`total`/`note`、日志尾部 80 行）、`screenshot.png`、`page.html`、`run.log`；只保留最新 `keepSnapshots`（默认 20）份 |
+
+- 正常采完（`phase=done` 或到量 `paused`）**不写现场**，`snapshotDir` 是空串——不会越跑越占盘。
+- 采集器抛错时错误文本形如 `…（运行日志：…；失败现场：…）`，插件 render 会把它们单列成行。
+- 页面在采集途中跳转/关闭（`Execution context was destroyed` / `Target closed`）会补一句人话提示，方便判断是视频被删还是需要重新登录。
+- 想临时关掉：工具参数 `failSnapshot: false`，或插件设置里关；日志不受影响，照写。
 
 ## 数据新鲜度怎么保证
 
@@ -542,6 +594,18 @@ node _test_freshness.mjs https://www.douyin.com/video/7660328050596371819 60 300
 node _test_nosig.mjs https://www.douyin.com/video/7660328050596371819              # 负向：没签名必须失败
 node _demo_autoinstall.mjs https://www.douyin.com/video/7660328050596371819        # 删掉已装扩展，验证「从零自动装上」
 ```
+
+实测记录（2026-10-07，v0.5.14 + 扩展 0.2.15，扩展/MCP 本版未改动）：
+
+| 用例 | 结果 |
+| --- | --- |
+| 离线自检 `node verify-tool.mjs` | **193/193 全绿**（0.5.13 为 172；新增 2f 段 21 条：`failSnapshot`/`keepSnapshots` 设置与出厂值、`readSettings` 现读（`vbox(0)` → 20）、参数与输出 schema（`logPath`/`snapshotDir` 必填）、工具描述、render 成功但没采完时指出现场、`hints()` 拼接与空串、`createRunLog` 落 `<home>/logs/collect-<ISO>-<pid>.log` 且边跑边写盘（行首 `[+12.3s]`）、`ring()` 只留最后若干行、`captureFailureSnapshot` 无页面时只留 `status.json`、有页面时四件套齐、目录名带 videoId、`pruneDir` 只留最新 N 且目录不存在不炸、**日志目录封顶 `RUN_LOG_KEEP`=50 份**、3 条源码护栏） |
+| 运行日志（正常采完，`7692405235813272867`，`timeoutMs=60000`、`clearBefore=true`、`replies=false`） | **PASS**：`ok=true`、`count=918`、`phase=paused`、**39.6s**、`snapshotDir=""`（采完不留现场）；日志 `~/.dsh/douyin-collector/logs/collect-2026-10-07T06-27-30-18252.log` 末行 `[+39.4s] 收工原因：top-done（phase=paused，页面侧 918 条）` |
+| 失败现场（强制超时，同视频 `timeoutMs=22000`） | **PASS**：日志「收工原因：timeout（phase=collecting，页面侧 918 条）」+ `📸 失败现场已存：…/failures/2026-10-07T06-28-36-7692405235813272867（status.json、screenshot.png、page.html、run.log）`；返回 `count=918`、`phase=collecting`、`durationSec=24.3`、`snapshotDir=<该目录>`；`status.json` 摘要 `{"reason":"采集未完成：timeout","endedBy":"timeout","videoId":"7692405235813272867","statusPhase":"collecting","statusUnique":918,"runLogTailLen":19}` |
+| 开关对照（同视频 `timeoutMs=22000` + `failSnapshot=false`） | **PASS**：同样「收工原因：timeout（phase=replies，页面侧 919 条）」但 `snapshotDir=""`，快照目录数不变 ⇒ 开关有效 |
+| 抛错路径（无效 id `1111111111111111111`，`timeoutMs=45000`） | **PASS**：错误文案 `page.evaluate: Execution context was destroyed, most likely because of a navigation（运行日志：…\logs\collect-2026-10-07T06-29-34-31532.log；失败现场：…\failures\2026-10-07T06-29-44-1111111111111111111）`，现场四件套齐全 ⇒ `catch` 分支也有现场 |
+| 现场体积（超时那轮实测） | `page.html 1208843 B` / `screenshot.png 973074 B` / `status.json 2986 B` / `run.log 1469 B`（≈2.1 MB/份；`keepSnapshots` 默认 20 份上限约 40 MB，可自行调小） |
+| **打包验收（`pkgtest` profile 装 `dsh-douyin-comments-0.5.14.tgz` 后 headless 双跑）** | **PASS**（2026-10-07）：`dsh plugin --profile pkgtest add file:D:\dycopy\release\dsh-douyin-comments-v0.5.14\dsh-douyin-comments-0.5.14.tgz` → pkgtest **0.5.13 → 0.5.14**、`--dump-config` 认到 `dsh-douyin-comments`。① 正常 `max=30`（视频 `7660328050596371819`）→ **338 条 / 23s**、顶层 3 路、扩展 0.2.15、日志 `[+22.9s] 收工原因：done（phase=done，页面侧 338 条）`；② `timeoutMs=15000` → **207 条 / 15.7s**，工具文本给出「⚠️ 本轮没采完（超时/无进展/被取消），现场快照：`C:\Users\mo\.dsh\douyin-collector\failures\2026-10-07T06-32-44-7660328050596371819`」+「运行日志：`…\logs\collect-2026-10-07T06-32-29-31532.log`」，该现场四件套 `page.html 1208843 B / run.log 1469 B / screenshot.png 973074 B / status.json 2986 B`（`status.json` 里 `phase:"replies"`、`unique:218`、`savedCount:207`、`total:1971`、note「补采二级回复 20/38 个线程，已得 114 条（请求 23 次）」） |
 
 实测记录（2026-10-07，v0.5.13 + 扩展 0.2.15）：
 
@@ -658,21 +722,21 @@ node sync-extension.mjs D:\path\to\ext
 ## 打包 / 发布
 
 **正式分发走 GitHub Releases**（仓库里不放二进制包，`release/` 只在本地做打包输出）：
-<https://github.com/monagisa/douyin-ai-collector/releases> —— 当前版本 [v0.5.13](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.13)，
-附件有 `dsh-douyin-comments-v0.5.13.zip`（整目录单文件）、`dsh-douyin-comments-0.5.13.tgz`、
+<https://github.com/monagisa/douyin-ai-collector/releases> —— 当前版本 [v0.5.14](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.14)，
+附件有 `dsh-douyin-comments-v0.5.14.zip`（整目录单文件）、`dsh-douyin-comments-0.5.14.tgz`、
 `douyin-collector-extension-v0.2.15.zip`、`douyin-collector-mcp-v0.3.6.zip`、`USAGE-zh-CN.md`（中文说明，zip 里叫 `使用说明.md`）、`SHA256SUMS.txt`。
-更早一版是 [v0.5.12](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.12)（扩展 0.2.14 / MCP 0.3.5；v0.5.11 = 扩展 0.2.13 / MCP 0.3.4）。
+更早一版是 [v0.5.13](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.13)（扩展 0.2.15 / MCP 0.3.6；v0.5.14 只改插件，扩展与 MCP 未动）。
 
-本地发布物在 `D:\dycopy\release\dsh-douyin-comments-v0.5.13\`：
+本地发布物在 `D:\dycopy\release\dsh-douyin-comments-v0.5.14\`：
 
 | 文件 | 说明 |
 | --- | --- |
-| `dsh-douyin-comments-0.5.13.tgz` | 插件本体，14 个文件（`index.js`/`collector.mjs`/`cordis.patch.yml`/`README.md`/`package.json` + `client/client.js` + `extension/` 8 个） |
-| `douyin-collector-extension-v0.2.15.zip` | 单独的扩展 zip，顶层目录 `douyin-collector/`（8 个文件），供 `chrome://extensions` 手动「加载已解压的扩展程序」 |
+| `dsh-douyin-comments-0.5.14.tgz` | 插件本体，14 个文件（`index.js`/`collector.mjs`/`cordis.patch.yml`/`README.md`/`package.json` + `client/client.js` + `extension/` 8 个） |
+| `douyin-collector-extension-v0.2.15.zip` | 单独的扩展 zip，顶层目录 `douyin-collector/`（8 个文件），供 `chrome://extensions` 手动「加载已解压的扩展程序」（本版与 v0.5.13 同一个文件，可原样搬运） |
 | `使用说明.md` | 给收件人看的中文说明（安装/扫码/两处设置/参数/FAQ/macOS） |
 | `SHA256SUMS.txt` | 三个文件的 SHA256 |
 
-整包单文件 `dsh-douyin-comments-v0.5.13.zip`（把上面整目录打成一个单文件，方便直接发给人）**也放在同一个 `release\dsh-douyin-comments-v0.5.13\` 目录里**（v0.5.12 起改为随版本目录存放，不再放在 `release\` 根下）。
+整包单文件 `dsh-douyin-comments-v0.5.14.zip`（把上面整目录打成一个单文件，方便直接发给人）**也放在同一个 `release\dsh-douyin-comments-v0.5.14\` 目录里**（v0.5.12 起改为随版本目录存放，不再放在 `release\` 根下）。
 
 更早的草稿目录（`D:\dycopy\release\dsh-douyin-comments-v0.5.7\` 及以前）都保留作对照，不删。
 
@@ -680,11 +744,12 @@ node sync-extension.mjs D:\path\to\ext
 
 ```powershell
 cd D:\dycopy\dsh-douyin-comments
-npm pack --pack-destination D:\dycopy\release\dsh-douyin-comments-v0.5.13
+npm pack --pack-destination D:\dycopy\release\dsh-douyin-comments-v0.5.14
 
 # 扩展开 zip（顶层目录名必须是 douyin-collector；只装 8 个运行文件，别把 md 打进去）。
 # 用 .NET ZipFile 逐个 CreateEntry 造，避免 Compress-Archive 多套一层目录：
-$rel = 'D:\dycopy\release\dsh-douyin-comments-v0.5.13'
+# 本版扩展没动，可直接从 v0.5.13 目录复制同一个 douyin-collector-extension-v0.2.15.zip。
+$rel = 'D:\dycopy\release\dsh-douyin-comments-v0.5.14'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [IO.Compression.ZipFile]::Open("$rel\douyin-collector-extension-v0.2.15.zip", 'Create')
 Get-ChildItem D:\dycopy\douyin-collector -File |
@@ -696,7 +761,7 @@ $zip.Dispose()
 **注意**：清空发布目录时别用 `Remove-Item "$rel\*" -Recurse -Force` —— 它不进回收站，会把里面刚写好的
 `使用说明.md` 一起删掉（v0.5.2 打包时踩过，靠旧的外层 zip 解出来才恢复）。要保留的文件先复制到别处。
 
-打包验收（**全新 profile 从 tgz 装**，2026-10-05 对 v0.5.5 实测通过，日志 `_accept_tgz.txt`；v0.5.11 / v0.5.12 / v0.5.13 打包后按同样三步验收）：
+打包验收（**全新 profile 从 tgz 装**，2026-10-05 对 v0.5.5 实测通过，日志 `_accept_tgz.txt`；v0.5.11 / v0.5.12 / v0.5.13 / v0.5.14 打包后按同样三步验收）：
 
 ```powershell
 mkdir C:\Users\mo\.dsh\profiles\pkgtest     # package.json：dsh.profile.bundles = ["@deepseek-ai/dsh-base","@deepseek-ai/dsh-headless"]
@@ -707,13 +772,13 @@ dsh --profile pkgtest headless '用 douyin_comments 工具采集 https://www.dou
 ```
 
 > 上面那段是 **v0.5.5 的历史实测记录**（命令里的 `v0.5.5` 路径是当时的真实命令，刻意不改）。
-> v0.5.13 打包后照抄同样三步，只把包路径换成本版：
+> v0.5.14 打包后照抄同样三步，只把包路径换成本版：
 
 ```powershell
-dsh plugin --profile pkgtest add file:D:\dycopy\release\dsh-douyin-comments-v0.5.13\dsh-douyin-comments-0.5.13.tgz
+dsh plugin --profile pkgtest add file:D:\dycopy\release\dsh-douyin-comments-v0.5.14\dsh-douyin-comments-0.5.14.tgz
 dsh --profile pkgtest --dump-config | Select-String dsh-douyin-comments
 dsh --profile pkgtest headless '用 douyin_comments 工具采集 https://www.douyin.com/video/7660328050596371819 （max=30，先清空）。工具返回后只回复三行：ok=、count=、csvPath=。'
-# ⇒ 见下方「实测记录（2026-10-07，v0.5.13 + 扩展 0.2.15）」的打包验收行
+# ⇒ 见下方「实测记录（2026-10-07，v0.5.14 + 扩展 0.2.15）」的打包验收行（本版还额外跑了 timeoutMs=15000 的「没采完」对照，验证现场快照与日志路径）
 #   csv：D:\dycopy\douyin-comments\douyin-comments-<videoId>-<时间戳>.csv
 #   （headless 的 cwd 是 D:\dycopy，所以没传 outDir 时 CSV 落在工作目录的 douyin-comments\ 下）
 ```

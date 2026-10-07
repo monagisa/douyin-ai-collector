@@ -163,6 +163,14 @@ export const Config = Schema ? Schema.object({
   replyNoProgressSec: vol(Schema.number()
     .description('二级回复阶段多久没有新数据就收工（秒，默认 900 = 15 分钟）。退避重试期间条数本来就长时间不动，太小会导致回复采不到就收工')
     .default(900).min(60).max(7200).step(10)),
+  // 0.5.14：失败/没采完时自动留现场。以前只有一行「60s 没动静」，事后完全看不出当时页面停在哪、
+  // 扩展报了什么；现在每次运行都写日志，失败时另存截图 + 页面 HTML + 状态 JSON。
+  failSnapshot: vol(Schema.boolean()
+    .description('采集失败或没采完（超时/无进展/被取消）时，自动存一份现场：截图 + 页面 HTML + 状态 JSON + 日志副本，默认开')
+    .default(true)),
+  keepSnapshots: vol(Schema.number()
+    .description('失败现场最多保留几份（默认 20，更旧的自动删掉），避免磁盘越攒越多')
+    .default(20).min(1).max(500).step(1)),
 }).default({}) : undefined;
 
 /** 原始 config（保留 volatile 引用本身，而不是快照值）。 */
@@ -202,6 +210,9 @@ export function readSettings(config) {
     replyGlobalGapMs: Math.max(0, Math.min(2000, Math.round(readCfg(cfg, 'replyGlobalGapMs', Number(DEFAULTS.replyGlobalGapMs) > 0 ? Number(DEFAULTS.replyGlobalGapMs) : 0)))),
     replyThrottleSec: Math.max(10, Math.round(readCfg(cfg, 'replyThrottleSec', Number(DEFAULTS.replyThrottleSec) > 0 ? Number(DEFAULTS.replyThrottleSec) : 120))),
     replyNoProgressSec: Math.max(60, Math.round(readCfg(cfg, 'replyNoProgressSec', Number(DEFAULTS.replyNoProgressSec) > 0 ? Number(DEFAULTS.replyNoProgressSec) : 900))),
+    // v0.5.14：运行日志 + 失败现场快照
+    failSnapshot: readCfgBool(cfg, 'failSnapshot', DEFAULTS.failSnapshot !== false),
+    keepSnapshots: Math.max(1, Math.round(readCfg(cfg, 'keepSnapshots', Number(DEFAULTS.keepSnapshots) > 0 ? Number(DEFAULTS.keepSnapshots) : 20) || 20)),
   };
 }
 
@@ -233,7 +244,8 @@ export function apply(ctx, config = {}) {
       '若返回 phase=need-login，说明等不到登录：把返回的 error 原样转达给使用者，让他在那个（已保持打开的）浏览器窗口里用抖音 App 扫码，扫完再调用一次；不要重复空转，也不要另开窗口。',
       '只交付本次新采的数据：默认不清空扩展缓存（清空会毁掉断点续采进度），结束时按 cid 差集剔除旧数据；一条新数据都没有就返回失败并说明原因。要强制清空就把 clearBefore 设为 true。',
       'max 是「一级评论」的目标值：到量就**停止顶层扫描、继续把二级回复补完**再收工（0.5.11 起真正生效：下发给扩展 maxCount，旧版既不封一级、又会在回复阶段点暂停）。实际条数通常多于 max，返回值 count 是真实条数。',
-      '插件设置（DSH「设置 → 插件 → dsh-douyin-comments」）里可以改目标条数 max（默认 80000）、顶层列表路数 lanes（默认 3，错峰多路；1 = 单路）、总超时 timeoutMs、等扫码秒数 waitLoginSec、是否先清空 clearBefore、二级回复的并发 replyLanes、回复请求全局限速 replyGlobalGapMs（0 = 用扩展内置 250ms）、限流等待 replyThrottleSec、回复阶段无进展收工 replyNoProgressSec，改完立即生效；本次调用的工具参数只覆盖当次，不改设置。顶层列表 0.5.13 起改回**错峰多路**（每路错开 200ms）：2026-10-07 实测扫完 21 页单路 15.8s vs 错峰 7.7s、唯一条数一样多；同一瞬间发多路才会被服务端并成同一页，扩展发现后会自动降回单路并在面板说明。',
+      '插件设置（DSH「设置 → 插件 → dsh-douyin-comments」）里可以改目标条数 max（默认 80000）、顶层列表路数 lanes（默认 3，错峰多路；1 = 单路）、总超时 timeoutMs、等扫码秒数 waitLoginSec、是否先清空 clearBefore、二级回复的并发 replyLanes、回复请求全局限速 replyGlobalGapMs（0 = 用扩展内置 250ms）、限流等待 replyThrottleSec、回复阶段无进展收工 replyNoProgressSec、失败现场快照 failSnapshot（默认开）与保留份数 keepSnapshots（默认 20），改完立即生效；本次调用的工具参数只覆盖当次，不改设置。顶层列表 0.5.13 起改回**错峰多路**（每路错开 200ms）：2026-10-07 实测扫完 21 页单路 15.8s vs 错峰 7.7s、唯一条数一样多；同一瞬间发多路才会被服务端并成同一页，扩展发现后会自动降回单路并在面板说明。',
+      '每次调用都会写一份运行日志（~/.dsh/douyin-collector/logs/），返回值里的 logPath 指向它；失败或没采完（超时/无进展/被取消）时还会自动存失败现场（截图 + 页面 HTML + 状态 JSON + 日志副本）到 ~/.dsh/douyin-collector/failures/，路径在 snapshotDir 与 error 里。用户反馈「采不到/卡住」时，先让他把 logPath 或 snapshotDir 里的 status.json 发来。',
     ].join(' '),
     parameters: {
       url: {
@@ -249,6 +261,7 @@ export function apply(ctx, config = {}) {
       waitLoginSec: { type: 'integer', description: '检测到未登录时，等使用者在浏览器窗口里扫码登录的秒数（不传 = 用插件设置里的值，出厂默认 180；显式传 0 = 不等，直接返回 need-login 并把窗口留着）。' },
       outDir: { type: 'string', description: '输出目录（默认：当前会话工作区下的 douyin-comments/ 子目录；取不到工作区时退回 ~/.dsh/douyin-collector/out）。' },
       keepOpen: { type: 'boolean', description: '调试用：采完不关浏览器窗口（默认 false）。' },
+      failSnapshot: { type: 'boolean', description: '本次失败/没采完时是否存现场快照（截图 + 页面 HTML + 状态 JSON + 日志副本，默认用插件设置 true）；日志文件每次运行都会写。' },
     },
     output: {
       schema: {
@@ -269,9 +282,17 @@ export function apply(ctx, config = {}) {
           extensionVersion: { type: 'string', required: true, description: '安装进浏览器的扩展版本' },
           extensionInstalled: { type: 'boolean', required: true, description: '本次是否重新安装了扩展' },
           sample: { type: 'array', required: true, items: { type: 'string' }, description: '前 5 条预览' },
+          logPath: { type: 'string', required: true, description: '本次运行日志文件路径（每次调用都写，含全过程与收工原因；排查时先看它）' },
+          snapshotDir: { type: 'string', required: true, description: '失败现场目录（截图/页面 HTML/状态 JSON/日志副本）；成功且采完时为空串' },
         },
       },
       render(_args, value) {
+        // 错误文本里通常已经带了「运行日志 / 失败现场」的路径（collector 拼的）；
+        // 这里只在没有的时候补一行，避免同一路径打印两遍。
+        const errText = String(value.error || '');
+        const tail = [];
+        if (value.snapshotDir && !errText.includes(value.snapshotDir)) tail.push(`失败现场（截图 + 页面 HTML + 状态 JSON + 日志）：${value.snapshotDir}`);
+        if (value.logPath && !errText.includes(value.logPath)) tail.push(`运行日志：${value.logPath}`);
         if (value.ok === false && value.phase === 'need-login') {
           return [{
             type: 'text',
@@ -281,7 +302,7 @@ export function apply(ctx, config = {}) {
           }];
         }
         if (!value.ok) {
-          return [{ type: 'text', text: `采集未成功：${value.error}\n（扩展 v${value.extensionVersion}，phase=${value.phase}${value.note ? '，面板：' + value.note : ''}）` }];
+          return [{ type: 'text', text: `采集未成功：${value.error}\n（扩展 v${value.extensionVersion}，phase=${value.phase}${value.note ? '，面板：' + value.note : ''}）${tail.length ? '\n' + tail.join('\n') : ''}` }];
         }
         const head = `已采集 ${value.count} 条公开评论`
           + (value.title ? `（${value.title}）` : '')
@@ -289,6 +310,8 @@ export function apply(ctx, config = {}) {
           + (value.extensionInstalled ? '（本次自动安装）' : '');
         const lines = [head, `CSV：${value.csvPath}`, `JSON：${value.jsonPath}`];
         if (value.note) lines.push(`面板：${value.note}`);
+        if (value.snapshotDir) lines.push(`⚠️ 本轮没采完（超时/无进展/被取消），现场快照：${value.snapshotDir}`);
+        if (value.logPath) lines.push(`运行日志：${value.logPath}`);
         if (Array.isArray(value.sample) && value.sample.length > 0) {
           lines.push('样本：');
           value.sample.forEach((s, i) => lines.push(`${i + 1}. ${s}`));
@@ -318,6 +341,9 @@ export function apply(ctx, config = {}) {
       const replyGlobalGapMsUsed = settings.replyGlobalGapMs;
       const replyThrottleSecUsed = settings.replyThrottleSec;
       const replyNoProgressSecUsed = settings.replyNoProgressSec;
+      // 0.5.14：失败现场快照（工具参数只覆盖当次；日志文件不依赖这项，每次运行都写）
+      const failSnapshotUsed = args.failSnapshot === undefined ? settings.failSnapshot : args.failSnapshot === true;
+      const keepSnapshotsUsed = settings.keepSnapshots;
 
       const logs = [];
       const onLog = (line) => {
@@ -336,6 +362,7 @@ export function apply(ctx, config = {}) {
         + '，先清空=' + (clearBeforeUsed ? '是' : '否') + '，回复并发=' + replyLanesUsed
         + '，回复全局限速=' + (replyGlobalGapMsUsed > 0 ? replyGlobalGapMsUsed + 'ms' : '扩展内置 250ms')
         + '，回复限流等待=' + replyThrottleSecUsed + 's，回复无进展收工=' + replyNoProgressSecUsed + 's'
+        + '，失败现场快照=' + (failSnapshotUsed ? '开' : '关') + '（最多留 ' + keepSnapshotsUsed + ' 份）'
         + '（设置 → 插件 → dsh-douyin-comments 可改，改完立即生效）');
 
       let res;
@@ -352,6 +379,8 @@ export function apply(ctx, config = {}) {
           replyGlobalGapMs: replyGlobalGapMsUsed,
           replyThrottleSec: replyThrottleSecUsed,
           replyNoProgressSec: replyNoProgressSecUsed,
+          failSnapshot: failSnapshotUsed,
+          keepSnapshots: keepSnapshotsUsed,
           outDir,
           keep: args.keepOpen === true,
           onLog,
@@ -377,6 +406,8 @@ export function apply(ctx, config = {}) {
         extensionVersion: String(ext.version || ''),
         extensionInstalled: ext.copied === true,
         sample: Array.isArray(res.sample) ? res.sample.map((s) => String(s)) : [],
+        logPath: String(res.logPath || ''),
+        snapshotDir: String(res.snapshotDir || ''),
       };
     },
   }));

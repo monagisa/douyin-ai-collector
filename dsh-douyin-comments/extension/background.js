@@ -452,7 +452,7 @@ const KEY_EFFECTIVE_SETTINGS = 'dts_settings_effective';
 // 与 content.js 的硬上限保持一致（改这里要同步改那边）
 const SETTINGS_FIELDS = {
   maxCount: { min: 0, max: 1000000, desc: '目标条数，0=不限' },
-  lanes: { min: 1, max: 8, desc: '顶层并发路数' },
+  lanes: { min: 1, max: 8, desc: '顶层列表路数（v0.2.15 起生效：错峰多路，默认 3；1=单路）' },
   replyLanes: { min: 1, max: 8, desc: '二级回复并发路数' },
   replyGlobalGapMs: { min: 0, max: 2000, desc: '回复请求跨线程的全局最小间隔 ms（0=用扩展内置 250ms）' },
   replyGapMs: { min: 0, max: 60000, desc: '回复同线程请求间隔 ms' },

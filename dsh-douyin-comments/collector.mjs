@@ -103,6 +103,19 @@ export const DEFAULTS = {
    * 结果刚进回复阶段就被判定「没有新评论」直接收工 —— 回复永远是 0 条。
    */
   replyNoProgressSec: Number(process.env.DOUYIN_REPLY_NOPROGRESS_SEC || 0) || 900,
+  /**
+   * 采集失败（或超时/无进展收工）时，把现场存下来便于报障（默认开）：
+   * 截图 + 整页 HTML + 扩展状态 JSON + 这次运行的完整日志，落在 <home>/failures/<时间戳>-<videoId>/。
+   * 起因：2026-10-07 验收 A 轮只拿到 55 条、面板一句「没能自动找到评论入口」，
+   * 事后除了采集器的一行日志什么都查不了 —— 现场必须自动留下来。
+   * 关闭：DOUYIN_FAIL_SNAPSHOT=0（或插件设置里的 failSnapshot 关掉）。
+   */
+  failSnapshot: process.env.DOUYIN_FAIL_SNAPSHOT !== '0',
+  /**
+   * 失败快照最多保留几份（默认 20，按时间戳清最旧的）。
+   * 一份快照含整页 HTML + PNG（几百 KB 到几 MB），不清理迟早把磁盘塞满。
+   */
+  keepSnapshots: Number(process.env.DOUYIN_KEEP_SNAPSHOTS || 0) || 20,
 };
 
 /**
@@ -572,6 +585,145 @@ export function toCsv(comments) {
   return rows.join('\r\n');
 }
 
+// ---------- 运行日志与失败现场快照（0.5.14）----------
+// 报障的两件套：① 每次采集都有一份完整日志（不再只是工具输出里被截断的 60 行）；
+// ② 失败/超时时自动留现场（截图 + 整页 HTML + 扩展状态 + 日志副本），不用再让用户复现。
+
+/** 运行日志目录：<home>/logs */
+export function runLogDir(home = DEFAULTS.home) { return path.join(home, 'logs'); }
+
+/** 运行日志最多留几份（每次采集一份；小的文本文件，但别无限攒） */
+export const RUN_LOG_KEEP = 50;
+
+/** 失败现场快照根目录：<home>/failures */
+export function failureRootDir(home = DEFAULTS.home) { return path.join(home, 'failures'); }
+
+/**
+ * 只留最新的 keep 个条目（按名字排序；日志/快照的名字都带 ISO 时间戳前缀），返回删掉的个数。
+ * 删除前再核一次「待删路径确实在 dir 里面」——目录名来自 readdir，理论上不会越界，
+ * 但这是 rm -r，宁可笑一次也不冒险。
+ */
+export function pruneDir(dir, keep) {
+  const n = Math.max(1, Math.round(Number(keep) || 0) || 20);
+  let names;
+  try { names = fs.readdirSync(dir); } catch (e) { return 0; }
+  const victims = names.slice().sort().slice(0, Math.max(0, names.length - n));
+  const root = path.resolve(dir) + path.sep;
+  let removed = 0;
+  for (const v of victims) {
+    const p = path.resolve(path.join(dir, v));
+    if (!p.startsWith(root)) continue;
+    try { fs.rmSync(p, { recursive: true, force: true }); removed++; } catch (e) { /* 删不掉就算了 */ }
+  }
+  return removed;
+}
+
+/**
+ * 本次采集的运行日志：**边跑边 append**（进程被杀也留得下），同时留一份内存尾巴给失败快照用。
+ * 写日志失败绝不影响采集本身（磁盘满/只读时退回「只有内存尾巴」）。
+ */
+export function createRunLog({ home = DEFAULTS.home, header = [] } = {}) {
+  const t0 = Date.now();
+  let file = '';
+  try {
+    fs.mkdirSync(runLogDir(home), { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    file = path.join(runLogDir(home), `collect-${stamp}-${process.pid}.log`);
+  } catch (e) { file = ''; }
+  const lines = [];
+  const push = (s) => {
+    const line = `[+${((Date.now() - t0) / 1000).toFixed(1)}s] ${String(s)}`;
+    lines.push(line);
+    if (lines.length > 80) lines.shift();
+    if (file) { try { fs.appendFileSync(file, line + '\n', 'utf8'); } catch (e) { /* 忽略 */ } }
+  };
+  for (const h of header) push(h);
+  // 日志只留最近 50 份（一次采集一份，小文件，但别无限攒）
+  pruneDir(runLogDir(home), RUN_LOG_KEEP);
+  return {
+    path: file,
+    /** 最近 80 行（失败快照的 status.json 里带上，一眼能看到失败前发生了什么） */
+    ring: () => lines.slice(),
+    push,
+    /** 把整份日志复制进某个目录（失败快照要自带一份，一次性打包发给别人就行） */
+    copyTo: (targetDir) => {
+      if (!file || !targetDir) return '';
+      try {
+        const p = path.join(targetDir, 'run.log');
+        fs.copyFileSync(file, p);
+        return p;
+      } catch (e) { return ''; }
+    },
+  };
+}
+
+/** 失败结果里统一附上的「去哪儿看」提示。 */
+export function hints({ logPath = '', snapshotDir = '' } = {}) {
+  const bits = [];
+  if (logPath) bits.push('运行日志：' + logPath);
+  if (snapshotDir) bits.push('失败现场：' + snapshotDir);
+  return bits.length ? '（' + bits.join('；') + '）' : '';
+}
+
+/**
+ * 失败现场快照：截图 + 整页 HTML + 扩展状态 JSON + 运行日志副本。
+ * page 可能已经不可用（比如浏览器崩了），每一项各自兜错，能留几样留几样；
+ * status.json 优先写 —— 它是唯一一定写得成的东西。
+ */
+export async function captureFailureSnapshot({
+  home = DEFAULTS.home, page = null, reason = '', status = null, extra = {}, runLog = null, keep = 20,
+} = {}) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const dir = path.join(failureRootDir(home), `${stamp}-${String(extra.videoId || 'unknown').slice(0, 24)}`);
+  const out = { dir: '', files: [] };
+  try { fs.mkdirSync(dir, { recursive: true }); } catch (e) { return out; }
+  out.dir = dir;
+  const ok = (name) => out.files.push(name);
+
+  // 没有现成状态就自己从页面里抠一份（旧扩展没有 getStatus 也不怕，全部兜错）
+  let live = status || null;
+  if (!live && page) {
+    live = await page.evaluate(() => {
+      try {
+        const c = window.__DTS_COLLECTOR__;
+        const s = (c && c.getStatus) ? c.getStatus() : null;
+        const p = document.getElementById('dts-collector-panel');
+        return {
+          phase: s && s.phase, unique: s && s.unique, savedCount: s && s.savedCount,
+          note: s && s.note, error: s && s.error, bgOk: s && s.bgOk, bgErr: s && s.bgErr,
+          panel: p ? p.innerText.replace(/\s+/g, ' ') : '',
+        };
+      } catch (e) { return { evalError: String((e && e.message) || e) }; }
+    }).catch(() => null);
+  }
+  let pageUrl = '';
+  try { pageUrl = page && !page.isClosed() ? page.url() : ''; } catch (e) { pageUrl = ''; }
+
+  try {
+    fs.writeFileSync(path.join(dir, 'status.json'), JSON.stringify({
+      at: new Date().toISOString(), reason, pageUrl, status: live,
+      ...extra, runLogTail: runLog ? runLog.ring() : [],
+    }, null, 2), 'utf8');
+    ok('status.json');
+  } catch (e) { /* 忽略 */ }
+
+  if (page && !page.isClosed()) {
+    try {
+      await page.screenshot({ path: path.join(dir, 'screenshot.png'), timeout: 15000 });
+      ok('screenshot.png');
+    } catch (e) { /* 忽略 */ }
+    try {
+      const html = await page.content();
+      fs.writeFileSync(path.join(dir, 'page.html'), String(html || ''), 'utf8');
+      ok('page.html');
+    } catch (e) { /* 忽略 */ }
+  }
+
+  if (runLog && typeof runLog.copyTo === 'function' && runLog.copyTo(dir)) ok('run.log');
+  pruneDir(failureRootDir(home), keep);
+  return out;
+}
+
 // ---------- 主流程 ----------
 
 /**
@@ -589,9 +741,22 @@ export function toCsv(comments) {
  * @param {(s:string)=>void} [o.onLog]
  */
 export async function collectDouyinComments(o = {}) {
-  const log = o.onLog || (() => {});
+  const userLog = o.onLog || (() => {});
   const url = String(o.url || '').trim();
   if (!url) throw new Error('缺少 url');
+  // 本次运行的日志（<home>/logs/collect-<时间戳>-<pid>.log）：边跑边写，工具输出里那 60 行只是摘要
+  const runLog = createRunLog({
+    home: DEFAULTS.home,
+    header: [
+      '== douyin_comments 运行日志 ==',
+      'at=' + new Date().toISOString(),
+      'url=' + url,
+      'node=' + process.version + ' pid=' + process.pid,
+      'home=' + DEFAULTS.home,
+    ],
+  });
+  const log = (s) => { runLog.push(String(s)); userLog(s); };
+  log('运行日志：' + (runLog.path || '(写不进日志文件，只有内存尾巴)'));
   const max = Number(o.max) > 0 ? Number(o.max) : (Number(DEFAULTS.max) > 0 ? Number(DEFAULTS.max) : 80000);
   const wantReplies = o.replies !== false;
   const timeoutMs = Number(o.timeoutMs) > 0
@@ -621,10 +786,40 @@ export async function collectDouyinComments(o = {}) {
     ? Math.max(0, Number(DEFAULTS.waitLoginSec) || 0)
     : Math.max(0, Number(o.waitLoginSec) || 0);
   const outDir = o.outDir || DEFAULTS.outDir;
+  // 失败现场快照：默认开（插件设置 failSnapshot / 工具参数可关；关掉就没有截图和整页 HTML）
+  const failSnapshot = o.failSnapshot === undefined || o.failSnapshot === null || o.failSnapshot === ''
+    ? DEFAULTS.failSnapshot !== false
+    : (o.failSnapshot === true || o.failSnapshot === 'true' || o.failSnapshot === 1 || o.failSnapshot === '1');
+  const keepSnapshots = Math.max(1, Math.round(numOr(o.keepSnapshots, DEFAULTS.keepSnapshots) || 20));
   const started = Date.now();
   const deadline = started + timeoutMs;
   const rest = () => deadline - Date.now();
   const aborted = () => !!(o.signal && o.signal.aborted);
+
+  // ③ 之前的每一步都可能抛错（装扩展、找浏览器、接管旧窗口、磁盘错误），
+  //    所以 page/vid/target 先声明在 try 外面，catch 里才存得下现场。
+  let page = null;
+  let vid = '';
+  let target = url;
+  let endedBy = '';   // done / max-cap / top-done / stall / timeout / abort —— 收工原因写进日志与失败快照
+
+  /** 留失败现场（截图 + 整页 HTML + 扩展状态 + 日志副本）；返回快照目录（关了或没写成 = 空串） */
+  const snap = async (reason, statusVal = null, extra = {}) => {
+    if (!failSnapshot) return '';
+    const r = await captureFailureSnapshot({
+      home: DEFAULTS.home, page, reason, status: statusVal, runLog, keep: keepSnapshots,
+      extra: {
+        videoId: extra.videoId || vid || '', url: extra.url || target || url,
+        max, lanes, replies: wantReplies, timeoutMs, clearBefore, waitLoginSec,
+        ...extra,
+      },
+    }).catch((e) => ({ dir: '', files: [], error: String((e && e.message) || e) }));
+    if (r.dir) log('📸 失败现场已存：' + r.dir + '（' + (r.files || []).join('、') + '）');
+    else log('⚠ 失败现场没存下来（' + failureRootDir(DEFAULTS.home) + ' 不可写？）：' + (r.error || ''));
+    return r.dir || '';
+  };
+  /** 失败信息统一附上「去哪儿看现场」 */
+  const hint = (dir) => hints({ logPath: runLog.path, snapshotDir: dir });
 
   // ① 自动装扩展（插件自带副本 → 稳定目录）
   const ext = installExtension({ log });
@@ -709,7 +904,10 @@ export async function collectDouyinComments(o = {}) {
     releaseLock();
     // 本次新拉起的浏览器一并关掉（沿用的旧窗口不动——它可能开着用户的东西）
     if (ctx && !running) await ctx.close().catch(() => {});
-    throw e;
+    // 这一段的失败（装扩展 / 找浏览器 / 接管旧窗口 / 磁盘）也要查得到原因：
+    // 至少留下 status.json + 日志副本（这一段还没有页面，截不了图）。
+    const d = await snap('启动阶段失败：' + String((e && e.message) || e), null, { stage: 'pre-browser' });
+    throw new Error(String((e && e.message) || e) + hint(d));
   }
 
   let closed = false;
@@ -742,9 +940,9 @@ export async function collectDouyinComments(o = {}) {
       log('没用 cookies 文件，用浏览器 profile 里的登录态：' + profile);
     }
 
-    const page = running ? running.page : (ctx.pages()[0] || (await ctx.newPage()));
-    const vid = videoIdFromUrl(url);
-    const target = vid ? `https://www.douyin.com/video/${vid}` : url;
+    page = running ? running.page : (ctx.pages()[0] || (await ctx.newPage()));
+    vid = videoIdFromUrl(url);
+    target = vid ? `https://www.douyin.com/video/${vid}` : url;
     if (running) {
       // 沿用的窗口可能停在别的视频上：请求的不是同一个就导航过去，否则原地继续（保住登录态）。
       if (vid && !page.url().includes(`/video/${vid}`)) {
@@ -877,15 +1075,18 @@ export async function collectDouyinComments(o = {}) {
       }
       if (!gate.hasSession) {
         keepForLogin = true;   // 窗口留着，使用者还能接着扫
+        // 未登录这一条也存现场：能看出当时页面停在哪、登录闸门读到了什么信号
+        const snapDir = await snap('未登录（need-login）', null, { stage: 'login-gate', gate });
         const why = '未登录：没检测到抖音登录态，本次**没有开始采集**（未登录采集会被限流，数据残缺）。'
           + '请在已经打开的浏览器窗口里用抖音 App 扫码登录，然后**再调用一次** douyin_comments；'
-          + `登录态保存在 ${profile}，扫一次以后都不用再扫。`;
+          + `登录态保存在 ${profile}，扫一次以后都不用再扫。` + hint(snapDir);
         log('❌ ' + why);
         return {
           ok: false, error: why, videoId: vid || '', title: '', count: 0,
           csvPath: '', jsonPath: '', phase: 'need-login', note: '等待扫码登录',
           durationSec: Number(((Date.now() - started) / 1000).toFixed(1)),
           outDir, url: target, sample: [], extension: ext, paused: false,
+          logPath: runLog.path, snapshotDir: snapDir,
         };
       }
       log('已登录（检测到登录 cookie），继续采集');
@@ -1201,6 +1402,7 @@ export async function collectDouyinComments(o = {}) {
           log('已到目标 ' + max + ' 条（当前 ' + uTop + ' 条），点「暂停」…');
           await clickPanel(/暂停/);
           paused = true;
+          endedBy = 'max-cap';
           s = await settle();
           break;
         }
@@ -1209,13 +1411,15 @@ export async function collectDouyinComments(o = {}) {
         log('顶层评论采完（' + u + ' 条），按要求不等二级回复，点「暂停」…');
         await clickPanel(/暂停/);
         paused = true;
+        endedBy = 'top-done';
         s = await settle();
         break;
       }
-      if (s.phase === 'done') { log('采集完成：' + u + ' 条'); break; }
+      if (s.phase === 'done') { log('采集完成：' + u + ' 条'); endedBy = 'done'; break; }
 
       if (Date.now() - stallSince > 60000 && !['collecting', 'replies', 'waiting-sign'].includes(s.phase)) {
         log('60s 没动静（phase=' + s.phase + '），收工');
+        endedBy = 'stall';
         break;
       }
       // 无进展收工：二级回复阶段的退避重试本来就会让条数长时间不动，
@@ -1223,20 +1427,29 @@ export async function collectDouyinComments(o = {}) {
       const stallLimit = s.phase === 'replies' ? replyNoProgressMs : 120000;
       if (Date.now() - stallSince > stallLimit) {
         log(Math.round(stallLimit / 1000) + 's 没有新评论（phase=' + s.phase + '），收工（当前 ' + u + ' 条）');
+        endedBy = 'stall';
         break;
       }
       await sleep(1000);
     }
+    if (!endedBy) endedBy = aborted() ? 'abort' : (rest() <= 0 ? 'timeout' : 'unknown');
 
     if (aborted() && !paused) {
       log('调用方已取消，点「暂停」并落盘已采到的部分…');
       await clickPanel(/暂停/).catch(() => {});
       paused = true;
+      endedBy = 'abort';
       s = await settle(8000);
     }
 
     const finalStatus = await st();
     const videoId = finalStatus.videoId || finalStatus.liveVideoId || vid;
+    // 收工原因（done / max-cap / top-done / stall / timeout / abort）先落日志：
+    // 以前只有「60s 没动静」这种一行，事后完全看不出是超时还是被取消。
+    const incomplete = endedBy === 'timeout' || endedBy === 'stall' || endedBy === 'abort';
+    log('收工原因：' + endedBy + '（phase=' + finalStatus.phase + '，页面侧 ' + (finalStatus.unique || 0) + ' 条）');
+    // 没采完就收工（超时 / 无进展 / 被取消）＝ 数据可能残缺：留一份现场，返回值里带上目录
+    let snapDir = incomplete ? await snap('采集未完成：' + endedBy, finalStatus, { endedBy }) : '';
 
     // 扩展侧实际用了几路（content.js 每次开始采集都会把 dts_settings_effective 写回 storage）
     // v0.2.15：默认错峰多路；若扩展发现「两路返回同一页」会当轮降回 1，并把原因写进 lanesNote。
@@ -1258,14 +1471,16 @@ export async function collectDouyinComments(o = {}) {
     log('扩展里本轮落库 ' + all.length + ' 条，剔除开始前就存在的 ' + (all.length - fresh.length) + ' 条，交付 ' + fresh.length + ' 条');
 
     if (!sawSig) {
+      snapDir = snapDir || await snap('没拿到页面签名：' + (finalStatus.note || '评论区没能打开'), finalStatus, { endedBy });
       const why = '本轮从头到尾没拿到页面签名（' + (finalStatus.note || '评论区没能打开') + '），扩展没有真正发出评论请求；'
-        + '为避免把上一轮残留当成本轮结果，本次不返回数据';
+        + '为避免把上一轮残留当成本轮结果，本次不返回数据' + hint(snapDir);
       log('❌ ' + why);
       return {
         ok: false, error: why, videoId: videoId || '', title, count: 0,
         csvPath: '', jsonPath: '', phase: String(finalStatus.phase || ''),
         note: String(finalStatus.note || ''), durationSec: Number(((Date.now() - started) / 1000).toFixed(1)),
         outDir, url: target, sample: [], extension: ext, paused,
+        logPath: runLog.path, snapshotDir: snapDir,
       };
     }
 
@@ -1276,12 +1491,14 @@ export async function collectDouyinComments(o = {}) {
       const bgTold = finalStatus.bgOk === false
         || /Receiving end does not exist|Extension context invalidated/i.test(String(finalStatus.error || ''));
       const stalled = (pageSaw > 0 && all.length <= beforeCids.size) || bgTold;
-      const why = stalled
+      const whyHead = stalled
         ? '页面采到 ' + pageSaw + ' 条，但扩展存储没有增加（落库失败）：'
           + (finalStatus.error || finalStatus.note || '扩展后台没有响应')
           + (finalStatus.bgErr ? '（后台探针：' + finalStatus.bgErr + '）' : '')
           + '。这是扩展后台不可达，不是「视频没有新评论」——请重跑一次（下次会自动清扩展脚本缓存并重装扩展），或关掉浏览器窗口后重跑。'
         : '拿到了签名但没采到任何新评论（可能该视频评论已全部采过、或评论接口返回空）';
+      snapDir = snapDir || await snap('本轮没有新数据：' + whyHead.slice(0, 120), finalStatus, { endedBy, pageSaw, storedCount: all.length, beforeCount: beforeCids.size });
+      const why = whyHead + hint(snapDir);
       log('❌ 没有本轮新数据：' + why);
       return {
         ok: false, error: why, videoId: videoId || '', title, count: 0,
@@ -1290,6 +1507,7 @@ export async function collectDouyinComments(o = {}) {
         durationSec: Number(((Date.now() - started) / 1000).toFixed(1)),
         outDir, url: target, sample: [], extension: ext, paused,
         extLanes: effLanes ? Number(effLanes.lanes) || 0 : 0,
+        logPath: runLog.path, snapshotDir: snapDir,
       };
     }
 
@@ -1317,7 +1535,20 @@ export async function collectDouyinComments(o = {}) {
       extLanes: effLanes ? Number(effLanes.lanes) || 0 : 0,
       sample: fresh.slice(0, 5).map((c) => (c.user && c.user.nickname ? c.user.nickname + '：' : '') + cleanText(c.text)),
       extension: ext,
+      logPath: runLog.path, snapshotDir: snapDir,
     };
+  } catch (e) {
+    // 主流程里任何没被单独兜住的抛错（面板异常、CDP 断了、写盘失败…）：
+    // 先存现场再往上抛，错误信息里带上日志与快照路径。
+    const msg0 = String((e && e.message) || e);
+    // 页面在采集途中跳转/关闭（视频被删、跳登录、窗口被手动操作）时 CDP 会抛
+    // 「Execution context was destroyed」—— 这句话对用户毫无信息量，补一句人话。
+    const msg = /Execution context was destroyed|Target closed|Execution context/i.test(msg0)
+      ? msg0 + '（页面在采集途中跳转或关闭了：视频可能已被删、需要重新登录，或浏览器窗口被手动操作过）'
+      : msg0;
+    const d = await snap('主流程抛错：' + msg, null, { endedBy }).catch(() => '');
+    log('❌ 采集抛错：' + msg);
+    throw new Error(msg + hint(d));
   } finally {
     await close();
   }

@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { installExtension, findExtensionSource, DEFAULTS, loginGate, acquireRunLock, resolveOutDir, sessionWorkspaceCwd, clearStaleScriptCaches, readLaunchState, writeLaunchState, extensionIdFromPath } from './collector.mjs';
+import { installExtension, findExtensionSource, DEFAULTS, loginGate, acquireRunLock, resolveOutDir, sessionWorkspaceCwd, clearStaleScriptCaches, readLaunchState, writeLaunchState, extensionIdFromPath, runLogDir, failureRootDir, createRunLog, pruneDir, captureFailureSnapshot, hints, RUN_LOG_KEEP } from './collector.mjs';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const results = [];
@@ -38,7 +38,7 @@ check('工具名 = douyin_comments', def.name === 'douyin_comments', def.name);
 // 注意：宿主会把插件里的参数 DSL **编译**成 JSON Schema（properties + required[]），
 // 所以这里读的是编译后的形状，不是插件源码里的 `required: true`。
 const paramKeys = Object.keys((def.parameters && def.parameters.properties) || {});
-check('参数齐全', ['url', 'max', 'lanes', 'replies', 'clearBefore', 'timeoutMs', 'waitLoginSec', 'outDir', 'keepOpen'].every((k) => paramKeys.includes(k)), paramKeys.join(','));
+check('参数齐全', ['url', 'max', 'lanes', 'replies', 'clearBefore', 'timeoutMs', 'waitLoginSec', 'outDir', 'keepOpen', 'failSnapshot'].every((k) => paramKeys.includes(k)), paramKeys.join(','));
 const paramRequired = (def.parameters && def.parameters.required) || [];
 check('唯一必填 = url', JSON.stringify(paramRequired) === JSON.stringify(['url']), JSON.stringify(paramRequired));
 check('并发不安全', typeof def.isConcurrencySafe === 'function' && def.isConcurrencySafe() === false);
@@ -58,8 +58,11 @@ check('render 失败路径含原因', failText.includes('本轮从头到尾没�
 const okText = def.output.render({}, {
   ok: true, error: '', videoId: '123', title: '标题', count: 42, csvPath: 'a.csv', jsonPath: 'a.json',
   phase: 'paused', note: '', durationSec: 9.5, extensionVersion: '0.2.2', extensionInstalled: false, sample: ['甲：好看'], lanes: 4,
+  logPath: 'D:\\logs\\ok.log', snapshotDir: '',
 }).map((x) => x.text).join('\n');
 check('render 成功路径含条数与路径', okText.includes('42 条') && okText.includes('a.csv'), okText.split('\n')[0]);
+check('render 成功路径也给出运行日志路径（不采完时另给现场快照）',
+  okText.includes('D:\\logs\\ok.log') && !okText.includes('没采完'), okText.split('\n').slice(-1)[0]);
 
 // ---------- 2b) 登录闸门：没登录就不许开始采集 ----------
 const g1 = loginGate({ cookies: [{ name: 'sessionid', value: 'x' }], loginButton: false, mask: false });
@@ -98,8 +101,8 @@ const Cfg = mod.Config;
 check('导出了 Config（设置表单靠它生成）', !!Cfg && 'toJSON' in Cfg && Cfg.type === 'object',
   Cfg ? `type=${Cfg.type} keys=${Object.keys(Cfg.dict || {}).join(',')}` : '没有 Config');
 const cfgKeys = Object.keys((Cfg && Cfg.dict) || {});
-check('设置项含 max/lanes/timeoutMs/waitLoginSec/clearBefore/replyLanes/replyGlobalGapMs/replyThrottleSec/replyNoProgressSec',
-  ['max', 'lanes', 'timeoutMs', 'waitLoginSec', 'clearBefore', 'replyLanes', 'replyGlobalGapMs', 'replyThrottleSec', 'replyNoProgressSec']
+check('设置项含 max/lanes/timeoutMs/waitLoginSec/clearBefore/replyLanes/replyGlobalGapMs/replyThrottleSec/replyNoProgressSec/failSnapshot/keepSnapshots',
+  ['max', 'lanes', 'timeoutMs', 'waitLoginSec', 'clearBefore', 'replyLanes', 'replyGlobalGapMs', 'replyThrottleSec', 'replyNoProgressSec', 'failSnapshot', 'keepSnapshots']
     .every((k) => cfgKeys.includes(k)), cfgKeys.join(','));
 const volKeys = cfgKeys.filter((k) => Cfg.dict[k].meta && Cfg.dict[k].meta.volatile === true);
 check('设置项全部 volatile（改完立即生效、不用重启）', cfgKeys.length === volKeys.length && cfgKeys.length >= 9,
@@ -159,6 +162,95 @@ check('出厂默认不清空（保住扩展的断点续采）', DEFAULTS.clearBe
 check('回复类出厂默认：并发 0=跟扩展内置、限流 0=跟内置、无进展 900s',
   DEFAULTS.replyLanes === 0 && DEFAULTS.replyThrottleSec === 0 && DEFAULTS.replyNoProgressSec === 900,
   `${DEFAULTS.replyLanes} / ${DEFAULTS.replyThrottleSec} / ${DEFAULTS.replyNoProgressSec}`);
+
+// ---------- 2f) v0.5.14：运行日志 + 失败现场快照（离线可测，不开浏览器）----------
+check('设置项含 failSnapshot/keepSnapshots（表单能改）',
+  ['failSnapshot', 'keepSnapshots'].every((k) => cfgKeys.includes(k)), cfgKeys.join(','));
+check('出厂默认：快照开、最多留 20 份',
+  DEFAULTS.failSnapshot === true && DEFAULTS.keepSnapshots === 20, `${DEFAULTS.failSnapshot} / ${DEFAULTS.keepSnapshots}`);
+const s2 = mod.readSettings({ failSnapshot: vbox(false), keepSnapshots: vbox(5) });
+check('readSettings 现读 failSnapshot/keepSnapshots（volatile 生效、坏值兜底）',
+  s2.failSnapshot === false && s2.keepSnapshots === 5
+  && mod.readSettings({}).failSnapshot === DEFAULTS.failSnapshot
+  && mod.readSettings({ keepSnapshots: vbox(0) }).keepSnapshots === 20,
+  JSON.stringify(s2));
+check('工具参数含 failSnapshot（可单次覆盖设置）', paramKeys.includes('failSnapshot'), paramKeys.join(','));
+check('输出 schema 含 logPath/snapshotDir', schemaProps.includes('logPath') && schemaProps.includes('snapshotDir'), schemaProps.join(','));
+check('工具描述交代了用户报障时找 logPath/snapshotDir',
+  /logPath/.test(String(def.description || '')) && /snapshotDir/.test(String(def.description || '')), '');
+const partialText = def.output.render({}, {
+  ok: true, error: '', videoId: '123', title: '标题', count: 7, csvPath: 'a.csv', jsonPath: 'a.json',
+  phase: 'paused', note: '超时收工', durationSec: 30, extensionVersion: '0.2.15', extensionInstalled: false,
+  sample: [], lanes: 3, logPath: 'D:\\logs\\x.log', snapshotDir: 'D:\\failures\\x',
+}).map((x) => x.text).join('\n');
+check('render 成功但没采完时会指出现场快照', partialText.includes('D:\\failures\\x'), partialText.split('\n').slice(-1)[0]);
+check('hints() 拼出日志+现场两个路径、空值时返回空串',
+  hints({ logPath: 'L', snapshotDir: 'S' }).includes('L') && hints({ logPath: 'L', snapshotDir: 'S' }).includes('S')
+  && hints({}) === '', hints({ logPath: 'L', snapshotDir: 'S' }));
+
+const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'dts-verify-'));
+const rl = createRunLog({ home: tmpHome, header: ['== 测试日志 ==', 'url=x'] });
+rl.push('第一行');
+rl.push('第二行');
+const rlText = rl.path ? fs.readFileSync(rl.path, 'utf8') : '';
+check('运行日志：落在 <home>/logs/collect-*.log 且边跑边写盘（进程被杀也留得下）',
+  !!rl.path && path.dirname(rl.path) === runLogDir(tmpHome) && /第一行/.test(rlText) && /第二行/.test(rlText)
+  && /^\[\+\d+\.\d+s\]/m.test(rlText), rl.path ? path.basename(rl.path) : '(没写成)');
+check('运行日志：留内存尾巴给失败快照（ring()）',
+  rl.ring().length === 4 && /第二行/.test(rl.ring()[3]), rl.ring().slice(-1)[0]);
+
+const snapNoPage = await captureFailureSnapshot({ home: tmpHome, reason: '没有页面' });
+check('快照：页面已经不可用时也留得下（status.json 优先写）',
+  !!snapNoPage.dir && fs.existsSync(path.join(snapNoPage.dir, 'status.json'))
+  && !fs.existsSync(path.join(snapNoPage.dir, 'screenshot.png')), (snapNoPage.files || []).join(','));
+const jNoPage = JSON.parse(fs.readFileSync(path.join(snapNoPage.dir, 'status.json'), 'utf8'));
+check('快照 status.json 带 reason/status/extra/日志尾巴（失败前发生了什么）',
+  jNoPage.reason === '没有页面' && 'status' in jNoPage && Array.isArray(jNoPage.runLogTail),
+  Object.keys(jNoPage).join(','));
+const fakePage = {
+  isClosed: () => false,
+  url: () => 'https://www.douyin.com/video/123',
+  screenshot: async ({ path: p }) => { fs.writeFileSync(p, 'png'); },
+  content: async () => '<html>fake</html>',
+  evaluate: async () => ({ phase: 'collecting', unique: 7, note: '假状态', panel: '面板假文案' }),
+};
+const snapPage = await captureFailureSnapshot({
+  home: tmpHome, page: fakePage, reason: '采集未完成：stall',
+  extra: { videoId: '123', endedBy: 'stall' }, runLog: rl, keep: 20,
+});
+const jPage = JSON.parse(fs.readFileSync(path.join(snapPage.dir, 'status.json'), 'utf8'));
+check('快照：有页面时四件套齐（截图 + 页面 HTML + 状态 JSON + 日志副本）',
+  ['status.json', 'screenshot.png', 'page.html', 'run.log'].every((f) => fs.existsSync(path.join(snapPage.dir, f))),
+  (snapPage.files || []).join(','));
+check('快照目录名带 videoId，status.json 带收工原因/页面真实状态/面板文案',
+  /-123$/.test(snapPage.dir) && jPage.endedBy === 'stall' && jPage.status && jPage.status.phase === 'collecting'
+  && jPage.status.panel === '面板假文案', path.basename(snapPage.dir));
+check('快照自带日志副本（用户一次性打包发来就能查）',
+  fs.readFileSync(path.join(snapPage.dir, 'run.log'), 'utf8').includes('第二行'));
+
+const tmpPrune = path.join(tmpHome, 'prune-test');
+fs.mkdirSync(tmpPrune, { recursive: true });
+['2026-01-01', '2026-01-02', '2026-01-03', '2026-01-04'].forEach((d) => fs.mkdirSync(path.join(tmpPrune, d)));
+const pruned = pruneDir(tmpPrune, 2);
+check('pruneDir 只留最新 N 个（按名字排序，旧现场自动删）',
+  pruned === 2 && fs.readdirSync(tmpPrune).sort().join(',') === '2026-01-03,2026-01-04',
+  `removed=${pruned} left=${fs.readdirSync(tmpPrune).sort().join(',')}`);
+check('pruneDir 对不存在的目录不炸', pruneDir(path.join(tmpHome, '不存在'), 2) === 0);
+check('失败现场目录常量 = <home>/failures', failureRootDir(tmpHome) === path.join(tmpHome, 'failures'), failureRootDir(tmpHome));
+// 日志也要有上限：一次采集一份，攒多了照样占磁盘
+const logKeep = 60;
+for (let i = 0; i < logKeep; i++) {
+  fs.writeFileSync(path.join(runLogDir(tmpHome), `collect-1970-01-01T00-00-${String(i).padStart(2, '0')}-0.log`), 'x', 'utf8');
+}
+const rl2 = createRunLog({ home: tmpHome, header: ['新的一份'] });
+check(`运行日志只留最近 ${RUN_LOG_KEEP} 份（旧的自动删）`,
+  fs.readdirSync(runLogDir(tmpHome)).length === RUN_LOG_KEEP && fs.existsSync(rl2.path),
+  `${logKeep + 2} 份 → ${fs.readdirSync(runLogDir(tmpHome)).length} 份`);
+check('收工原因写进日志、抛错也带日志/现场路径（源码护栏）',
+  /log\('收工原因：' \+ endedBy/.test(fs.readFileSync(new URL('./collector.mjs', import.meta.url), 'utf8'))
+  && /const d = await snap\('主流程抛错：'/.test(fs.readFileSync(new URL('./collector.mjs', import.meta.url), 'utf8'))
+  && /rest\(\) <= 0 \? 'timeout' : 'unknown'/.test(fs.readFileSync(new URL('./collector.mjs', import.meta.url), 'utf8')), '');
+fs.rmSync(tmpHome, { recursive: true, force: true });
 
 // ---------- 2e) 报告问题二：三个采集侧缺陷（Mac 报告 /Users/ze 的 runs） ----------
 const collSrc = fs.readFileSync(new URL('./collector.mjs', import.meta.url), 'utf8');
@@ -783,8 +875,8 @@ check('插件设置表单/执行链都带上 replyGlobalGapMs（0 = 用扩展内
 check('插件描述如实写「到量只停顶层扫描、继续补二级回复」（0.5.11 起）',
   /到量就\*\*停止顶层扫描、继续把二级回复补完\*\*/.test(String(def.description || ''))
   && /0\.5\.11 起真正生效/.test(String(def.description || '')));
-check('插件 package.json / 扩展 manifest 版本对得上（0.5.13 / 0.2.15）',
-  manifest.version === '0.5.13' && targetManifest.version === '0.2.15',
+check('插件 package.json / 扩展 manifest 版本对得上（0.5.14 / 0.2.15）',
+  manifest.version === '0.5.14' && targetManifest.version === '0.2.15',
   `plugin=${manifest.version} ext=${targetManifest.version}`);
 // ---------- 3d) v0.5.12 / 扩展 0.2.14：「假限流」三处修正 ----------
 // 用户 2026-10-07 报「我怀疑这个限速是假限速，有时候我自己点就可以拿到」，随后又猜
