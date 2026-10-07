@@ -553,7 +553,7 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
 **为什么值得做**：实测差额的 76% 就是这些回复；剩下 ~24% 是已删除评论
 （`folded_comment_count = 0`，接口层没有「折叠评论」这回事），任何接口都拿不到。
 
-### 3.9 运行时设置（`dts_settings` v0.2.2；v0.2.3 扩充二级回复档位；v0.2.4 加入面板设置 `dts_user_settings`；v0.2.5 入口改齿轮 `⚙`；**v0.2.12 起顶层列表固定单路，`lanes` 已停用、仅保留兼容**）
+### 3.9 运行时设置（`dts_settings` v0.2.2；v0.2.3 扩充二级回复档位；v0.2.4 加入面板设置 `dts_user_settings`；v0.2.5 入口改齿轮 `⚙`；v0.2.12~v0.2.14 顶层固定单路；**v0.2.15 起顶层改回错峰多路，`lanes` 重新生效**）
 
 外部（DSH 插件 `dsh-douyin-comments`、脚本、DevTools）可以在 `chrome.storage.local` 里写：
 
@@ -561,7 +561,7 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
 |---|---|
 | `dts_settings` | 外部写入的运行时设置；`startLoop()` **每轮开头**读一次 |
 | `dts_user_settings` | v0.2.4：**面板设置**（v0.2.5 起入口是标题栏齿轮 `⚙`）写入的用户设置；优先级高于 `dts_settings`（`chrome.storage.local.remove('dts_user_settings')` 即恢复插件/内置值） |
-| `dts_settings_effective` | 本轮**实际**用的值 + 时间戳（`{lanes, lanesWanted, lanesNote, maxCount, replyLanes, replyGlobalGapMs, replyGapMs, replyThrottleMaxWaitMs, replyWaveBudgetMs, replyParkPlanMs, from: 'panel'\|'plugin', at}`），回写给调用方核对。**v0.2.12 起**：`lanes` **恒为 1**（顶层列表固定单路）、`lanesWanted` 是本次请求的原始值（1~8，没写就是内置 4）、`lanesNote` 是停用说明字符串（形如「顶层列表固定单路：多路并发会被服务端合并成同一响应，lanes 已停用」）。**v0.2.13 起**：`maxCount` 是真正下发的目标条数，DSH 插件据此判断「扩展是否自己管住了 max」（读不到就退回插件侧点暂停的兜底逻辑）。**v0.2.14 起**：`replyWaveBudgetMs`（单波预算，12 秒）与 `replyParkPlanMs`（波间停顿计划 `15/30/60`）也回写，排查「到底打了几波、每波多久」时一眼可见 |
+| `dts_settings_effective` | 本轮**实际**用的值 + 时间戳（`{lanes, lanesWanted, lanesNote, maxCount, replyLanes, replyGlobalGapMs, replyGapMs, replyThrottleMaxWaitMs, replyWaveBudgetMs, replyParkPlanMs, from: 'panel'\|'plugin', at}`），回写给调用方核对。**v0.2.15 起**：`lanes` 是**本轮实际在用的路数**（正常 = 设置值，检测到「两路返回同一页」会就地改成 `1`）、`lanesWanted` 是设置/请求的原始值、`lanesNote` 平时是空串、被降路时写明原因（形如「第 N 页前后发现两路返回了同一页（服务端合并并发请求），已自动降回单路…」，排查的人一眼能看出这一轮是不是被降过路）。**v0.2.13 起**：`maxCount` 是真正下发的目标条数，DSH 插件据此判断「扩展是否自己管住了 max」（读不到就退回插件侧点暂停的兜底逻辑）。**v0.2.14 起**：`replyWaveBudgetMs`（单波预算，12 秒）与 `replyParkPlanMs`（波间停顿计划 `15/30/60`）也回写，排查「到底打了几波、每波多久」时一眼可见 |
 
 **取值优先级（v0.2.4 起）**：面板 `dts_user_settings` > 外部 `dts_settings` > 内置常量。逐字段判断，
 面板里没填的字段继续用外部值 / 内置值（`loadRuntimeSettings()` 里对每个 key 先看面板那份、再看插件那份）。
@@ -572,7 +572,7 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
 | 字段 | 含义 | 内置默认 | 允许范围 |
 |---|---|---|---|
 | `maxCount` | v0.2.4：**一级评论**去重后达到多少条就**停止顶层扫描**（`0` = 不限）；已采到的线程二级回复仍补完（v0.2.13 起；v0.2.4~v0.2.12 实际会连回复一起丢，见下） | `0` | `0..MAX_COUNT_HARD_MAX (= 1000000)` |
-| `lanes` | 顶层列表采集的并发路数（v0.2.2）——**v0.2.12 起已停用**：顶层列表固定单路，该键仍可读写、仍会下发给扩展，但**不再影响采集**（仅保留兼容；详见本节后面的实测原因） | `MAX_LANES = 4`（已不再被使用） | `1..LANES_HARD_MAX (= 8)`（钳位保留兼容） |
+| `lanes` | 顶层列表的路数（v0.2.2；**v0.2.15 起重新生效**）：一轮同时（错峰 200ms）推进几路分页请求，`1` = 老的单路串行。同一瞬间发多路会被服务端并成同一页（静默少采），所以扩展发现两路同页会自动降回 1 并写进 `lanesNote` | `MAX_LANES = 3` | `1..LANES_HARD_MAX (= 8)` |
 | `replyLanes` | 二级回复的并发线程数（v0.2.3）；**v0.2.13 起撞限流会自动降 1 路**（下限 1） | `REPLY_LANES = 4` | `1..8` |
 | `replyGapMs` | 同一回复线程两页之间的间隔（v0.2.3） | `REPLY_GAP_MS = 600` | `0..60000` |
 | `replyGlobalGapMs` | v0.2.13：**跨线程**的全局最小间隔（真正只有这一个 `await replyGate()` 闸门，取到线程就发的老行为没了） | `REPLY_GLOBAL_GAP_MS = 250` | `0..2000`（**`0` = 用内置 250ms**，v0.2.14 起真的如此——v0.2.13 及更早把 `0` 当成「关掉闸门」，与 DSH 设置页/MCP/本文档的说法相反，AI 一条 `ai_set_settings{replyGlobalGapMs:0}` 就能静默关掉限速；撞限流时闸门自动翻倍，上限 `REPLY_GLOBAL_GAP_MAX_MS = 1000`） |
@@ -582,8 +582,8 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
 面板设置（v0.2.4 文字按钮 → v0.2.5 标题栏齿轮 `⚙`）暴露的是其中 5 项（`maxCount`（标签 `目标条数 max`） /
 `lanes` / `replyLanes` / `replyGapMs` / `replyThrottleSec`＝秒，存盘时换算成 `replyThrottleMaxWaitMs`），
 存进 `dts_user_settings`；`replyGlobalGapMs` 与 `replyWarmupMs` **不在面板里**（面板尽量少占高度），
-要改走 DSH 插件设置表 / MCP / 直接写 `dts_settings`。其中 `lanes` 这一项**自 v0.2.12 起已停用**（顶层列表固定单路）：界面里仍能改、
-也仍会存进 `dts_user_settings`，但采集不再读它，仅保留兼容。
+要改走 DSH 插件设置表 / MCP / 直接写 `dts_settings`。其中 `lanes` 自 **v0.2.15 起重新生效**（标签「顶层并发路数」，
+摘要里写成「顶层 3 路错峰（200ms）」；`1` = 单路）：面板保存时若 `RS.lanes > 1` 就按设置值用错峰多路。
 `replyThrottleSec` 自 **v0.2.14 起语义是「本轮总共最多等多久」**（不是「一波最多等多久」）：
 单波撞满 `REPLY_WAVE_BUDGET_MS = 12 秒` 后会按 `REPLY_PARK_PLAN_MS` 停 15/30/60 秒再来一波，
 直到总窗口用完；面板 title 写明「内置 120 秒；设 10 = 老行为」。面板保存时重建 `RS`，
@@ -603,18 +603,31 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
   放宽可以，**不允许调得比原来更早放弃**（「限流十秒不行就停」是 v0.1.8 的策略；v0.2.14 的真机证据
   表明那个策略会漏采，但用户若明确想要老行为，面板「限流等待 s」设 10 即回到它）。
   另外 `replyGlobalGapMs` 的 `0` **不再**解析成「关闸门」，而是「用内置 250ms」。
-- **v0.2.12 起顶层列表固定单路（见 3.2）**：列表扫描一次只发一个 `requestReplay(c, COUNT)`，用服务端返回的
-  `next` 推进；`lanesWanted` 不再参与 `Math.min(...)`，只用于回写 `dts_settings_effective.lanesWanted`。
-  原因：真机实测（2026-10-06，视频 `7692405235813272867`）同一个签名在同一时刻发多路分页请求会被服务端
-  **合并成同一响应**（4 路 5 轮只有 **492 条**、且 **0 个失败请求**；单路串行 18 步 **714~744 条**；
-  每路**错峰 200ms** 才恢复正常，4 页 = 200 条唯一），并发越高反而越少采。
-- 默认行为与老版本**在数据上不再一致**：没有 `dts_settings` 时顶层同样是单路（等价于旧 `MAX_LANES = 1`），
-  `REPLY_LANES = 4` / `REPLY_GAP_MS = 600` / `REPLY_THROTTLE_MAX_WAIT_MS = 120s`（v0.2.14 起；
-  v0.2.3~v0.2.13 是 10s）不变
-  （扩展单独使用时也固定单路）。代价是慢：同一视频 4 路 **20.1s** → 单路 **70.4s**，
-  换来 **768 → 945 条**（一级 586 → 753、二级 182 → 192）。
-- 单一事实来源仍是 `content.js`；`MAX_LANES` 常量保留但**已不再被使用**（`LANES_HARD_MAX` 只用于
-  `clampSettings()` 钳位以兼容老调用方），`RS` 只是兜底。
+- **v0.2.15 起顶层列表改回「错峰多路」（`lanes: 1` = 老单路）**：一轮里按 `laneBudget` 组出
+  `cursors = [cursor, cursor + COUNT, cursor + 2*COUNT, …]`，**逐路发出、路与路之间
+  `await sleep(LANE_STAGGER_MS + Math.round(Math.random()*60))`**（`LANE_STAGGER_MS = 200`），
+  再 `Promise.all` 收拢；`cursor` 取各路返回的 `next` 最大值推进。
+  **关键是「错峰」而不是「并发」**：2026-10-07 真机复现（临时探针 `_lanes_probe.mjs`）——同一签名下
+  **同时**发 4 个 cursor（0/50/100/150）：Σ返回 200 条、**按 cid 去重后只有 56 条**，
+  `c50/c100/c150` 三页逐条完全相同、而 `next` 字段还是对的（50/100/150/200）⇒ **静默少给**；
+  改成**错峰 200ms** 就恢复正常（唯一 200/200），错峰 500ms 也一样（唯一 200/200）。
+  扫完整个列表（21 页、Σ返回 1021 条）：**单路（含 400ms 礼貌间隔）15.79s / 唯一 907** vs
+  **错峰 4 路 7.72s / 唯一 912** ⇒ 2.04× 提速、数据一样多（多 5 条是那半小时里新评论在变）。
+  内置默认 `MAX_LANES = 3`（错峰 3 路）。
+- **降路兜底（v0.2.15）**：同一轮里若两路返回**逐条相同**的页（`mergedLanes`），当轮就把 `laneBudget`
+  降回 1，并把原因写进 `dts_settings_effective.lanesNote`（面板同步提示）——宁可慢，也不再静默少采。
+  另外多路时「某路越界返回空页」**不算触底**（`anyLaneHasMore` 修正 `laneEnd`）；`laneShort`
+  （某路明显不满一页）也把 `laneBudget` 降回 1，靠近列表末端时自然收回单路。
+- 单路礼貌间隔：`MIN_INTERVAL_MS` 400ms → **150ms**（v0.2.15）。实测中位往返 344ms，那 400ms 有一半
+  是纯等；21 页的单路从 ~15.8s 降到 ~10s。
+- 默认行为（扩展单独使用时也一样）：`MAX_LANES = 3`（错峰 200ms）、`REPLY_LANES = 4` /
+  `REPLY_GAP_MS = 600` / `REPLY_THROTTLE_MAX_WAIT_MS = 120s`（v0.2.14 起；v0.2.3~v0.2.13 是 10s）。
+- 历史：**v0.2.12~v0.2.14 顶层固定单路**（`var lanes = 1; var cursors = [cursor];`）——2026-10-06 只测了
+  「同时发」这一种形态（4 路 5 轮只有 **492 条**且 **0 个失败请求**；单路串行 18 步 **714~744 条**；
+  每路错峰 200ms 才恢复正常），于是把触发条件过度概括成「并发一定少采」。v0.2.15 的探针把它缩到
+  「同一签名 + ~200ms 窗口内同时发」。
+- 单一事实来源仍是 `content.js`；`LANES_HARD_MAX = 8` 只用于 `clampSettings()` 钳位（兼容老调用方），
+  `RS` 只是兜底。
 - 服务端列表本身也有上限：`cursor=850` 时只回 8 条且 `has_more=0`，`cursor≥900` 回字面量 `null`
   （上述视频列表接口最多约 **850 条**，服务端 `total=1709` 里的差额是二级回复 + 已删除/被过滤评论）。
 - 实战提示（2026-10-05 macOS 报告的成因之一）：刚轰完列表接口时回复接口容易被整段拒
@@ -973,7 +986,7 @@ Hub 对 **MCP 客户端** 的内部接口（同进程 in-memory / 可选 localho
 | `ai_export` | `videoId?`, `all?`, `format=csv\|json` | 文件名/路径；`all:true`（需扩展 ≥ 0.2.11）不传 `videoId` 也能导出本地全部视频合成一份（CSV 末列 `video_id`、回包带 `videoCount`）；两者都不传时 MCP 自己就拒（`videoId 必填`，不发桥命令），旧扩展回 `MISSING_VIDEO_ID` 时补一句「扩展可能太旧（< 0.2.11）」。回包已把 Hub 的 `result` **拍平**（`scope / videoCount / count / topLevelCount / replyCount / format / filename / bytes / path`） |
 | `ai_clear_storage` | `videoId?` | 清空（可选） |
 
-**设置参数**（`ai_start_collect` / `ai_set_settings` 通用）: `max`（AI 别名，等价面板齿轮的「目标条数 max」）、`maxCount`、`lanes`、`replyLanes`、`replyGapMs`、`replyWarmupMs`、`replyThrottleMaxWaitMs`。`max` 与 `maxCount` 同时给时以 `max` 为准。其中 `lanes` **自 v0.2.12 起已停用**（顶层列表固定单路，多路并发会被服务端合并成同一响应）：传了不报错、也会写进 `dts_settings`，但采集不再用它，只在 `dts_settings_effective.lanesWanted` / `lanesNote` 里回显。
+**设置参数**（`ai_start_collect` / `ai_set_settings` 通用）: `max`（AI 别名，等价面板齿轮的「目标条数 max」）、`maxCount`、`lanes`、`replyLanes`、`replyGapMs`、`replyWarmupMs`、`replyThrottleMaxWaitMs`。`max` 与 `maxCount` 同时给时以 `max` 为准。其中 `lanes` 是**顶层列表路数**：**v0.2.15 起重新生效**（默认 3 路错峰 200ms，`1` = 老单路；v0.2.12~v0.2.14 期间被固定为单路），实际用的值在 `dts_settings_effective.lanes` 里回显，被自动降路时原因写在 `lanesNote`。
 
 ### 7.9 设置（AI 可调）与优先级
 
@@ -981,7 +994,7 @@ Hub 对 **MCP 客户端** 的内部接口（同进程 in-memory / 可选 localho
 **内置常量 < `dts_settings`（external，AI 经桥下发） < `dts_user_settings`（panel，面板齿轮里保存的值）**。
 
 - `get_settings` / `ai_get_settings` 返回 `{ external, user, effective, precedence, limits }`；`effective` = 上次采集实际生效的 `dts_settings_effective`（含 `from: 'panel'|'plugin'`）。
-- `set_settings` / `ai_set_settings` 只写一层；写值都过 `clampSettings()` 钳位（`lanes 1..8`（v0.2.12 起已停用，钳位只为兼容老调用方）、`maxCount 0..1000000`、`replyLanes 1..8`、`replyGapMs 0..60000`、`replyWarmupMs 0..600000`、`replyThrottleMaxWaitMs 10000..600000`），未知键与非法值在回包 `unknown` 里列出。
+- `set_settings` / `ai_set_settings` 只写一层；写值都过 `clampSettings()` 钳位（`lanes 1..8`（v0.2.15 起生效）、`maxCount 0..1000000`、`replyLanes 1..8`、`replyGapMs 0..60000`、`replyWarmupMs 0..600000`、`replyThrottleMaxWaitMs 10000..600000`），未知键与非法值在回包 `unknown` 里列出。
 - 想「一键恢复默认」用 `clear: 'all'`（同时删两层的键）；面板里按「恢复默认」只删 `dts_user_settings`。
 
 

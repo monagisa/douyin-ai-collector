@@ -28,7 +28,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-const VERSION = '0.3.5';
+const VERSION = '0.3.6';
 const HUB_NAME = 'douyin-collector-mcp';
 
 const argv = process.argv.slice(2);
@@ -498,7 +498,7 @@ function createHubServer() {
 const SETTINGS_PROPS = {
   max: { type: 'number', description: '目标条数上限（一级评论），0=不限；等价面板齿轮里的「目标条数 max」。扩展 0.2.13 起真正生效：到量只停顶层扫描、二级回复仍补完，实际条数通常多于它' },
   maxCount: { type: 'number', description: '同 max（扩展里的原始字段名），两者都传时以 max 为准' },
-  lanes: { type: 'number', description: '【已停用】顶层扫描并发路数。扩展 0.2.12 起顶层列表固定单路：实测同一签名下同时发多个分页请求会被服务端合并成同一页，4 路并发反而少采约 30%。此键保留兼容（仍可下发、仍会落进 dts_settings_effective），但不影响采集' },
+  lanes: { type: 'number', description: '顶层列表路数（默认 3，错峰多路：每路错开 200ms；1 = 单路）。扩展 0.2.15 起真正生效——2026-10-07 实测扫完 21 页单路 15.8s vs 错峰 7.7s、唯一条数一样多；同时发（不错峰）才会被服务端并成同一页，扩展发现后会自动降回单路并在 lanesNote 里说明' },
   replyLanes: { type: 'number', description: '二级回复并发路数 1~8（默认 4）。扩展 0.2.13 起回复请求有**全局节流**（replyGlobalGapMs，默认 250ms ≈ ≤4 次/秒，**与路数无关**）'
     + '并在撞限流时自动降 1 路，所以这里主要决定「同时几条线程在飞」；0.2.14 起被拒也不再「十秒判终局」（见 replyThrottleMaxWaitMs），'
     + '但早期实测「4 路各自零间隔发 ≈16~20 次/秒」会撞成片拒绝（EMPTY_BODY，惩罚态可持续数分钟），建议 1~2' },

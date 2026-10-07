@@ -55,11 +55,14 @@ export const DEFAULTS = {
    */
   max: Number(process.env.DOUYIN_MAX || 0) || 80000,
   /**
-   * 并发路数：一轮同时发几路分页重放请求（每路一个 cursor）。4 = 实测甜点
-   * （1 路 698ms / 2 路 561ms / 4 路 366ms / 6 路 515ms：6 路服务端开始排队，更慢且有风控风险）。
-   * 运行时写进扩展的 chrome.storage.local.dts_settings，扩展侧还会再钳到 1..8。
+   * 顶层列表路数：错峰多路推进（每路一个 cursor，路与路之间错开 200ms）。
+   * v0.2.15 起真正生效，内置默认 3（`lanes=1` 就是老的单路串行）。
+   * 2026-10-07 真机实测（视频 7692405235813272867，扫完 21 页）：单路含 400ms 间隔 15.8s、
+   * 3~4 路错峰 200ms 7.7s（2.04×），唯一 cid 907 vs 912（一样多）。同时发（不错峰）会被
+   * 服务端并成同一页：4 个 cursor Σ200 条只去重出 56 条，next 字段还是对的（静默少采）。
+   * 扩展侧一旦发现两路拿到同一页会自动降回单路并在面板说明；这里仍会钳到 1..8。
    */
-  lanes: Number(process.env.DOUYIN_LANES || 0) || 1,   // 顶层列表已固定单路（扩展 0.2.12 起），此项仅保留兼容
+  lanes: Number(process.env.DOUYIN_LANES || 0) || 3,   // 顶层错峰多路（v0.2.15 起生效，1 = 老单路）
   /**
    * 单次采集总超时（工具参数 timeoutMs 优先）。默认 30 分钟：max 默认 8 万，
    * 原先的 4 分钟根本采不到，会让人误以为已经「采到底」。
@@ -578,7 +581,7 @@ export function toCsv(comments) {
  * @param {number} [o.max]      目标条数上限（默认 DEFAULTS.max = 80000，到量即暂停）
  * @param {boolean} [o.replies] 是否等二级回复补采（默认 true）
  * @param {number} [o.timeoutMs] 总超时（默认 DEFAULTS.timeoutMs = 1800000）
- * @param {number} [o.lanes]    并发路数（已停用：扩展 0.2.12 起顶层列表固定单路；这里仍会写进扩展设置，但不影响采集）
+ * @param {number} [o.lanes]    顶层列表路数（v0.2.15 起生效：错峰多路，默认 3，1 = 老单路；会写进扩展 dts_settings.lanes）
  * @param {number} [o.waitLoginSec] 检测到未登录时等使用者扫码的秒数（不传用 DEFAULTS.waitLoginSec，默认 180；显式 0 = 不等）
  * @param {string} [o.outDir]   输出目录
  * @param {boolean} [o.keep]    采完不关浏览器（调试用）
@@ -594,9 +597,9 @@ export async function collectDouyinComments(o = {}) {
   const timeoutMs = Number(o.timeoutMs) > 0
     ? Number(o.timeoutMs)
     : (Number(DEFAULTS.timeoutMs) > 0 ? Number(DEFAULTS.timeoutMs) : 1800000);
-  // 并发路数：工具参数 > 插件设置（DEFAULTS.lanes）> 1；已停用（顶层固定单路），保留只为兼容老配置
+  // 顶层路数：工具参数 > 插件设置（DEFAULTS.lanes）> 3；v0.2.15 起真正生效（错峰多路，1 = 老单路）
   const lanes = Math.max(1, Math.min(8, Math.round(
-    Number(o.lanes) > 0 ? Number(o.lanes) : (Number(DEFAULTS.lanes) > 0 ? Number(DEFAULTS.lanes) : 1),
+    Number(o.lanes) > 0 ? Number(o.lanes) : (Number(DEFAULTS.lanes) > 0 ? Number(DEFAULTS.lanes) : 3),
   )));
   // 采集前清空扩展缓存：默认不清（清空会毁掉扩展的断点续采进度）
   const clearBefore = o.clearBefore === undefined ? !!DEFAULTS.clearBefore : !!o.clearBefore;
@@ -1236,12 +1239,15 @@ export async function collectDouyinComments(o = {}) {
     const videoId = finalStatus.videoId || finalStatus.liveVideoId || vid;
 
     // 扩展侧实际用了几路（content.js 每次开始采集都会把 dts_settings_effective 写回 storage）
-    // v0.2.12 起顶层列表固定单路：lanes 恒为 1，请求里的路数落在 lanesWanted，已停用。
+    // v0.2.15：默认错峰多路；若扩展发现「两路返回同一页」会当轮降回 1，并把原因写进 lanesNote。
     const effLanes = await readEffectiveLanes();
     if (effLanes) {
+      const actual = Number(effLanes.lanes) || 0;
       const wanted = Number(effLanes.lanesWanted) > 0 ? Number(effLanes.lanesWanted) : lanes;
-      log('顶层列表实际路数：' + effLanes.lanes
-        + '（本次请求 ' + lanes + ' 路' + (wanted > 1 ? '；并发路数设置已停用，扩展按单路采' : '') + '）');
+      log('顶层列表实际路数：' + actual
+        + '（本次请求 ' + wanted + ' 路'
+        + (effLanes.lanesNote ? '；' + effLanes.lanesNote : (actual > 1 ? '；错峰多路' : '；单路'))
+        + '）');
     }
 
     // ⑧ 取数据 + 剔除「开始前就有」的 cid（只交付本轮新采）

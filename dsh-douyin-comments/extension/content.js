@@ -24,7 +24,9 @@
   //   服务端 p50 = 228ms（min 217 / max 385），故 400ms 间隔仍留有余量
   //   页面自身分页实测 ~444ms/页，400~550ms 与页面自身节奏相当甚至更慢
   const COUNT = 50;                     // 服务端上限 50；原先用 20 白跑一倍页数
-  const MIN_INTERVAL_MS = 400;          // 每轮之间最小间隔
+  // v0.2.15：单路每轮之间的最小间隔 400 → 150。真机实测（2026-10-07，视频 7692405235813272867）
+  // 列表往返中位 344ms，400ms 的间隔里有一半是纯等；21 页从 15.8s 降到 ~10s。
+  const MIN_INTERVAL_MS = 150;          // 单路模式每轮之间最小间隔
   const JITTER_MS = 150;                // 0~150 随机抖动
   const MAX_PAGES = 3000;               // 硬上限，防御死循环
   const FAIL_STREAK_PAUSE = 3;          // 连续失败几次就暂停
@@ -120,15 +122,23 @@
   //   各 cursor 独立返回，next == cursor+count 全部成立 → 可安全并发
   //   每路平均：1 路 698ms → 4 路 92ms（7.63x）
   //   全量 206 页：串行 2.9 分钟 → 4 路 0.4 分钟
-  // ⚠️ 0.2.12 起顶层列表扫描**固定单路**（主循环里有实测说明）：同一签名下同时发多个
-  // cursor 会被服务端合并成同一页，4 路并发反而少采 ~30%。MAX_LANES 只作为
-  // 「并发路数」这个历史设置项的默认值保留（该设置已停用，读写都还在，只是不再影响采集）。
-  const MAX_LANES = 4;                  // 历史默认值（已停用）
+  // ⚠️ 顶层列表的路数规则（v0.2.12 固定单路 → v0.2.15 恢复「错峰多路」）：
+  //   0.2.11 及以前：同**一瞬间**并发发多个 cursor → 服务端把同签名的并发请求合并成同一页，
+  //     4 路并发反而少采 ~30%（2026-10-06 实测；2026-10-07 在 __DTS_COLLECTOR__.replay()
+  //     上用 4 个 cursor 同时发复现：Σ返回 200 条、**去重后只有 56 条**，c50/c100/c150 三页
+  //     逐条完全相同，而 next 字段还是对的 ⇒ 静默少给，只能靠 cid 去重才看得出）。
+  //   0.2.12：矫枉过正固定单路 —— 拿得全但慢。
+  //   0.2.15：**错峰多路**。同一批请求每路错开 LANE_STAGGER_MS=200ms 就不再被合并
+  //     （同一次实测：错峰 200ms → 200 条全唯一；错峰 500ms 同样正常），
+  //     扫完整个列表 21 页：单路含间隔 15.79s → 错峰 4 路 7.72s（2.04×），唯一 cid 907 vs 912（一样多）。
+  //   兜底：若某一轮里两路返回的 cid 完全一样（服务端又开始合并），当轮就把路数降回 1 并在面板说明，
+  //     宁可慢也不再静默少采。
+  const MAX_LANES = 3;                  // 内置默认顶层路数（v0.2.15 起真正生效；1 = 老单路）
   // DSH 插件（dsh-douyin-comments）可以在自己的「设置 → 插件」里调并发路数：它把
   // { lanes } 写进 chrome.storage.local.dts_settings，扩展每次开始采集时读一次。
-  // LANES_HARD_MAX 是兜底硬上限（6 路起服务端开始排队，再多只是白挨风控）；
-  // 读不到设置（扩展单独装、没经过 DSH）时用 MAX_LANES，行为与以前完全一致。
+  // LANES_HARD_MAX 是兜底硬上限（6 路起服务端开始排队，再多只是白挨风控）。
   const LANES_HARD_MAX = 8;
+  const LANE_STAGGER_MS = 200;          // 同一批请求里每路之间的错峰（少了会被服务端并成一页）
   const RUNTIME_SETTINGS_KEY = 'dts_settings';
   // 面板自己的「设置」按钮写这里（用户当场点的偏好，v0.2.4 新增）。
   // 两个键同时存在时**以面板为准**：插件写的 dts_settings 只是「面板里没设过」时的默认值，
@@ -1803,7 +1813,7 @@
             if (s && s[key] !== undefined && s[key] !== null) return clamp(s[key], lo, hi, dflt);
             return dflt;
           };
-          out.lanes = pick('lanes', 1, LANES_HARD_MAX, 1);   // 已停用（顶层固定单路），默认给 1
+          out.lanes = pick('lanes', 1, LANES_HARD_MAX, MAX_LANES);   // 顶层列表路数（v0.2.15 起真正生效，默认 3）
           out.maxCount = pick('maxCount', 0, MAX_COUNT_HARD_MAX, 0);
           out.replyLanes = pick('replyLanes', 1, LANES_HARD_MAX, REPLY_LANES);
           out.replyGapMs = pick('replyGapMs', 0, 60000, REPLY_GAP_MS);
@@ -1842,29 +1852,27 @@
     // 设置每次「开始采集」都重读一次：DSH 插件改完立即生效，不用重开浏览器。
     RS = await loadRuntimeSettings();
     var lanesWanted = RS.lanes;
-    // 顶层列表固定单路（见主循环那段实测说明）。DSH 插件/MCP/面板里的「并发路数」保留兼容：
-    // 仍可读写、仍会落进 dts_settings_effective，但不再影响采集 —— 如实标出来，别让排查的人以为它生效了。
-    // 把「实际用了几路」落进 storage，供 DSH 插件/排查时核对（读不回来也不影响采集）
-    try {
-      chrome.storage.local.set({
-        dts_settings_effective: {
-          lanes: 1,
-          lanesWanted: lanesWanted,
-          lanesNote: lanesWanted > 1
-            ? '顶层列表已固定单路：实测同签名并发会被服务端合并成同一页，4 路少采约 30%（v0.2.12）'
-            : '',
-          maxCount: RS.maxCount,
-          replyLanes: RS.replyLanes,
-          replyGlobalGapMs: RS.replyGlobalGapMs,
-          replyGapMs: RS.replyGapMs,
-          replyThrottleMaxWaitMs: RS.replyThrottleMaxWaitMs,
-          replyWaveBudgetMs: REPLY_WAVE_BUDGET_MS,      // v0.2.14：单波连续重试上限
-          replyParkPlanMs: REPLY_PARK_PLAN_MS.join('/'), // v0.2.14：波间停顿计划
-          from: hasUserSettings ? 'panel' : 'plugin',
-          at: Date.now(),
-        },
-      });
-    } catch (e) { /* 忽略 */ }
+    // 顶层列表路数（v0.2.15：错峰多路，见常量区那段实测说明）。把「实际用了几路」落进 storage，
+    // 供 DSH 插件/排查时核对（读不回来也不影响采集）。若主循环发现两路被服务端并成了同一页，
+    // 会就地改写 effSettings.lanes / lanesNote 再回写 —— 排查的人一眼能看出「这一轮被降成单路了」。
+    var effSettings = {
+      lanes: lanesWanted,
+      lanesWanted: lanesWanted,
+      lanesNote: '',
+      maxCount: RS.maxCount,
+      replyLanes: RS.replyLanes,
+      replyGlobalGapMs: RS.replyGlobalGapMs,
+      replyGapMs: RS.replyGapMs,
+      replyThrottleMaxWaitMs: RS.replyThrottleMaxWaitMs,
+      replyWaveBudgetMs: REPLY_WAVE_BUDGET_MS,      // v0.2.14：单波连续重试上限
+      replyParkPlanMs: REPLY_PARK_PLAN_MS.join('/'), // v0.2.14：波间停顿计划
+      from: hasUserSettings ? 'panel' : 'plugin',
+      at: Date.now(),
+    };
+    var writeEffective = function () {
+      try { chrome.storage.local.set({ dts_settings_effective: effSettings }); } catch (e) { /* 忽略 */ }
+    };
+    writeEffective();
     down('start-capture');
 
     try {
@@ -1896,6 +1904,10 @@
 
       // v0.2.13：maxCount 到量只停**顶层扫描**，二级回复仍要补完（循环外的补采段负责）
       var topCapReached = false;
+      // v0.2.15：顶层列表实际用的路数。正常情况下就是 RS.lanes；一旦发现某一轮里两路返回了
+      // 完全相同的页（服务端又开始合并并发请求），当轮就降回 1 并写进 dts_settings_effective。
+      var laneBudget = Math.max(1, Math.min(LANES_HARD_MAX, Math.round(RS.lanes || MAX_LANES)));
+      var lanes = laneBudget;
       while (!stopFlag && epoch === collectEpoch) {
         if (phase !== 'collecting') break;
 
@@ -1922,25 +1934,38 @@
           break;
         }
 
-        // ---- 一轮：顶层列表**单路**推进（每次用服务端给的 next） ----
+        // ---- 一轮：顶层列表**错峰多路**推进（每路都用服务端给的 next） ----
         //
-        // 0.2.11 及以前这里是并发 N 路：cursor, cursor+COUNT, cursor+2*COUNT … 同时发。
+        // 0.2.11 及以前是「同时发 N 路」：cursor, cursor+COUNT, cursor+2*COUNT … 一起发出去。
         // 2026-10-06 真机实测（_scan_probe2.mjs / _scan_probe3.mjs，视频 7692405235813272867，
         // 登录态正常，服务端列表在 offset 850 触底、total=1704）：
         //   · 单路串行 18 步 → 714 条唯一一级评论（多轮累加 744）；
         //   · 4 路并发 5 轮 → 只有 492 条，且**一个失败请求都没有**；
         //   · 并发那一轮里 c50/c100/c150 三个请求拿到的是**同一页**（两两重合 50/50，
-        //     而且这一页不在任何串行页里）→ 服务端把同签名的并发请求合并了；
+        //     而且这一页不在任何串行页里）→ 服务端把**同一瞬间**的同签名请求合并了；
         //   · 同样 4 路、每路之间错峰 200ms → 恢复正常（4 页 = 200 条唯一）。
-        // 结论：并发既少采 ~30%，又不比单路快（列表上限只有 ~18 页），所以固定单路。
-        var lanes = 1;
-        var cursors = [cursor];
+        // 0.2.12 因此固定单路（拿得全但慢）。2026-10-07 用 __DTS_COLLECTOR__.replay() 复现 + 量化：
+        //   · 同时发 4 个 cursor：Σ返回 200 条、**去重后只有 56 条**，c50/c100/c150 逐条相同，
+        //     而 next 字段还是对的（50/100/150/200）⇒ 静默少给，只有按 cid 去重才看得出；
+        //   · 错峰 200ms：唯一 200/200；错峰 500ms：唯一 200/200；
+        //   · 扫完整个列表（21 页 / Σ返回 1021 条）：单路含 400ms 间隔 15.79s → 错峰 4 路 7.72s，
+        //     唯一 cid 907 vs 912（一样多）。
+        // 所以 v0.2.15 起改成**错峰多路**：每路错开 LANE_STAGGER_MS，并且在下面校验里检测
+        // 「两路返回同一页」→ 当轮降回单路（宁可慢，也不再静默少采）。
+        var lanes = laneBudget;
         var i;
-        var reqs = await Promise.all(cursors.map(function (cur) {
-          return requestReplay(cur, COUNT);
-        }));
-        // 清空/换代发生在请求在途时：丢弃回包，禁止把 cursor 写回高位
+        var cursors = [];
+        for (i = 0; i < lanes; i++) cursors.push(cursor + i * COUNT);
+        var reqs = [];
+        for (i = 0; i < lanes; i++) {
+          if (i > 0) await sleep(LANE_STAGGER_MS + Math.round(Math.random() * 60));
+          if (stopFlag || epoch !== collectEpoch) break;
+          reqs.push(requestReplay(cursors[i], COUNT));   // 不 await：让它先飞，形成错峰在途
+        }
+        reqs = await Promise.all(reqs);
         if (stopFlag || epoch !== collectEpoch) break;
+        // 清空/换代发生在请求在途时：丢弃回包，禁止把 cursor 写回高位
+        if (!reqs.length) continue;
 
         // 服务端对「越过列表末端」的 cursor 会回 HTTP 200 + 字面量 null（实测 probe-replystale：
         // 某视频 floor=1500，cursor<=1500 的 31 个请求全成功，1550~7450 的 119 个全部返回 null）。
@@ -1954,14 +1979,46 @@
           }
         }
 
+        // v0.2.15 兜底：同一轮里两路返回**逐条相同**的页 ⇒ 服务端又把并发的同签名请求并成一个响应了。
+        // 当轮就降回单路，并如实写进 dts_settings_effective —— 宁可慢，也不再静默少采（这是少采的唯一可见信号）。
+        if (reqs.length > 1) {
+          var mergedLanes = false;
+          var ai; var bi; var m;
+          for (i = 0; i < reqs.length && !mergedLanes; i++) {
+            for (var k = i + 1; k < reqs.length; k++) {
+              ai = reqs[i].items || []; bi = reqs[k].items || [];
+              if (ai.length > 0 && ai.length === bi.length) {
+                var sameIds = true;
+                for (m = 0; m < ai.length; m++) {
+                  if (String(ai[m].cid) !== String(bi[m].cid)) { sameIds = false; break; }
+                }
+                if (sameIds) { mergedLanes = true; break; }
+              }
+            }
+          }
+          if (mergedLanes) {
+            laneBudget = 1;
+            lanes = 1;
+            effSettings.lanes = 1;
+            effSettings.lanesNote = '第 ' + pages + ' 页前后发现两路返回了同一页（服务端合并并发请求），已自动降回单路；'
+              + '其余设置不变。想彻底关掉多路就把「并发路数」设成 1。';
+            effSettings.at = Date.now();
+            writeEffective();
+            noteText = '检测到服务端把并发请求合并成同一页，已自动降回单路继续采（慢一点，但不会少采）……';
+            render();
+          }
+        }
+
         // 先校验「每路都拿满一页」，再决定要不要接受这一轮
         var laneShort = false;
         var laneEnd = false;
+        var anyLaneHasMore = false;
         for (i = 0; i < reqs.length; i++) {
           var rr = reqs[i];
           if (!rr.ok) continue;
           var ni = (rr.items || []).length;
           if (ni > 0 && ni < MIN_LANE_ITEMS) laneShort = true;
+          if (ni > 0 && Number(rr.hasMore) !== 0) anyLaneHasMore = true;
           if (Number(rr.hasMore) === 0 && ni < COUNT) {
             // 只认「拿不满一页」的 has_more=0：满页却带 0 是矛盾信号，不当终点也不当触底位置。
             // 真触底那页一定拿不满 COUNT；代价只是多跑一轮（越界的路会返回空页）。
@@ -1970,6 +2027,9 @@
             laneEnd = true;
           }
         }
+        // v0.2.15：多路时「有一路越界返回空页」不代表触底 —— 同一轮里还有路带回满页且 has_more=1，
+        // 那是本路 cursor 暂时跑到列表末端之外（列表还没扫完），必须继续。只有所有路都没有 has_more 才算到底。
+        if (laneEnd && anyLaneHasMore) laneEnd = false;
 
         var anyOk = false;
         var maxNext = cursor;
@@ -2045,8 +2105,9 @@
         }
 
         // 触底保护：某一路返回的条数明显少于 COUNT → 服务端已到列表末尾，
-        // 下轮退回单路，避免越过末尾白跑并产生空洞
+        // 下轮退回单路，避免越过末尾白跑并产生空洞（v0.2.15：这一轮起 laneBudget 就固定为 1）
         if (laneShort) {
+          laneBudget = 1;
           cursor = maxNext;
           render();
           await sleep(MIN_INTERVAL_MS + Math.random() * JITTER_MS);
@@ -2704,9 +2765,10 @@
   // 存的 dts_user_settings 优先级高于 DSH 插件下发的 dts_settings（见 loadRuntimeSettings）。
   var SETTING_FIELDS = [
     { key: 'maxCount', label: '目标条数 max', min: 0, max: MAX_COUNT_HARD_MAX, step: 50, title: '采到这么多条一级评论就自动收工（等同 DSH 插件的 max）；0 = 不限（二级回复会补完再停）' },
-    // 0.2.12 起顶层列表固定单路：这项设置保留兼容（仍可读写），但不再影响采集。
-    // 别删 —— 老配置、DSH 插件、MCP 都还在传这个键；删了反而要处理「未知键」。
-    { key: 'lanes', label: '并发路数（已停用）', min: 1, max: LANES_HARD_MAX, step: 1, title: '顶层列表已固定单路：实测同签名并发会被服务端合并成同一页，4 路并发反而少采约 30%。此设置保留兼容，不再影响采集。' },
+    // v0.2.15 起顶层列表**错峰多路**真正生效（默认 3 路、每路 200ms 错峰）。
+    // 2026-10-07 实测：同一瞬间发多路会被服务端并成同一页（4 路 Σ200 条只去重出 56 条），
+    // 错峰 200ms 就正常；扫完 21 页单路 15.8s vs 错峰 4 路 7.7s，唯一 cid 一样多。
+    { key: 'lanes', label: '顶层并发路数', min: 1, max: LANES_HARD_MAX, step: 1, title: '顶层列表同时推进几路：1 = 老老实实单路；内置默认 3，每路错峰 200ms 出发。一旦发现两路拿到同一页（服务端合并并发请求）会自动降回单路并在面板说明。' },
     { key: 'replyLanes', label: '回复并发', min: 1, max: LANES_HARD_MAX, step: 1, title: '二级回复同时拉几条线程：1~8，内置默认 4' },
     { key: 'replyGapMs', label: '回复间隔 ms', min: 0, max: 60000, step: 100, title: '同一线程两次回复请求之间的间隔，内置默认 600ms' },
     { key: 'replyThrottleSec', label: '限流等待 s', min: 10, max: 600, step: 10, title: '服务端暂时不回数据时，本轮**总共**最多等这么久（分波重试：单波 12 秒，波间停 15/30/60 秒）。内置 120 秒；设 10 = 老行为「十秒不行就收尾」' },
@@ -2744,8 +2806,9 @@
   }
 
   function settingsSummaryText() {
-    // 顶层固定单路后「并发路数」不再生效 —— 摘要里如实写，别显示一个骗人的路数
-    return '顶层单路' + (RS.lanes > 1 ? '（并发路数 ' + RS.lanes + ' 已停用）' : '') +
+    // v0.2.15：顶层默认错峰多路（内置 3 路 / 每路错峰 200ms）。摘要里如实写**设置值**；
+    // 某一轮若因「两路同页」被自动降成单路，`dts_settings_effective.lanesNote` 会另附说明。
+    return '顶层 ' + (RS.lanes > 1 ? RS.lanes + ' 路错峰（' + LANE_STAGGER_MS + 'ms）' : '单路') +
       ' · 目标 ' + (RS.maxCount > 0 ? RS.maxCount + ' 条' : '不限') +
       (hasUserSettings ? '（面板）' : '');
   }

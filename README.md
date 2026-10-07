@@ -52,10 +52,11 @@ douyin-ai-collector/          ← 仓库根（可自行命名）
 4. （可选，DSH）`dsh plugin --profile web add file:./dsh-douyin-comments`，直接对 agent 说
    「采集这个视频的评论 <链接>」——扩展由插件自己装，不用手动加载目录；目标条数 `max`（默认 80000，
    **采到这么多只停止顶层扫描，二级回复仍会补完**——0.5.11 + 扩展 0.2.13 起真正如此）、
-   并发路数 `lanes`（默认 4，**自扩展 0.2.12 起已停用**：顶层列表固定单路，仅保留兼容）、超时、等扫码秒数、是否先清空、二级回复限速（`replyLanes` / `replyGlobalGapMs` / `replyGapMs` / `replyThrottleSec`）都可以改，三个入口：
+   顶层列表路数 `lanes`（0.5.13 + 扩展 0.2.15 起生效：默认 **3 路错峰 200ms**，1 = 单路；发现两路同页会自动降回 1 路）、
+   超时、等扫码秒数、是否先清空、二级回复限速（`replyLanes` / `replyGlobalGapMs` / `replyGapMs` / `replyThrottleSec`）都可以改，三个入口：
    **扩展面板标题栏右上角的设置齿轮 `⚙`**（0.2.5 起，优先级最高，用不用 DSH 都能改）→
    DSH「设置 → 插件 → dsh-douyin-comments」的设置表（0.5.0 起，改完立即生效，不用重启）→
-   AI 经 MCP（`douyin-mcp` 0.3.5）的 `ai_get_settings` / `ai_set_settings`，`ai_start_collect`
+   AI 经 MCP（`douyin-mcp` 0.3.6）的 `ai_get_settings` / `ai_set_settings`，`ai_start_collect`
    可带 `max` / `lanes` / `replyLanes` / `replyGlobalGapMs` / `replyGapMs` / `replyWarmupMs` / `replyThrottleMaxWaitMs`
    （优先级：面板齿轮 > AI 下发 > 内置默认）。0.5.12 + 扩展 0.2.14 起，回复接口被服务端暂时拒绝时
    **不再「十秒不行就收尾」**：单波最多撞 12 秒，波间停 15/30/60 秒自动再来一波，总窗口默认 120 秒
@@ -63,12 +64,12 @@ douyin-ai-collector/          ← 仓库根（可自行命名）
    明确等于「用内置 250ms」。
    装完**不用重启**：桌面端这类宿主默认开着 HMR（只监听 profile 配置，`@deepseek-ai/dsh-hmr` 的 `root: []`），
    新装插件会即时重新组合并挂载；只有**覆盖安装同一个包换版本**时才需要重启 DSH 才会加载新代码。
-   要把这套发给别人：下载 [v0.5.12 的单文件包](https://github.com/monagisa/douyin-ai-collector/releases/download/v0.5.12/dsh-douyin-comments-v0.5.12.zip)
-   （解压后是 `dsh-douyin-comments-0.5.12.tgz` 插件包 + `douyin-collector-extension-v0.2.14.zip`
+   要把这套发给别人：下载 [v0.5.13 的单文件包](https://github.com/monagisa/douyin-ai-collector/releases/download/v0.5.13/dsh-douyin-comments-v0.5.13.zip)
+   （解压后是 `dsh-douyin-comments-0.5.13.tgz` 插件包 + `douyin-collector-extension-v0.2.15.zip`
     单独扩展 + `使用说明.md` + `SHA256SUMS.txt`）。
    对方**不用 DSH、只要 MCP**：下载
-   [v0.5.12 里的 MCP 单文件包](https://github.com/monagisa/douyin-ai-collector/releases/download/v0.5.12/douyin-collector-mcp-v0.3.5.zip)
-   （解压后是 `douyin-collector/` 扩展源码（v0.2.14）+ `douyin-mcp/` 本地 MCP server（v0.3.5）+
+   [v0.5.13 里的 MCP 单文件包](https://github.com/monagisa/douyin-ai-collector/releases/download/v0.5.13/douyin-collector-mcp-v0.3.6.zip)
+   （解压后是 `douyin-collector/` 扩展源码（v0.2.15）+ `douyin-mcp/` 本地 MCP server（v0.3.6）+
     `使用说明.md`）。同页附件里还有 `SHA256SUMS.txt` 可校验，单独的中文说明是附件 `USAGE-zh-CN.md`。
 
 ---

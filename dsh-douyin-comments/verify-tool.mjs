@@ -113,8 +113,8 @@ check('toJSON 往返后字段不丢（设置表单就是这么重建的）',
   !!rebuiltCfg && Object.keys(rebuiltCfg.dict || {}).length === cfgKeys.length,
   rebuiltErr || Object.keys((rebuiltCfg && rebuiltCfg.dict) || {}).join(','));
 const setDefaults = { max: Cfg.dict.max.meta.default, lanes: Cfg.dict.lanes.meta.default, timeoutMs: Cfg.dict.timeoutMs.meta.default, waitLoginSec: Cfg.dict.waitLoginSec.meta.default };
-check('设置里的出厂默认值 = 80000 / 1（顶层已固定单路，lanes 仅兼容）/ 1800000 / 180',
-  setDefaults.max === 80000 && setDefaults.lanes === 1 && setDefaults.timeoutMs === 1800000 && setDefaults.waitLoginSec === 180,
+check('设置里的出厂默认值 = 80000 / 3（顶层错峰多路，1 = 老单路）/ 1800000 / 180',
+  setDefaults.max === 80000 && setDefaults.lanes === 3 && setDefaults.timeoutMs === 1800000 && setDefaults.waitLoginSec === 180,
   JSON.stringify(setDefaults));
 const cfgValid = Cfg['~standard'].validate(undefined);
 check('没配过也能开（validate(undefined) 落到默认值）', !('issues' in cfgValid) && !!cfgValid.value && 'lanes' in cfgValid.value,
@@ -153,7 +153,7 @@ check('readSettings 把路数钳在 1..8', mod.readSettings({ lanes: vbox(99) })
 check('插件描述里交代了设置入口', /设置/.test(String(def.description || '')) && /lanes|并发路数/.test(String(def.description || '')));
 check('输出 schema 里有 lanes（能看出实际用了几路）', schemaProps.includes('lanes'), schemaProps.join(','));
 check('出厂默认 max = 80000（= 扩展评论池上限）', DEFAULTS.max === 80000, String(DEFAULTS.max));
-check('出厂默认并发路数 = 1（顶层已固定单路；lanes 只作历史兼容项）', DEFAULTS.lanes === 1, String(DEFAULTS.lanes));
+check('出厂默认顶层路数 = 3（v0.2.15 错峰多路；1 = 老单路）', DEFAULTS.lanes === 3, String(DEFAULTS.lanes));
 check('出厂默认超时 = 30 分钟（够采几万条）', DEFAULTS.timeoutMs === 1800000, String(DEFAULTS.timeoutMs));
 check('出厂默认不清空（保住扩展的断点续采）', DEFAULTS.clearBefore === false, String(DEFAULTS.clearBefore));
 check('回复类出厂默认：并发 0=跟扩展内置、限流 0=跟内置、无进展 900s',
@@ -175,8 +175,8 @@ check('品牌版 Chrome 会被识别（137+ 忽略 --load-extension，要提前�
   /function isBrandedBrowser/.test(collSrc) && /load-extension/.test(collSrc), '');
 check('命令行扩展兜底：忽略 Playwright 默认的 --disable-extensions',
   /ignoreDefaultArgs: \['--disable-extensions'\]/.test(collSrc), '');
-check('collector 日志如实报「顶层列表实际路数」并说明并发路数设置已停用',
-  /顶层列表实际路数/.test(collSrc) && /并发路数设置已停用/.test(collSrc), '');
+check('collector 日志如实报「顶层列表实际路数」并把扩展的 lanesNote（含降路原因）带出来',
+  /顶层列表实际路数/.test(collSrc) && /effLanes\.lanesNote/.test(collSrc), '');
 check('扩展缓存目录跨平台（mac ~/Library/Caches/ms-playwright、linux ~/.cache）',
   /Library', 'Caches', 'ms-playwright'/.test(collSrc) && /\.cache/.test(collSrc), '');
 check('playwright-core 的查找覆盖各平台全局目录（含便携 node 的 node_global、nvm、NODE_PATH）',
@@ -275,25 +275,45 @@ const stamp = path.join(DEFAULTS.home, 'extension.installed.json');
 check('写了安装戳', fs.existsSync(stamp), stamp);
 check('哈希 16 位', /^[0-9a-f]{16}$/.test(ext.hash), ext.hash);
 
-// ---------- 3a) 扩展侧：顶层列表固定单路（v0.2.12），「并发路数」设置仅保留兼容 ----------
-// 2026-10-06 真机实测（视频 7692405235813272867，登录态正常）：单路串行 18 步 → 714~744 条唯一
-// 一级评论；4 路并发（同签名同时发 cursor,+50,+100,+150）只有 492 条，且 c50/c100/c150 三个
-// 请求拿到的是**同一页**（服务端把并发的同签名请求合并了）；错峰 200ms 发就恢复正常。
-// 所以顶层扫描固定单路。实测同一视频：修复前 768 条（一级 586），修复后 945 条（一级 753）。
+// ---------- 3a) 扩展侧：顶层列表「错峰多路」（v0.2.15），1 路 = 老单路 ----------
+// 2026-10-06 真机实测（视频 7692405235813272867）：4 路**同时**发只有 492 条唯一一级评论
+// （c50/c100/c150 拿到同一页），单路串行 714~744 条 ⇒ 0.2.12 固定单路。
+// 2026-10-07 复现并量化（临时探针 _lanes_probe.mjs / _lanes_probe2.mjs）：
+//   · 同时发 4 个 cursor：Σ200 条、去重后只有 56 条，next 字段还对（静默少采）；
+//   · 错峰 200ms / 500ms：唯一 200/200；
+//   · 扫完整个列表（21 页）：单路含 400ms 间隔 15.79s vs 错峰 4 路 7.72s，唯一 907 vs 912。
+// 所以 v0.2.15 改成错峰多路（默认 3 路），并加「两路同页 ⇒ 当轮降回单路」兜底。
 const contentSrc = fs.readFileSync(path.join(ext.dir, 'content.js'), 'utf8');
 check('扩展读运行时设置 dts_settings 且保留内置 MAX_LANES 兜底',
   /loadRuntimeSettings/.test(contentSrc) && /dts_settings/.test(contentSrc) && /MAX_LANES/.test(contentSrc));
-check('顶层列表固定单路：一轮只有一个 cursor（旧的 lanes 并发已删掉）',
-  /var lanes = 1;\s*\n\s*var cursors = \[cursor\];/.test(contentSrc)
-  && !/lanes = Math\.min\(lanesWanted, MAX_PAGES - pages\)/.test(contentSrc),
+check('顶层列表错峰多路：内置默认 3 路 + 每路错峰 200ms + 硬上限 8',
+  /const MAX_LANES = 3;/.test(contentSrc) && /const LANE_STAGGER_MS = 200;/.test(contentSrc)
+  && /const LANES_HARD_MAX = 8;/.test(contentSrc));
+check('一轮按 laneBudget 组 cursor 并逐路错峰发（cursor + i*COUNT / sleep LANE_STAGGER_MS）',
+  /cursors\.push\(cursor \+ i \* COUNT\)/.test(contentSrc)
+  && /await sleep\(LANE_STAGGER_MS \+ Math\.round\(Math\.random\(\) \* 60\)\)/.test(contentSrc)
+  && !/var cursors = \[cursor\];/.test(contentSrc),
   (contentSrc.match(/var lanes = [^\n]*/) || [''])[0]);
-check('源码里留着实测依据（探针脚本名 + 492 vs 714/744 + 错峰 200ms）',
-  contentSrc.includes('_scan_probe3.mjs') && contentSrc.includes('492') && contentSrc.includes('714')
+check('单路礼貌间隔 400 → 150ms（单路模式每轮最小间隔）',
+  /const MIN_INTERVAL_MS = 150;/.test(contentSrc));
+check('合并兜底：两路返回同一页 ⇒ 当轮降回单路，并写进 effective 的 lanesNote',
+  /var mergedLanes = false;/.test(contentSrc) && /String\(ai\[m\]\.cid\) !== String\(bi\[m\]\.cid\)/.test(contentSrc)
+  && /laneBudget = 1;/.test(contentSrc) && contentSrc.includes('发现两路返回了同一页')
+  && /effSettings\.lanes = 1;/.test(contentSrc) && contentSrc.includes('writeEffective'));
+check('多路时「某路越界返回空页」不算触底（anyLaneHasMore 修正 laneEnd）',
+  /var anyLaneHasMore = false;/.test(contentSrc)
+  && /if \(laneEnd && anyLaneHasMore\) laneEnd = false;/.test(contentSrc));
+check('laneShort 触底保护同时把 laneBudget 降回 1（下一轮起单路收尾）',
+  /if \(laneShort\) \{\s*\n\s*laneBudget = 1;/.test(contentSrc));
+check('源码里留着实测依据（静默少给的 56 条 + 2.04× / 15.79s vs 7.72s）',
+  contentSrc.includes('56') && contentSrc.includes('15.79') && contentSrc.includes('7.72')
   && contentSrc.includes('错峰'));
-check('「并发路数」设置保留兼容但仍读：dts_settings_effective 里如实写 lanes=1 / lanesWanted / 说明',
-  /lanes: 1,\s*\n\s*lanesWanted: lanesWanted,/.test(contentSrc) && contentSrc.includes('lanesNote'));
-check('面板设置摘要如实写「顶层单路」，不再显示骗人的路数',
-  contentSrc.includes("'顶层单路'") && contentSrc.includes('并发路数（已停用）'));
+check('dts_settings_effective 如实写 lanes / lanesWanted / lanesNote（被降路时就地改写）',
+  /lanes: lanesWanted,/.test(contentSrc) && /lanesWanted: lanesWanted,/.test(contentSrc)
+  && contentSrc.includes('lanesNote'));
+check('面板设置摘要如实写「顶层 N 路错峰」（不再显示「已停用」）',
+  contentSrc.includes("'顶层 ' + (RS.lanes > 1 ? RS.lanes + ' 路错峰（'") && contentSrc.includes('顶层并发路数')
+  && !contentSrc.includes('并发路数（已停用）'));
 check('扩展把实际用的路数写回 dts_settings_effective（插件据此回报）', contentSrc.includes('dts_settings_effective'));
 // 报告问题二·缺陷4: 回复限流预算写死 10s，撞上「刚轰完列表接口」的拒绝窗口
 check('回复限流预算、并发、间隔都能被 dts_settings 覆盖（不再写死）',
@@ -763,8 +783,8 @@ check('插件设置表单/执行链都带上 replyGlobalGapMs（0 = 用扩展内
 check('插件描述如实写「到量只停顶层扫描、继续补二级回复」（0.5.11 起）',
   /到量就\*\*停止顶层扫描、继续把二级回复补完\*\*/.test(String(def.description || ''))
   && /0\.5\.11 起真正生效/.test(String(def.description || '')));
-check('插件 package.json / 扩展 manifest 版本对得上（0.5.12 / 0.2.14）',
-  manifest.version === '0.5.12' && targetManifest.version === '0.2.14',
+check('插件 package.json / 扩展 manifest 版本对得上（0.5.13 / 0.2.15）',
+  manifest.version === '0.5.13' && targetManifest.version === '0.2.15',
   `plugin=${manifest.version} ext=${targetManifest.version}`);
 // ---------- 3d) v0.5.12 / 扩展 0.2.14：「假限流」三处修正 ----------
 // 用户 2026-10-07 报「我怀疑这个限速是假限速，有时候我自己点就可以拿到」，随后又猜
@@ -783,6 +803,21 @@ check('「0 = 用内置 250ms」在扩展侧与设置页/MCP 文案一致（0 �
   /out\.replyGlobalGapMs = gap > 0 \? gap : REPLY_GLOBAL_GAP_MS;/.test(contentSrc)
   && /0=用扩展内置 250ms|0 = 用扩展内置 250ms/.test(bgSrc)
   && !/const REPLY_GLOBAL_GAP_MS = 250;        \/\/ 所有回复请求（跨线程）的最小间隔；0 = 关闭限速/.test(contentSrc));
+
+// ---------- 3e) v0.2.15：顶层列表改回「错峰多路」（用户 2026-10-07 报「单路太慢」） ----------
+// 探针结论：同时发（同一签名 ~200ms 窗口内）会被服务端并成同一页（4 个 cursor Σ200 条只去重出
+// 56 条、next 字段还对 ⇒ 静默少采）；错峰 200ms 恢复正常；扫完 21 页单路 15.79s vs 错峰 4 路
+// 7.72s、唯一 907 vs 912。所以默认 3 路错峰，1 = 老单路，并保留「两路同页 ⇒ 当轮降回单路」兜底。
+const mcpPath = path.join(here, '..', 'douyin-mcp', 'mcp.js');
+if (fs.existsSync(mcpPath)) {
+  const mcpSrc = fs.readFileSync(mcpPath, 'utf8');
+  check('MCP 的 lanes 说明改成「错峰多路」并带实测数字（不再是【已停用】）',
+    /顶层列表路数（默认 3，错峰多路/.test(mcpSrc) && !/【已停用】顶层扫描并发路数/.test(mcpSrc));
+  check('MCP VERSION = 0.3.6（与 package.json 对齐）', /const VERSION = '0\.3\.6';/.test(mcpSrc),
+    (mcpSrc.match(/const VERSION = '[^']*'/) || [''])[0]);
+}
+check('插件工具描述里的 lanes 不再写「已停用」', !/已停用/.test(String(def.description || '')),
+  /已停用/.test(String(def.description || '')) ? '描述里仍有「已停用」' : 'ok');
 
 // ---------- 4) 可选：真跑一次 ----------
 const liveIdx = process.argv.indexOf('--live');
