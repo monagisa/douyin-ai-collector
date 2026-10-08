@@ -22,6 +22,31 @@ const PREFIX_COMMENTS = 'dts_c_';
 const MAX_COMMENTS_PER_VIDEO = 80000;
 
 // ---------- 存储 ----------
+//
+// ⚠️ 所有「读 → 改 → 写」都必须串行（serial）：chrome.storage 没有事务，
+// 两个在途的 dts-comments（二级回复 4 路并发 + 页面自己的 captured）若交错执行
+// 「A 读 → B 读 → A 写 → B 写」，A 那一批会被 B 整桶覆盖掉；而 content.js 已经把
+// 这些 cid 记进了 seen，之后再也不会重发 ⇒ 静默丢数据。清空也走同一条队列，
+// 保证「清空之前排队的写」不会在清空之后才落地把数据写回来。
+
+let storageChain = Promise.resolve();
+/** 把一个存储变更排进全局串行队列；返回该变更自己的结果（失败不会卡住后面的变更） */
+function serial(fn) {
+  const p = storageChain.then(fn);
+  storageChain = p.catch(() => {});
+  return p;
+}
+
+// 评论桶的内存副本（只缓存最近写过的几个视频）：落库是整桶读写，桶到几万条时每次 get 都要
+// 反序列化整个对象。SW 存活期间所有写都经过 serial，所以缓存就是权威值；SW 被回收后自然清空。
+const BUCKET_CACHE_MAX = 3;
+const bucketCache = new Map();   // videoId -> { [cid]: comment }
+
+function cacheBucket(videoId, obj) {
+  bucketCache.delete(videoId);
+  bucketCache.set(videoId, obj);
+  while (bucketCache.size > BUCKET_CACHE_MAX) bucketCache.delete(bucketCache.keys().next().value);
+}
 
 async function getVideos() {
   const o = await chrome.storage.local.get(KEY_VIDEOS);
@@ -34,9 +59,10 @@ async function getComments(videoId) {
   return o[key] || {};
 }
 
-async function putComments(videoId, list) {
+/** 只能在 serial 里调用：合并一批评论进桶并写回，返回桶里的条数 */
+async function writeComments(videoId, list) {
   const key = PREFIX_COMMENTS + videoId;
-  const cur = await getComments(videoId);
+  const cur = bucketCache.get(videoId) || await getComments(videoId);
   for (const c of list) {
     if (c && c.cid) cur[c.cid] = c;
   }
@@ -46,17 +72,73 @@ async function putComments(videoId, list) {
     cids.sort((a, b) => (cur[a].create_time || 0) - (cur[b].create_time || 0));
     for (const cid of cids.slice(0, cids.length - MAX_COMMENTS_PER_VIDEO)) delete cur[cid];
   }
-  await chrome.storage.local.set({ [key]: cur });
+  try {
+    await chrome.storage.local.set({ [key]: cur });
+  } catch (e) {
+    bucketCache.delete(videoId);   // 写失败：内存副本已含未落盘的条目，作废它，下次从存储重读
+    throw e;
+  }
+  cacheBucket(videoId, cur);
   return Object.keys(cur).length;
 }
 
-async function updateVideoMeta(videoId, patch) {
+// 合批：同一视频排队期间到达的多批评论合成一次整桶写（整桶重写的代价跟批数成正比，
+// 高并发补采时能把几十次写压成几次）。meta 用最后一批的（title/total/hasMore 都是「最新值」语义）。
+const putBuffers = new Map();   // videoId -> { items, waiters, meta }
+
+/**
+ * 落库一批评论（并更新该视频的元数据），返回落库后的条数。
+ * 评论与元数据在**同一个**串行任务里写，清空不会插在两者之间留下「有元数据没评论」的幽灵记录。
+ */
+function putComments(videoId, list, metaPatch) {
+  return new Promise((resolve, reject) => {
+    let b = putBuffers.get(videoId);
+    const isNew = !b;
+    if (isNew) { b = { items: [], waiters: [], meta: null }; putBuffers.set(videoId, b); }
+    for (const c of list || []) b.items.push(c);
+    if (metaPatch) b.meta = metaPatch;
+    b.waiters.push({ resolve, reject });
+    if (isNew) {
+      serial(async () => {
+        // 从这一刻起再来的批次进新的缓冲、排下一个任务
+        if (putBuffers.get(videoId) === b) putBuffers.delete(videoId);
+        const n = await writeComments(videoId, b.items);
+        if (b.meta) await updateVideoMetaUnlocked(videoId, Object.assign({}, b.meta, { count: n }));
+        return n;
+      }).then(
+        (n) => b.waiters.forEach((w) => w.resolve(n)),
+        (e) => b.waiters.forEach((w) => w.reject(e))
+      );
+    }
+  });
+}
+
+/** 只能在 serial 里调用 */
+async function updateVideoMetaUnlocked(videoId, patch) {
   const videos = await getVideos();
   videos[videoId] = Object.assign({ videoId }, videos[videoId] || {}, patch, {
     updatedAt: new Date().toISOString()
   });
   await chrome.storage.local.set({ [KEY_VIDEOS]: videos });
   return videos[videoId];
+}
+
+/** 清空：videoId = 只清那一条；all = 全清。与落库共用串行队列。 */
+function clearStorage(videoId, all) {
+  return serial(async () => {
+    if (videoId) {
+      await chrome.storage.local.remove(PREFIX_COMMENTS + videoId);
+      bucketCache.delete(videoId);
+      const videos = await getVideos();
+      delete videos[videoId];
+      await chrome.storage.local.set({ [KEY_VIDEOS]: videos });
+    } else if (all === true) {
+      const everything = await chrome.storage.local.get(null);
+      const keys = Object.keys(everything).filter((k) => k === KEY_VIDEOS || k.startsWith(PREFIX_COMMENTS));
+      await chrome.storage.local.remove(keys);
+      bucketCache.clear();
+    }
+  });
 }
 
 async function setBadge(n) {
@@ -296,7 +378,7 @@ if (chrome && chrome.runtime && chrome.runtime.onMessage && chrome.runtime.onMes
   if (!msg || !msg.type) return;
 
   // 扩展后台可达性探针（内容脚本自测用；采集器会读这个结果判断要不要刷新页面自愈）。
-  // 必须无副作用：早先用 dts-status 探活会给 updateVideoMeta 写一条 videoId=undefined 的记录。
+  // 必须无副作用：早先用 dts-status 探活会给 dts_videos 写一条 videoId=undefined 的记录。
   if (msg.type === 'dts-ping') {
     sendResponse({ ok: true, pong: true, at: Date.now() });
     return false;
@@ -312,11 +394,9 @@ if (chrome && chrome.runtime && chrome.runtime.onMessage && chrome.runtime.onMes
     try {
       switch (msg.type) {
         case 'dts-comments': {
-          const n = await putComments(msg.videoId, msg.comments || []);
-          await updateVideoMeta(msg.videoId, {
+          const n = await putComments(msg.videoId, msg.comments || [], {
             title: msg.title,
             total: msg.total,
-            count: n,
             hasMore: msg.hasMore,
             signedUrlAt: msg.signedUrlAt
           });
@@ -326,8 +406,12 @@ if (chrome && chrome.runtime && chrome.runtime.onMessage && chrome.runtime.onMes
         }
 
         case 'dts-status': {
-          const n = await getComments(msg.videoId).then((m) => Object.keys(m).length);
-          await updateVideoMeta(msg.videoId, { title: msg.title, phase: msg.phase, count: n });
+          // 计数与写元数据放进同一个串行任务：否则读到的 count 可能是并发落库之前的旧值
+          const n = await serial(async () => {
+            const cnt = Object.keys(await getComments(msg.videoId)).length;
+            await updateVideoMetaUnlocked(msg.videoId, { title: msg.title, phase: msg.phase, count: cnt });
+            return cnt;
+          });
           sendResponse({ ok: true, count: n });
           break;
         }
@@ -356,16 +440,11 @@ if (chrome && chrome.runtime && chrome.runtime.onMessage && chrome.runtime.onMes
         case 'dts-clear': {
           const videoId = msg.videoId;
           if (videoId) {
-            await chrome.storage.local.remove(PREFIX_COMMENTS + videoId);
-            const videos = await getVideos();
-            delete videos[videoId];
-            await chrome.storage.local.set({ [KEY_VIDEOS]: videos });
+            await clearStorage(videoId);
           } else if (msg.all === true) {
             // 全清是高危操作，必须显式 all:true —— 空 videoId 绝不兜底成全清
             // （content.js 未识别到视频时以前会发空串，面板却提示"已清空本视频"）
-            const all = await chrome.storage.local.get(null);
-            const keys = Object.keys(all).filter((k) => k === KEY_VIDEOS || k.startsWith(PREFIX_COMMENTS));
-            await chrome.storage.local.remove(keys);
+            await clearStorage(null, true);
             aiLastLive = null;   // 数据全没了，「AI 最近一次活体」也没意义了（与 clear_storage 分支一致）
           } else {
             sendResponse({ ok: false, error: 'NO_VIDEO_ID', hint: '清空需要显式 videoId，或 all:true 全清' });
@@ -718,18 +797,18 @@ async function executeAiCommand(cmd) {
     }
 
     case 'clear_storage': {
-      const videoId = args.videoId;
-      if (videoId) {
-        await chrome.storage.local.remove(PREFIX_COMMENTS + videoId);
-        const videos = await getVideos();
-        delete videos[videoId];
-        await chrome.storage.local.set({ [KEY_VIDEOS]: videos });
-      } else {
-        const all = await chrome.storage.local.get(null);
-        const keys = Object.keys(all).filter((k) => k === KEY_VIDEOS || k.startsWith(PREFIX_COMMENTS));
-        await chrome.storage.local.remove(keys);
-        aiLastLive = null;
+      // 与面板「全部清空」同一条口径：只有显式 all===true 才全清。
+      // 以前是「没有 videoId 就全清」—— 模型传错/漏传一个参数就把所有视频的数据删了。
+      const videoId = args.videoId ? String(args.videoId) : '';
+      if (!videoId && args.all !== true) {
+        return {
+          ok: false,
+          error: 'MISSING_VIDEO_ID',
+          hint: 'clear_storage 需要 videoId；要清空**全部**本地数据请显式传 all:true（不可恢复）'
+        };
       }
+      await clearStorage(videoId || null, !videoId);
+      if (!videoId) aiLastLive = null;
       await setBadge(0);
       return { ok: true, result: { cleared: videoId || 'ALL' } };
     }

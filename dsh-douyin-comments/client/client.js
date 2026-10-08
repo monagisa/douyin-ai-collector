@@ -29,24 +29,30 @@ window.__ModuleLoader__.load({
     /** 这一行在设置 → 插件 里的 key：<包名>#<row id> */
     var ROW_KEY = PACKAGE + '#' + NS;
 
-    /** 宿主的 Config（index.js）里有哪些字段，这里就画哪些；min/max 与那边保持一致 */
+    /** 宿主的 Config（index.js）里有哪些字段，这里就画哪些；min/max/默认值必须与那边逐项一致 */
     var FIELDS = [
       { key: 'max', label: '目标条数 max', kind: 'number', min: 1, max: 1000000, step: 1, suffix: '条',
-        hint: '只对一级评论生效；二级回复会尽量补完。默认 80000' },
-      { key: 'lanes', label: '并发路数 lanes', kind: 'number', min: 1, max: 8, step: 1, suffix: '路',
-        hint: '一轮同时发几个请求；实测 4 路最快，6 路更慢且有风控风险。默认 4' },
-      { key: 'timeoutMs', label: '总超时 timeoutMs', kind: 'number', min: 60000, max: 7200000, step: 60000, suffix: 'ms',
+        hint: '一级评论到量就停顶层扫描，二级回复仍补完。默认 80000' },
+      { key: 'lanes', label: '顶层路数 lanes', kind: 'number', min: 1, max: 8, step: 1, suffix: '路',
+        hint: '错峰多路（每路错开 200ms）；1 = 单路。扩展发现两路拿到同一页会自动降回单路。默认 3' },
+      { key: 'timeoutMs', label: '总超时 timeoutMs', kind: 'number', min: 60000, max: 14400000, step: 60000, suffix: 'ms',
         hint: '默认 1800000（30 分钟）' },
       { key: 'waitLoginSec', label: '等扫码 waitLoginSec', kind: 'number', min: 0, max: 1800, step: 10, suffix: '秒',
-        hint: '没登录时保持窗口等扫码的秒数。默认 180' },
+        hint: '没登录时保持窗口等扫码的秒数；0 = 不等。默认 180' },
       { key: 'clearBefore', label: '每次先清空 clearBefore', kind: 'boolean',
         hint: '关（默认）= 保留扩展的断点续采，结束时按 cid 差集只交付本轮新采的' },
-      { key: 'replyLanes', label: '二级回复并发 replyLanes', kind: 'number', min: 0, max: 8, step: 1, suffix: '路',
-        hint: '0 = 跟扩展内置（4 路）' },
-      { key: 'replyThrottleSec', label: '回复限流等待 replyThrottleSec', kind: 'number', min: 0, max: 600, step: 5, suffix: '秒',
-        hint: '0 = 跟扩展内置（10 秒）；被限流（429/风控）时最多等这么久再重试' },
+      { key: 'replyLanes', label: '二级回复并发 replyLanes', kind: 'number', min: 1, max: 8, step: 1, suffix: '路',
+        hint: '撞限流时扩展会自动降 1 路。默认 4' },
+      { key: 'replyGlobalGapMs', label: '回复全局限速 replyGlobalGapMs', kind: 'number', min: 0, max: 2000, step: 50, suffix: 'ms',
+        hint: '回复请求跨线程的最小间隔；0 = 用扩展内置 250ms。默认 0' },
+      { key: 'replyThrottleSec', label: '回复限流等待 replyThrottleSec', kind: 'number', min: 10, max: 600, step: 5, suffix: '秒',
+        hint: '回复被拒时本轮总共最多等多久（分波重试）；10 = 老行为「十秒不行就收尾」。默认 120' },
       { key: 'replyNoProgressSec', label: '回复无进展收工 replyNoProgressSec', kind: 'number', min: 60, max: 7200, step: 60, suffix: '秒',
         hint: '二级回复阶段多久没有新数据就收工。默认 900' },
+      { key: 'failSnapshot', label: '失败现场快照 failSnapshot', kind: 'boolean', def: true,
+        hint: '失败或没采完时存截图 + 页面 HTML + 状态 JSON + 日志副本。默认开' },
+      { key: 'keepSnapshots', label: '快照保留份数 keepSnapshots', kind: 'number', min: 1, max: 500, step: 1, suffix: '份',
+        hint: '更旧的自动删掉。默认 20' },
     ];
 
     var rowStyle = { display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 0', flexWrap: 'wrap' };
@@ -80,12 +86,12 @@ window.__ModuleLoader__.load({
     }
 
     function summaryText(value) {
-      if (!value || value.lanes === undefined) return '抖音评论采集（点「配置」改 max / 并发路数）';
+      if (!value || value.lanes === undefined) return '抖音评论采集（点「配置」改 max / 路数）';
       var minutes = Math.round((Number(value.timeoutMs) || 0) / 60000);
-      return 'max ' + value.max + ' 条 · 并发 ' + value.lanes + ' 路 · 超时 ' + minutes + ' 分钟'
+      return 'max ' + value.max + ' 条 · 顶层 ' + value.lanes + ' 路 · 超时 ' + minutes + ' 分钟'
         + ' · 等扫码 ' + value.waitLoginSec + ' 秒'
-        + ' · 回复并发 ' + (Number(value.replyLanes) > 0 ? value.replyLanes : '内置')
-        + ' · 回复限流 ' + (Number(value.replyThrottleSec) > 0 ? value.replyThrottleSec + ' 秒' : '内置 10 秒');
+        + ' · 回复并发 ' + value.replyLanes
+        + ' · 回复限流 ' + value.replyThrottleSec + ' 秒';
     }
 
     function makePage(ctx) {
@@ -109,7 +115,10 @@ window.__ModuleLoader__.load({
         if (field.kind === 'boolean') {
           return h('label', { style: rowStyle }, [
             h('input', {
-              key: 'input', type: 'checkbox', checked: draft === true, disabled: disabled,
+              key: 'input', type: 'checkbox',
+              // 没存过值时按宿主 Config 的默认值显示（failSnapshot 默认开）
+              checked: draft === undefined || draft === null ? field.def === true : draft === true,
+              disabled: disabled,
               onChange: function (e) { setDraft(e.target.checked); commit(field.key, e.target.checked); },
             }),
             h('span', { key: 'label', style: { fontSize: '13px' } }, field.label),

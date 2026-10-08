@@ -2,7 +2,7 @@
 
 > 所有实现必须严格按本文件。改协议要先改本文件并通知所有实现者。
 >
-> **版本号（v0.5.15 起）**：扩展 / DSH 插件 / MCP **统一编号**，当前均为 `0.5.15`。正文里的 `v0.2.x` 是**扩展侧历史编号**：0.2.11↔发布 v0.5.9、0.2.12↔v0.5.10、0.2.13↔v0.5.11、0.2.14↔v0.5.12、0.2.15↔v0.5.13/v0.5.14。
+> **版本号（v0.5.15 起）**：扩展 / DSH 插件 / MCP **统一编号**，当前均为 `0.5.16`。正文里的 `v0.2.x` 是**扩展侧历史编号**：0.2.11↔发布 v0.5.9、0.2.12↔v0.5.10、0.2.13↔v0.5.11、0.2.14↔v0.5.12、0.2.15↔v0.5.13/v0.5.14。
 
 ## 0. 文件边界（禁止跨界写入）
 
@@ -92,6 +92,7 @@ window.__DTS_COLLECTOR__ = {
    - 只在 `capturing === true` 时攒。
    - 单条响应体读取上限 `MAX_BODY = 2 * 1024 * 1024`（超限则跳过该条并在 batch 里放一条 `{__oversize:true, bytes}` 标记，便于诊断）。
    - **上限保护**：batch 超过 500 条就立即发一次 `captured` 上行并清空，避免内存堆积。
+   - **定时发出**：batch 不满 500 条时，最多停留 `FLUSH_DELAY_MS = 300` 毫秒就发一次 `captured`；收到 `stop-capture` 时立刻把剩下的发掉。（旧实现只在超过 500 条时才发，content.js 又不调 `getBatch`，页面自己的评论响应实际从未送达。）
 7. **重放的响应不进 batch**（避免与「页面自己的采集流」重复计数）：重放结果只走 `replay-result`，由 content.js 决定是否要数据。
    - 重放的 `comments` 放在 `replay-result` 的 `items` 字段里一并返回。
    - > ⚠️ 本节与 §2.6 曾互相矛盾（§2.6 旧文写「含重放响应」），已修正为：**重放绝不进 batch**。
@@ -955,7 +956,7 @@ Hub 对 **MCP 客户端** 的内部接口（同进程 in-memory / 可选 localho
 | `list_videos` | background | `dts_videos` 列表 |
 | `get_comments` | background | 按 videoId 读评论；支持 `mode=summary\|page` |
 | `export` | background / content | 复用 `dts-export`，返回 `filename/bytes/path`；v0.2.9 起可带 `all:true` 走「全部视频」（CSV 末尾多 `video_id` 列，见 §3.10）。**v0.2.11 起与面板「导出 CSV/JSON」共用 `exportComments()`**：`all:true` 时不传 `videoId` 也能导出；**成功回包主体放 `result`**（`scope / videoCount / count / topLevelCount / replyCount / format / filename / bytes / downloadId / path`），**失败保持顶层** `{ok:false, error, hint}`，口径统一 `MISSING_VIDEO_ID`（既没 videoId 又没 all，hint 提示可传 `all:true`）/ `EMPTY_POOL`（本地无数据），**不再下载只有表头的空 CSV**（详见 §3.10） |
-| `clear_storage` | background | 复用 `dts-clear`：带 `videoId` = 只清那条视频（等价面板「清空」）；不带给 `all:true` = 清全部（等价面板「全部清空」，面板那层多一个连点两次的 UI 护栏，桥调用不需要） |
+| `clear_storage` | background | 与 `dts-clear` 同口径：带 `videoId` = 只清那条视频（等价面板「清空」）；显式 `all:true` = 清全部（等价面板「全部清空」，面板那层多一个连点两次的 UI 护栏，桥调用不需要）；两者都没有 → `MISSING_VIDEO_ID`，绝不兜底成全清 |
 
 页面类命令失败时必须回 **可操作 hint**（例如：没有抖音 tab、扩展未就绪请刷新页面、网格页请先点开视频）。
 
@@ -986,7 +987,7 @@ Hub 对 **MCP 客户端** 的内部接口（同进程 in-memory / 可选 localho
 | `ai_set_settings` | `scope?=external\|panel`、`clear?=external\|user\|all`，以及「设置参数」 | 写设置或清设置；两样都空 → `NO_SETTINGS`（不会发桥命令） |
 | `ai_get_comments` | `videoId`, `mode=summary\|page`, `limit?`, `offset?`, `fields?` | 默认摘要，避免刷爆上下文 |
 | `ai_export` | `videoId?`, `all?`, `format=csv\|json` | 文件名/路径；`all:true`（需扩展 ≥ 0.2.11）不传 `videoId` 也能导出本地全部视频合成一份（CSV 末列 `video_id`、回包带 `videoCount`）；两者都不传时 MCP 自己就拒（`videoId 必填`，不发桥命令），旧扩展回 `MISSING_VIDEO_ID` 时补一句「扩展可能太旧（< 0.2.11）」。回包已把 Hub 的 `result` **拍平**（`scope / videoCount / count / topLevelCount / replyCount / format / filename / bytes / path`） |
-| `ai_clear_storage` | `videoId?` | 清空（可选） |
+| `ai_clear_storage` | `videoId?` / `all?` | 清空：`videoId` 清一条；`all:true` 清全部；都不传 → 拒绝 |
 
 **设置参数**（`ai_start_collect` / `ai_set_settings` 通用）: `max`（AI 别名，等价面板齿轮的「目标条数 max」）、`maxCount`、`lanes`、`replyLanes`、`replyGapMs`、`replyWarmupMs`、`replyThrottleMaxWaitMs`。`max` 与 `maxCount` 同时给时以 `max` 为准。其中 `lanes` 是**顶层列表路数**：**v0.2.15 起重新生效**（默认 3 路错峰 200ms，`1` = 老单路；v0.2.12~v0.2.14 期间被固定为单路），实际用的值在 `dts_settings_effective.lanes` 里回显，被自动降路时原因写在 `lanesNote`。
 
