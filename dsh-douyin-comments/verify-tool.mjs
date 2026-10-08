@@ -338,7 +338,7 @@ const slotRegs = [];
 let pageRender = '';
 if (!modErr && clientMod && typeof clientMod.apply === 'function') {
   const controller = {
-    getSnapshot: () => ({ status: 'ready', writable: true, value: { max: 80000, lanes: 4, timeoutMs: 1800000, waitLoginSec: 180, clearBefore: false, replyLanes: 4, replyThrottleSec: 10, replyNoProgressSec: 900 } }),
+    getSnapshot: () => ({ status: 'ready', writable: true, value: { max: 80000, lanes: 3, timeoutMs: 1800000, waitLoginSec: 180, clearBefore: false, replyLanes: 4, replyGlobalGapMs: 0, replyThrottleSec: 120, replyNoProgressSec: 900, failSnapshot: true, keepSnapshots: 20 } }),
     subscribe: () => () => {},
     set: () => Promise.resolve(true),
   };
@@ -490,17 +490,31 @@ check('启动后把这次用的扩展 hash 记进 extension.launched.json',
 const idFixture = path.join(os.tmpdir(), 'dsh-verify-ext-fixture', 'extension');
 const idFixture2 = path.join(os.tmpdir(), 'dsh-verify-ext-fixture-2', 'extension');
 const idFixtureId = extensionIdFromPath(idFixture);
-check('扩展 ID 推导（SHA256(路径 UTF-16LE) 前 16 字节 → a-p）',
+check('扩展 ID 推导（SHA256(路径原生字节) 前 16 字节 → a-p）',
   /^[a-p]{32}$/.test(idFixtureId)
   && extensionIdFromPath(idFixture) === idFixtureId
   && extensionIdFromPath(idFixture2) !== idFixtureId,
   `${idFixtureId}（32 位 a-p；同路径稳定、不同路径不同）`);
-// 独立复算一遍，钉住「取前 16 字节 + 半字节映射 a-p」这个 Chromium 定法（同样不依赖机器路径）
+// 独立复算，钉住 Chromium 定法的两半（与当前机器无关：两种平台的算法都显式传 platform 算）：
+//   · win32：UTF-16LE + 盘符大写（c:\x 与 C:\x 必须同一个 ID）
+//   · POSIX：UTF-8 字节（以前一律用 UTF-16LE，mac/Linux 上 ID 是错的）
 {
-  const digest = crypto.createHash('sha256').update(Buffer.from(path.resolve(idFixture), 'utf16le')).digest();
-  let manual = '';
-  for (let i = 0; i < 16; i++) manual += String.fromCharCode(97 + (digest[i] >> 4)) + String.fromCharCode(97 + (digest[i] & 15));
-  check('扩展 ID 的位映射与 Chromium 定法一致（独立复算）', manual === idFixtureId, manual);
+  const idOf = (bytes) => {
+    const digest = crypto.createHash('sha256').update(bytes).digest();
+    let s = '';
+    for (let i = 0; i < 16; i++) s += String.fromCharCode(97 + (digest[i] >> 4)) + String.fromCharCode(97 + (digest[i] & 15));
+    return s;
+  };
+  const winId = extensionIdFromPath('C:\\Users\\u\\.dsh\\douyin-collector\\extension', 'win32');
+  check('扩展 ID（win32）：UTF-16LE 字节，盘符大小写不影响',
+    winId === idOf(Buffer.from('C:\\Users\\u\\.dsh\\douyin-collector\\extension', 'utf16le'))
+    && extensionIdFromPath('c:\\Users\\u\\.dsh\\douyin-collector\\extension', 'win32') === winId,
+    winId);
+  const posixId = extensionIdFromPath('/home/u/.dsh/douyin-collector/extension', 'linux');
+  check('扩展 ID（POSIX）：UTF-8 字节，不是 UTF-16LE',
+    posixId === idOf(Buffer.from('/home/u/.dsh/douyin-collector/extension', 'utf8'))
+    && posixId !== idOf(Buffer.from('/home/u/.dsh/douyin-collector/extension', 'utf16le')),
+    posixId);
 }
 check('不再拿 ctx.serviceWorkers()[0] 当扩展 SW',
   !/ctx\.serviceWorkers\(\)\[0\]/.test(collectorSrc.replace(/\/\*\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')),
@@ -899,9 +913,12 @@ check('插件描述如实写「到量只停顶层扫描、继续补二级回复�
   && /0\.5\.11 起真正生效/.test(String(def.description || '')));
 const mcpPkgPath = path.join(here, '..', 'douyin-mcp', 'package.json');
 const mcpPkgVer = fs.existsSync(mcpPkgPath) ? JSON.parse(fs.readFileSync(mcpPkgPath, 'utf8').replace(/^\uFEFF/, '')).version : '(无)';
-check('三件套版本统一：插件 package.json / 扩展 manifest / MCP package.json 都是 0.5.15',
-  manifest.version === '0.5.15' && targetManifest.version === '0.5.15' && mcpPkgVer === '0.5.15',
-  `plugin=${manifest.version} ext=${targetManifest.version} mcp=${mcpPkgVer}`);
+// 断言「四处版本号互相一致」而不是「都等于某个固定值」——后者每发一版都要改测试，
+// 而且只改了三处（漏一处）时反而会通过。这里把仓库里的 extension/manifest.json 一起钉住。
+const extSrcVer = JSON.parse(fs.readFileSync(path.join(here, 'extension', 'manifest.json'), 'utf8').replace(/^﻿/, '')).version;
+check('三件套版本统一：插件 package.json / 扩展 manifest（源 + 安装后）/ MCP package.json 四处一致',
+  manifest.version === extSrcVer && extSrcVer === targetManifest.version && targetManifest.version === mcpPkgVer,
+  `plugin=${manifest.version} extSrc=${extSrcVer} extInstalled=${targetManifest.version} mcp=${mcpPkgVer}`);
 // ---------- 3d) v0.5.12：「假限流」三处修正 ----------
 // 用户 2026-10-07 报「我怀疑这个限速是假限速，有时候我自己点就可以拿到」，随后又猜
 // 「请求过快、还没拿到返回结果就说是限流」。真机三轮探针（_rl_probe/_rl_direct）证伪了后者：
@@ -930,9 +947,12 @@ if (fs.existsSync(mcpPath)) {
   check('MCP 的 lanes 说明改成「错峰多路」并带实测数字（不再是【已停用】）',
     /顶层列表路数（默认 3，错峰多路/.test(mcpSrc) && !/【已停用】顶层扫描并发路数/.test(mcpSrc));
   const mcpPkgRaw = fs.readFileSync(path.join(here, '..', 'douyin-mcp', 'package.json'), 'utf8');
-  check('MCP VERSION = 0.5.15（与 package.json 对齐；三件套统一编号）',
-    /const VERSION = '0\.5\.15';/.test(mcpSrc) && /"version": "0\.5\.15"/.test(mcpPkgRaw),
-    (mcpSrc.match(/const VERSION = '[^']*'/) || [''])[0]);
+  // 同样不写死数字：只要求 mcp.js 的 VERSION 与 package.json 的 version 一致
+  const mcpVerInSrc = (mcpSrc.match(/const VERSION = '([^']*)'/) || [, ''])[1];
+  const mcpVerInPkg = (mcpPkgRaw.match(/"version":\s*"([^"]*)"/) || [, ''])[1];
+  check('MCP 的 VERSION 与 package.json 对齐（三件套统一编号）',
+    mcpVerInSrc !== '' && mcpVerInSrc === mcpVerInPkg,
+    `mcp.js=${mcpVerInSrc || '(无)'} package.json=${mcpVerInPkg || '(无)'}`);
 }
 check('插件工具描述里的 lanes 不再写「已停用」', !/已停用/.test(String(def.description || '')),
   /已停用/.test(String(def.description || '')) ? '描述里仍有「已停用」' : 'ok');

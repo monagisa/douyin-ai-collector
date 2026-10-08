@@ -28,7 +28,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-const VERSION = '0.5.15';
+const VERSION = '0.5.16';
 const HUB_NAME = 'douyin-collector-mcp';
 
 const argv = process.argv.slice(2);
@@ -623,11 +623,13 @@ const TOOLS = [
   },
   {
     name: 'ai_clear_storage',
-    description: '清空扩展本地评论存储。videoId 指定时只清该视频；不传则清空全部（危险操作）。',
+    description: '清空扩展本地评论存储。传 videoId 只清该视频；要清空**全部**视频必须显式传 all:true（不可恢复）。'
+      + '两者都不传会被拒绝（MISSING_VIDEO_ID），不会兜底成全清。',
     inputSchema: {
       type: 'object',
       properties: {
-        videoId: { type: 'string', description: '可选；不传清空全部' }
+        videoId: { type: 'string', description: '要清空的视频 ID' },
+        all: { type: 'boolean', description: 'true = 清空本地全部视频的评论（危险、不可恢复）；默认 false' }
       },
       additionalProperties: false
     }
@@ -695,8 +697,17 @@ async function callTool(name, args) {
         if (a.scope) payload.scope = a.scope;
         return toolResult(JSON.stringify(await callExtension('set_settings', payload), null, 2));
       }
-      case 'ai_clear_storage':
+      case 'ai_clear_storage': {
+        // 在 MCP 侧也拦一次：旧扩展（没有 all 护栏）收到空参数会清空全部
+        if (!a.videoId && a.all !== true) {
+          return toolResult(JSON.stringify({
+            ok: false,
+            error: 'MISSING_VIDEO_ID',
+            hint: '清空一条视频请传 videoId；要清空本地全部视频请显式传 all:true（不可恢复）'
+          }), true);
+        }
         return toolResult(JSON.stringify(await callExtension('clear_storage', a), null, 2));
+      }
       default:
         return toolResult(JSON.stringify({ ok: false, error: 'UNKNOWN_TOOL:' + name }), true);
     }

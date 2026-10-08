@@ -406,9 +406,32 @@ function readManifest(dir) {
   } catch (e) { return null; }
 }
 
-/** 未打包扩展的 ID：SHA256(绝对路径的 UTF-16LE 字节) 前 16 字节，每个半字节 0-f 映射到 a-p（Chromium 定法） */
-export function extensionIdFromPath(dir) {
-  const h = crypto.createHash('sha256').update(Buffer.from(path.resolve(dir), 'utf16le')).digest();
+/**
+ * 哈希前的路径字节，按 Chromium 的定法（crx_file::id_util::GenerateIdForPath）：
+ *   · 哈希的是 base::FilePath 的**原生**字节 —— Windows 上是 wchar（UTF-16LE），
+ *     POSIX 上是 char（UTF-8）。以前一律用 UTF-16LE，mac/Linux 上算出来的 ID 是错的，
+ *     扩展 SW 睡着时的兜底页 chrome-extension://<id>/index.html 打不开；
+ *   · Windows 上先把盘符转大写（MaybeNormalizePath）；
+ *   · 加载未打包扩展时路径先过 MakeAbsoluteFilePath，POSIX 上就是 realpath（会解开符号链接，
+ *     比如 macOS 的 /var → /private/var），所以这里也解一次（目录不存在就按原样）。
+ * platform 参数只给自检用（在一台机器上把两种定法都钉住）。
+ */
+export function extensionIdPathBytes(dir, platform = process.platform) {
+  if (platform === 'win32') {
+    let p = path.win32.resolve(dir);
+    if (/^[a-z]:/.test(p)) p = p[0].toUpperCase() + p.slice(1);
+    return Buffer.from(p, 'utf16le');
+  }
+  let p = path.posix.resolve(dir);
+  if (platform === process.platform) {
+    try { p = fs.realpathSync.native(p); } catch (e) { /* 目录还不存在：按原样 */ }
+  }
+  return Buffer.from(p, 'utf8');
+}
+
+/** 未打包扩展的 ID：SHA256(路径原生字节) 前 16 字节，每个半字节 0-f 映射到 a-p（Chromium 定法） */
+export function extensionIdFromPath(dir, platform = process.platform) {
+  const h = crypto.createHash('sha256').update(extensionIdPathBytes(dir, platform)).digest();
   let id = '';
   for (let i = 0; i < 16; i++) {
     id += String.fromCharCode(97 + (h[i] >> 4)) + String.fromCharCode(97 + (h[i] & 15));

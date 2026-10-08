@@ -101,11 +101,24 @@
 
   // ---------- 采集缓冲（协议 §2.6） ----------
 
-  function flushIfFull(from) {
-    if (batch.length <= MAX_BATCH) return;
+  /** 攒批的最长停留时间：不满 MAX_BATCH 也要按时发出去，否则一次采集里页面自己的
+   *  那几页评论永远停在主世界里（以前只有「超过 500 条」才发，content.js 又从不调 getBatch）。 */
+  var FLUSH_DELAY_MS = 300;
+  var flushTimer = 0;
+
+  function flushNow(from) {
+    if (flushTimer) { clearTimeout(flushTimer); flushTimer = 0; }
+    if (!batch.length) return;
     var items = batch;
     batch = [];
     up('captured', { items: items, from: from || 'page' });
+  }
+
+  function flushIfFull(from) {
+    if (batch.length > MAX_BATCH) { flushNow(from); return; }
+    if (batch.length && !flushTimer) {
+      flushTimer = setTimeout(function () { flushTimer = 0; flushNow(from); }, FLUSH_DELAY_MS);
+    }
   }
 
   /** 解析一条列表响应，把 comments 攒进 batch；只在 capturing 时攒 */
@@ -129,6 +142,7 @@
 
   /** 取出并清空待上报缓冲（协议 §2 的 getBatch） */
   function getBatch() {
+    if (flushTimer) { clearTimeout(flushTimer); flushTimer = 0; }
     var items = batch;
     batch = [];
     return items;
@@ -366,6 +380,7 @@
         break;
       case 'stop-capture':
         capturing = false;
+        flushNow('page');   // 停止前攒下的那点别丢在主世界里
         break;
       case 'status':
         // 隔离世界 → 主世界镜像，供 getStatus() 读取（测试/调试用）

@@ -1661,9 +1661,14 @@
         break;
 
       case 'captured':
-        // 页面自己的评论响应（重放结果不走这里，见协议 §2.7）
-        pushComments(accept(p.items || []), p.hasMore === undefined ? 1 : p.hasMore)
-          .catch(function (e) { errText = String(e); render(); });
+        // 页面自己的评论响应（重放结果不走这里，见协议 §2.7）。
+        // 收到就立刻落库：主世界那边已经攒过批了；若留在 pendingItems 里等凑够 50 条，
+        // 停止采集时最后那一小批会滞留到下一次采集，届时 videoId 可能已经换成别的视频。
+        (function (hm) {
+          pushComments(accept(p.items || []), hm)
+            .then(function () { return flushComments(hm); })
+            .catch(function (e) { errText = String(e); render(); });
+        })(p.hasMore === undefined ? 1 : p.hasMore);
         break;
 
       case 'replay-result':
@@ -1981,6 +1986,9 @@
 
         // v0.5.13 兜底：同一轮里两路返回**逐条相同**的页 ⇒ 服务端又把并发的同签名请求并成一个响应了。
         // 当轮就降回单路，并如实写进 dts_settings_effective —— 宁可慢，也不再静默少采（这是少采的唯一可见信号）。
+        // mergeAt = 重复的那一对里**靠前**那一路的下标：服务端合并时 next 字段照样是对的，
+        // 两路里到底哪一路拿到的是「本该属于它的页」无从判断，所以从靠前那一路起都不可信。
+        var mergeAt = -1;
         if (reqs.length > 1) {
           var mergedLanes = false;
           var ai; var bi; var m;
@@ -1992,7 +2000,7 @@
                 for (m = 0; m < ai.length; m++) {
                   if (String(ai[m].cid) !== String(bi[m].cid)) { sameIds = false; break; }
                 }
-                if (sameIds) { mergedLanes = true; break; }
+                if (sameIds) { mergedLanes = true; mergeAt = i; break; }
               }
             }
           }
@@ -2009,11 +2017,22 @@
           }
         }
 
-        // 先校验「每路都拿满一页」，再决定要不要接受这一轮
+        // cursor 只能推进到「从第 0 路起**连续**可信」的那一段末尾：
+        //   · 某一路失败 → 它那一页没拿到，后面的路再成功也不能越过它，否则那一页被永久跳过；
+        //   · 检测到合并 → 从 mergeAt 起的页都可能是别人的内容（next 字段却是对的），同理。
+        // 截断点之后成功的路照样 accept（按 cid 去重，重拉也不会重复落库），只是不参与推进 cursor、不参与判终点。
+        var cut = reqs.length;
+        for (i = 0; i < reqs.length; i++) {
+          if (!reqs[i].ok) { cut = i; break; }
+        }
+        if (mergeAt >= 0 && mergeAt < cut) cut = mergeAt;
+        var truncated = cut < reqs.length;
+
+        // 先校验「每路都拿满一页」，再决定要不要接受这一轮（只看可信前缀）
         var laneShort = false;
         var laneEnd = false;
         var anyLaneHasMore = false;
-        for (i = 0; i < reqs.length; i++) {
+        for (i = 0; i < cut; i++) {
           var rr = reqs[i];
           if (!rr.ok) continue;
           var ni = (rr.items || []).length;
@@ -2032,6 +2051,7 @@
         if (laneEnd && anyLaneHasMore) laneEnd = false;
 
         var anyOk = false;
+        var anyFail = false;
         var maxNext = cursor;
         var freshAll = [];
         for (i = 0; i < reqs.length; i++) {
@@ -2039,6 +2059,7 @@
           pages++;
           if (q.ms) lastMs = q.ms;   // 面板标签是"上一页耗时"：显示最近值，不是历史最大值
           if (!q.ok) {
+            anyFail = true;
             failStreak++;
             setPhase('collecting', '第 ' + pages + ' 路失败：' + (q.error || ('status=' + q.status)) +
               '（连续 ' + failStreak + '/' + FAIL_STREAK_PAUSE + '）');
@@ -2054,7 +2075,8 @@
           // 服务端 total 是有噪声的：同一轮里不同页会分别回 3170 / 50 / 12（实测见
           // probe-tail.mjs），尾页甚至回 0。取历史最大值，绝不让尾页的小数字覆盖权威值。
           if (typeof q.total === 'number' && q.total > total) total = q.total;
-          if (typeof q.next === 'number' && isFinite(q.next) && q.next > maxNext) maxNext = q.next;
+          // 只有可信前缀里的路才能推进 cursor（见上面 cut 的说明）
+          if (i < cut && typeof q.next === 'number' && isFinite(q.next) && q.next > maxNext) maxNext = q.next;
           freshAll = freshAll.concat(accept(q.items || []));
         }
 
@@ -2065,7 +2087,8 @@
           continue;
         }
 
-        failStreak = 0;
+        // 部分失败不清零：否则「第 0 路一直失败、其余路成功」会无限重试同一个 cursor、永远不暂停
+        if (!anyFail) failStreak = 0;
         passNew += freshAll.length;
         // 触底 ≠ 采全：热榜区每轮会重排，从头重扫一遍还能捞到新的（去重累加）。
         // 上一轮新增还有这么多 → 值得再扫；否则停手，别白跑。
@@ -2073,6 +2096,9 @@
           pass < MAX_PASSES && passNew >= RESCAN_MIN_NEW;
         await pushComments(freshAll, (laneEnd && !willRescan) ? 0 : 1);
         await flushComments((laneEnd && !willRescan) ? 0 : 1);
+        // 上面逐路处理时可能已因连续失败转 paused（部分失败不再清零 failStreak，这条路现在走得到）：
+        // 本轮拿到的已经落库，到此为止 —— 别让下面「到量」那段把阶段又改回 collecting。
+        if (phase !== 'collecting') break;
 
         // 面板「设置 → 目标条数」到了就**停止顶层扫描**（0 = 不限）。
         // 0.5.11 修正：这里只跳出顶层 while，二级回复由循环外的补采段继续补完 ——
@@ -2123,6 +2149,16 @@
 
         // cursor 必须由服务端给的 next 推进（协议 §3.2）
         if (epoch !== collectEpoch) break;
+        if (truncated) {
+          // 本轮被截断（有路失败 / 被服务端合并）：只推进到可信前缀的末尾，截断处那一页下轮重拉。
+          // 这不是「cursor 未推进」的异常（那条判据会误报并改写阶段），所以单独处理。
+          cursor = maxNext;
+          render();
+          await sleep(anyFail
+            ? backoffMs(failStreak)
+            : MIN_INTERVAL_MS + Math.random() * JITTER_MS);
+          continue;
+        }
         if (maxNext <= cursor) {
           failStreak++;
           setPhase('collecting', 'cursor 未推进（maxNext=' + maxNext + '，当前=' + cursor + '），连续 ' +

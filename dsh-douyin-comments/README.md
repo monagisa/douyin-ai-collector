@@ -1,7 +1,21 @@
 # dsh-douyin-comments
 
 DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**，注册一个工具 `douyin_comments`。
-（插件版本 0.5.15；**v0.5.15 起插件 / 内置扩展「抖音评论采集器」/ MCP `douyin-collector-mcp` 三件套统一编号**，同为 `0.5.15`。）
+（插件版本 0.5.16；**v0.5.15 起插件 / 内置扩展「抖音评论采集器」/ MCP `douyin-collector-mcp` 三件套统一编号**，同为 `0.5.16`。）
+
+**0.5.16 新增**（2026-10-08 代码审查发现的问题，**扩展三件套都有改动**）：
+
+1. **扩展侧修 6 处数据正确性缺陷**（详见 `douyin-collector/README.md` 的 v0.5.16 条）：
+   多路翻页「一路失败就跳过那一页」、检测到两路同页后仍丢页、并发落库互相覆盖、
+   `clear_storage` 桥命令空参数会清空全部、页面自己的评论响应从未送达、扩展 ID 在 macOS/Linux 上算错。
+   另有 1 处缓解（落库合批 + 桶内存副本，**仍是整桶写**）。
+2. **插件侧**：`client/client.js` 的设置表单与宿主 `Config` 逐项对齐——`replyLanes` / `replyThrottleSec`
+   的下限改回宿主的 1 / 10（旧版允许填 0，但宿主会拒绝或钳掉；内置限流等待是 120 秒不是 10 秒）、
+   `lanes` 文案从「默认 4」改成「默认 3，错峰多路」，补上缺的 `replyGlobalGapMs` / `failSnapshot` /
+   `keepSnapshots` 三个字段（布尔项新增 `def` 兜底显示，未存过值时按宿主默认值勾选）。
+3. **自测 195/195 全绿**：版本一致性断言从「都等于 `0.5.15`」改成「**四处互相一致**」
+   （插件 `package.json` / `extension/manifest.json` / 安装后的扩展 manifest / MCP `package.json`），
+   以后每发一版不用再改测试，而且漏改一处也能测出来。
 
 **0.5.15 新增**（用户 2026-10-07 说「同步一下版本号吧，有点乱」）：
 
@@ -745,22 +759,22 @@ node sync-extension.mjs D:\path\to\ext
 ## 打包 / 发布
 
 **正式分发走 GitHub Releases**（仓库里不放二进制包，`release/` 只在本地做打包输出）：
-<https://github.com/monagisa/douyin-ai-collector/releases> —— 当前版本 [v0.5.15](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.15)，
-附件有 `dsh-douyin-comments-v0.5.15.zip`（整目录单文件）、`dsh-douyin-comments-0.5.15.tgz`、
-`douyin-collector-extension-v0.5.15.zip`、`douyin-collector-mcp-v0.5.15.zip`、`USAGE-zh-CN.md`（中文说明，zip 里叫 `使用说明.md`）、`SHA256SUMS.txt`。
-**v0.5.15 起三件套同号**（插件 = 扩展 = MCP = `0.5.15`）：扩展 manifest 由 0.2.15 改为 0.5.15、MCP 由 0.3.6 改为 0.5.15，功能一行未改。
-更早一版 [v0.5.14](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.14)（插件 0.5.14 / 扩展 0.2.15 / MCP 0.3.6，首次加入运行日志 + 失败现场快照）。
+<https://github.com/monagisa/douyin-ai-collector/releases> —— 当前版本 [v0.5.16](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.16)，
+附件有 `dsh-douyin-comments-v0.5.16.zip`（整目录单文件）、`dsh-douyin-comments-0.5.16.tgz`、
+`douyin-collector-extension-v0.5.16.zip`、`douyin-collector-mcp-v0.5.16.zip`、`USAGE-zh-CN.md`（中文说明，zip 里叫 `使用说明.md`）、`SHA256SUMS.txt`。
+**v0.5.15 起三件套同号**（插件 = 扩展 = MCP = `0.5.16`）。
+更早一版 [v0.5.15](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.15)（纯版本号统一，功能与 v0.5.14 一致）。
 
-本地发布物在 `D:\dycopy\release\dsh-douyin-comments-v0.5.15\`：
+本地发布物在 `D:\dycopy\release\dsh-douyin-comments-v0.5.16\`：
 
 | 文件 | 说明 |
 | --- | --- |
-| `dsh-douyin-comments-0.5.15.tgz` | 插件本体，14 个文件（`index.js`/`collector.mjs`/`cordis.patch.yml`/`README.md`/`package.json` + `client/client.js` + `extension/` 8 个） |
-| `douyin-collector-extension-v0.5.15.zip` | 单独的扩展 zip，顶层目录 `douyin-collector/`（8 个文件），供 `chrome://extensions` 手动「加载已解压的扩展程序」（**本版 manifest 版本号从 0.2.15 改成 0.5.15 ⇒ 必须重新打包**，不能沿用 v0.5.13 / v0.5.14 的 zip） |
+| `dsh-douyin-comments-0.5.16.tgz` | 插件本体，14 个文件（`index.js`/`collector.mjs`/`cordis.patch.yml`/`README.md`/`package.json` + `client/client.js` + `extension/` 8 个） |
+| `douyin-collector-extension-v0.5.16.zip` | 单独的扩展 zip，顶层目录 `douyin-collector/`（8 个文件），供 `chrome://extensions` 手动「加载已解压的扩展程序」（**本版扩展代码与 manifest 版本号都变了 ⇒ 必须重新打包**，不能沿用旧 zip） |
 | `使用说明.md` | 给收件人看的中文说明（安装/扫码/两处设置/参数/FAQ/macOS） |
 | `SHA256SUMS.txt` | 三个文件的 SHA256 |
 
-整包单文件 `dsh-douyin-comments-v0.5.15.zip`（把上面整目录打成一个单文件，方便直接发给人）**也放在同一个 `release\dsh-douyin-comments-v0.5.15\` 目录里**（v0.5.12 起改为随版本目录存放，不再放在 `release\` 根下）。
+整包单文件 `dsh-douyin-comments-v0.5.16.zip`（把上面整目录打成一个单文件，方便直接发给人）**也放在同一个 `release\dsh-douyin-comments-v0.5.16\` 目录里**（v0.5.12 起改为随版本目录存放，不再放在 `release\` 根下）。
 
 更早的草稿目录（`D:\dycopy\release\dsh-douyin-comments-v0.5.7\` 及以前）都保留作对照，不删。
 
@@ -768,14 +782,14 @@ node sync-extension.mjs D:\path\to\ext
 
 ```powershell
 cd D:\dycopy\dsh-douyin-comments
-npm pack --pack-destination D:\dycopy\release\dsh-douyin-comments-v0.5.15
+npm pack --pack-destination D:\dycopy\release\dsh-douyin-comments-v0.5.16
 
 # 扩展开 zip（顶层目录名必须是 douyin-collector；只装 8 个运行文件，别把 md 打进去）。
 # 用 .NET ZipFile 逐个 CreateEntry 造，避免 Compress-Archive 多套一层目录：
-# 本版扩展 manifest 的版本号变了（0.2.15 → 0.5.15），**必须重新打**，不能沿用旧 zip。
-$rel = 'D:\dycopy\release\dsh-douyin-comments-v0.5.15'
+# 本版扩展的**代码和 manifest 版本号都变了**（0.5.15 → 0.5.16），**必须重新打**，不能沿用旧 zip。
+$rel = 'D:\dycopy\release\dsh-douyin-comments-v0.5.16'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-$zip = [IO.Compression.ZipFile]::Open("$rel\douyin-collector-extension-v0.5.15.zip", 'Create')
+$zip = [IO.Compression.ZipFile]::Open("$rel\douyin-collector-extension-v0.5.16.zip", 'Create')
 Get-ChildItem D:\dycopy\douyin-collector -File |
   Where-Object { $_.Extension -in '.js','.json','.css','.html' } |
   ForEach-Object { [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $_.FullName, "douyin-collector/$($_.Name)") | Out-Null }

@@ -8,7 +8,18 @@
 | 不改 | 扩展的签名语义、限速、落库逻辑 |
 | 传输 | AI ↔ 本进程：**stdio**（JSON-RPC）；扩展 ↔ Hub：**HTTP 127.0.0.1** |
 | 依赖 | Node ≥ 18，**无 npm 包** |
-| 版本 | **`0.5.15`**（v0.5.15 起与扩展 / DSH 插件**统一编号**；v0.5.9~v0.5.14 期间本进程自编号 0.3.2~0.3.6，对照见下） |
+| 版本 | **`0.5.16`**（v0.5.15 起与扩展 / DSH 插件**统一编号**；v0.5.9~v0.5.14 期间本进程自编号 0.3.2~0.3.6，对照见下） |
+
+**0.5.16 新增**（2026-10-08）——**给 `ai_clear_storage` 加护栏，并要求显式 `all:true` 才能全清**：
+
+1. **旧行为会误删全库**：`clear_storage` 以前是「没有 `videoId` 就清空全部」，而面板那条路（`dts-clear`）
+   一直要求显式 `all:true`。AI 侧模型漏传/传空一个参数就把所有视频的数据删了，且不可恢复。
+2. **现在两层都拦**：MCP 侧 `ai_clear_storage` 若既没有 `videoId` 也没有 `all:true`，直接返回
+   `MISSING_VIDEO_ID` 并附提示，**不再下发命令**（这一层也保护「扩展还没更新」的情况）；
+   扩展侧 `clear_storage` 同样要求显式 `all:true`，否则回 `MISSING_VIDEO_ID`。
+   工具描述与 `inputSchema` 同步加了 `all` 字段。
+3. 其余工具、参数、返回值、Hub 协议**一律不变**。扩展侧本版另有 6 处数据正确性修复
+   （多路丢页、并发覆盖写等，详见 `douyin-collector/README.md`），MCP 只是跟着统一版本号。
 
 **0.5.15 新增**——**版本号与扩展、DSH 插件统一**：`package.json` 与 `mcp.js` 的 `VERSION` 从 `0.3.6` 改为 `0.5.15`。
 工具、参数、返回值、Hub 协议**一律不变**（纯口径统一）。旧编号对照：v0.5.9↔0.3.2、v0.5.10↔0.3.3、v0.5.11↔0.3.4、v0.5.12↔0.3.5、v0.5.13 / v0.5.14↔0.3.6。
@@ -197,7 +208,7 @@ chrome.storage.local.set({ dts_ai_bridge: { host: '127.0.0.1', port: 18765, enab
 | `ai_set_settings` | 写/清设置：`scope=external`（默认，`dts_settings`）或 `panel`（`dts_user_settings`）；`clear=external\|user\|all` 恢复默认 |
 | `ai_get_comments` | `mode=summary`（默认）或 `mode=page` |
 | `ai_export` | 导出 CSV/JSON：默认导一个 `videoId`；`all: true` 导出本地全部视频合集（CSV 带 `video_id` 列）。返回 filename / path / bytes / count / videoCount |
-| `ai_clear_storage` | 清空（`videoId` 可选；不传清全部，危险） |
+| `ai_clear_storage` | 清空（传 `videoId` 只清该视频；清全部必须显式传 `all:true`，两者都不传会被拒绝） |
 
 ### 采集设置（AI 可调）
 
@@ -306,7 +317,7 @@ chrome.storage.local.set({ dts_ai_bridge: { host: '127.0.0.1', port: 18765, enab
 - 命令通道不经公网；扩展只出站访问本机 Hub  
 - **CORS**：Hub 对 `chrome-extension://` 回 `Access-Control-Allow-Origin`；扩展 manifest 亦声明 `http://127.0.0.1/*` host permission（双保险，否则 Chrome 会拦 `fetch`）  
 - 采集仍遵守扩展原则：不逆向签名、不绕登录、不伪造身份  
-- `ai_clear_storage` 无 `videoId` 会清空全部本地池  
+- `ai_clear_storage` 要清空全部本地池必须显式传 `all:true`（不传 `videoId` 也不传 `all` 会返回 `MISSING_VIDEO_ID`）  
 
 ---
 
