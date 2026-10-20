@@ -1,7 +1,122 @@
 # dsh-douyin-comments
 
 DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**，注册一个工具 `douyin_comments`。
-（插件版本 0.5.16；**v0.5.15 起插件 / 内置扩展「抖音评论采集器」/ MCP `douyin-collector-mcp` 三件套统一编号**，同为 `0.5.16`。）
+（插件版本 0.5.29；**v0.5.15 起插件 / 内置扩展「抖音评论采集器」/ MCP `douyin-collector-mcp` 三件套统一编号**，同为 `0.5.29`。）
+
+**0.5.29 变更**（2026-10-20 客户「那加这个兜底」）：CSV 的 `user_unique_id`（抖音号）为空时
+**改填数字短号**（`u.unique_id || u.short_id`），不新增列（单视频仍 19 列 / 多条 20 列），
+中文说明行标签改为 `抖音号(空则填数字短号)`。JSON / AI 返回里的原始字段不动。自测 **217/217**。
+
+**0.5.28 变更**（2026-10-20 客户「这个短 id 是什么，不要了」）：CSV **删掉 `user_short_id` 列**——
+「短 ID」就是账号页上的**数字抖音号**，和 `user_unique_id`（自定义抖音号，可空）高度重复。
+单视频 **19 列**、多条视频 **20 列**；保留 `user_sec_uid`（加密 ID，`https://www.douyin.com/user/<sec_uid>` 即主页）
+与 `user_unique_id`（抖音号）。JSON / AI 返回里的 `user.short_id` 不动。自测 **216/216**。
+
+**0.5.27 新增**（2026-10-20 客户「列头都是英文，客户看不懂，能不能加行中文解释」）：
+
+1. 导出的 CSV **第 2 行是中文列名说明**（第 1 行英文键不动 ⇒ 机器解析、AI 读取、历史脚本口径都不变）：
+   首列写成 `# 评论ID`，`#` 开头就是「说明行」标记；解析时跳过首列以 `#` 开头的行，数据行数 = 总行数 − 2。
+2. `collector.mjs` 导出 `CSV_COL_LABELS` / `csvLabelRow(cols)`，扩展 `background.js` 里有**逐字相同**的标签表；
+   `verify-tool.mjs` 新增两条断言（说明行插入位置 + 两边标签表同源、21 个键）。单视频 20 列、多条视频 21 列
+   都自动带上说明行（末列说明是 `视频ID(多视频导出)`）。JSON 不变。
+3. 自测 **216/216**；下游 `douyin-analysis` 的 CSV 导入已同步跳过 `#` 说明行。真机导出的 CSV 见「输出格式」。
+
+**0.5.26 变更**（2026-10-20 用户「能不打开其他的浏览器就获得标题吗」）：
+
+1. 不再打开任何页面/标签页去补作品标题。实测不开页面拿不到（视频页是空壳 HTML、老分享接口 `11110`、
+   `aweme/detail` 无签名 403），所以把 v0.5.24 的补齐链路（`dts-fix-titles` 消息、`readTitleFromVideoPage`、
+   `fixVideoTitles`、浮层打开时自动补）整套删掉。
+2. 抓不到标题的条目在浮层里显示「视频 <末 8 位>」，下一行仍有「ID … · 采集 …」，旧数据同样适用。
+3. 自测 **214/214**、真机 **8/8**（`_probe_titles_0526.mjs`：显示「视频 96371819」；打开浮层前后窗口数/标签页数不变；
+   测完还原原标题不写坏数据）。
+
+**0.5.25 变更**（2026-10-20 用户「这个按键不要了」）：
+
+1. 去掉自选导出浮层里的「读取真实标题」按钮（v0.5.24 加的手动补标题入口）及其 `.dts-btn-wide` 样式。
+2. 自动补全保留：打开浮层发现通用页名（「抖音精选电脑版」等）时仍会自动开隐藏标签页读详情页标题并写回。
+   自测 **215/215**、真机 **6/6**（日志 `D:\dycopy\devkit\_probe-titles-0525.txt`）。
+   （**v0.5.26 起连自动补也删掉了**，见上方 0.5.26 变更。）
+
+**0.5.24 新增**（2026-10-20 用户「很难区分啊，能不能把这个变成视频的标题」）：
+
+1. 自选导出浮层每行显示**作品标题**：以前取的是采集时的 `document.title`，在推荐/精选网格页只能是
+   「抖音精选电脑版」这类通用页名，多条重名认不出。现在后台会开隐藏标签页去
+   `https://www.douyin.com/video/<id>` 读详情页标题补全（只改 `dts_videos[id].title`，不动评论数据）。
+2. 每行标题下加小字 `ID <末 8 位> · 采集 <MM-DD HH:mm>`；标题仍是通用页名的先显示 `视频 <末 8 位>`；
+   浮层打开时自动补一次（v0.5.25 起没有手动按钮；v0.5.26 起不再自动补）。自测 **214/214**、真机 **7/7**
+   （日志 `D:\dycopy\devkit\_probe-titles-0524.txt`，截图 `D:\dycopy\devkit\_panel-0524-titles@2x.png`）。
+
+**0.5.23 新增**（2026-10-20 用户「导出视频那里，选中没有提示」）：
+
+1. 自选导出浮层的选中反馈加强：选中行**整行淡蓝底 + 左侧 3px 亮条**、标题加粗提亮、复选框 15→**17px**；
+   顶部「已选 K 个（约 M 条）」变蓝加粗，确认按钮变成「导出选中的 K 个…」；点整行任意位置（含标题）都能勾选。
+2. 纯 CSS + 一行 `classList.toggle('dts-has-sel', …)`，导出协议不变；自测 **212/212**、真机 **13/13**
+   （日志 `D:\dycopy\devkit\_probe-picksel-0523.txt`，截图 `D:\dycopy\devkit\_panel-0523-picker-selected@2x.png`）。
+
+**0.5.22 修复**（2026-10-20 用户「全部清空后，选择的导出的视频不会变，我要点进去才会变回来」）：
+
+1. 「全部清空」成功后导出选择立刻复位（`exportPick = null` + `exportPickTouched = false`），
+   面板按钮立刻回到「导出范围：本条视频 ▾」；单条「清空」也会把该视频从选择里剔掉、空了回默认。
+2. 根因是两条清空路径都先 `setPhase()`（内部 `render()`）再改 `exportPick`，所以画的是旧选择，
+   要等下一次刷新才更新；现在改成**先改选择再 `setPhase()`**。
+3. 自测 211/211、真机 19/19（临时 profile + 种数据，不碰真实采集数据；日志 `D:\dycopy\devkit\_probe-clearall-0522.txt`）。
+
+**0.5.21 新增**（2026-10-20 用户「那本条和全部那个就可以不要了」）：
+
+1. **扩展面板「导出范围」只留一个入口**：删掉「本条视频 / 全部视频」两个按钮，只剩
+   **「导出范围 ▾」**；默认不点也等于「本条视频」（默认值 = 当前视频），点开可勾任意几条
+   （「全选」= 本地全部视频）。选 1 条 19 列、选 ≥2 条 20 列（末尾 `video_id`）。
+2. 用户亲手改过选择后**不再自动跟随当前视频**；没选就点导出会自动打开浮层。
+3. 工具参数与后台协议**不变**（`all` / `videoId` / `videoIds` 仍可用，只是面板不再发 `all:true`）；
+   纯前端改动 + `sync-extension.mjs`，自测 210/210、真机探针 18/18
+   （日志 `D:\dycopy\devkit\_probe-pick-0521.txt`）。
+
+**0.5.20 新增**（2026-10-20 用户反馈「导出只能本条 / 全部，限制有点大」）：
+
+1. **扩展面板「导出范围」新增「自选视频…」**：浮层里列出本地已存的每个视频（标题 + 条数），
+   勾选任意几条 → 确定，再点「导出 CSV / 导出 JSON」就只导这几条。选 **1 条** 与「本条视频」同列数
+   （19 列）；选 **多条** 与「全部视频」一致（20 列，末尾 `video_id`），文件名 `selected<N>`。
+   本插件工具 `douyin_comments` 本身的导出仍是「只导本轮采到的评论」，不受影响。
+2. MCP `ai_export` 新增 **`videoIds: [...]`** 参数（优先级 `all` > `videoIds` > `videoId`）；
+   旧扩展会把这种请求当缺 `videoId` 并提示升级到 v0.5.20。
+   三件套版本同步 `0.5.20`，自测 **209/209** 全绿（新增 7 条自选导出断言）。真机验证
+   `_probe_pick_0520.mjs` **13/13 PASS**（日志 `D:\dycopy\devkit\_probe-pick-0520.txt`）：
+   浮层列出本地 5 个视频 → 勾 2 个（109 + 1365 条）导出 `douyin-comments-selected2-<ts>.csv`
+   **421676 B / 21 列 / 末列 `video_id` / 行数 1474 = 109+1365**，视频 id 正好那两个；改选 1 个
+   导出 `douyin-comments-7600000000000000010-<ts>.csv` **20 列**。
+   排查时踩到一个坑：Chrome 把扩展 background（MV3 SW）的编译脚本缓存在 profile 的
+   `Default/Service Worker/ScriptCache`，**扩展文件换了、manifest 版本号也变了，浏览器里照跑旧
+   background.js**；正式采集路径（`collectDouyinComments`）已按扩展 hash 自动清理，自己写的探针
+   若直接 `launchPersistentContext` 必须先调 `clearStaleScriptCaches(profile)`。
+
+**0.5.19 新增**（2026-10-20 客户反馈「字体太小了，插件框改大点，字体改大点」）：
+
+1. **采集面板整体放大 ≈1.3 倍**：宽 236px → **310px**、基础字号 11px → **14px**、行高 1.45 → **1.5**，
+   按钮 / 输入框 / 进度条 / 内边距 / 间距同比例放大；设置浮层撑高 322px → **430px**（放大后 6 行仍不滚动）。
+   仍然是**单一档位**（没有「大/小」切换，`dts_panel_size` 存储键继续不读）。
+2. 扩展侧纯 CSS 改动（`panel.css`），插件侧只需 `node sync-extension.mjs` 同步自带的 `extension/`；
+   三件套版本同步到 `0.5.19`，自测 **202/202** 全绿（新增「宽 310 / 字号 14 / 撑高 430」断言）。
+   真机实测（1440×900）：面板宽 310、基础字号 14px、按钮 16px、设置浮层 492px 高且**无滚动条**。
+
+**0.5.18 新增**（用户 2026-10-20 问「为什么顶层评论采完、切二级回复时会等很久」）：
+
+1. **二级回复「预热」可调、默认 30 秒 → 10 秒**：进补采前的静默是**故意的**（列表接口刚轰完就打回复接口
+   会被服务端成片拒，HTTP 200 + 0 字节 body），但以前在扩展里写死 30 秒、面板和插件都改不了。
+   现在新增设置 **`replyWarmupSec`**（默认 **10**，0~600，**0 = 不预热**），总是下发给扩展
+   （`dts_settings.replyWarmupMs`，0 不会被当成「未指定」吞掉）；面板齿轮 ⚙ 同时多了「回复预热 s」一行，
+   优先级仍是 **面板 > 插件 > 内置**，环境变量 `DOUYIN_REPLY_WARMUP_SEC` 也可覆盖。
+2. 生效值写进 `dts_settings_effective.replyWarmupMs`，采集器日志与面板阶段文案都会写出「先预热 N 秒」；
+   三件套版本同步到 `0.5.18`，自测 **201/201** 全绿（新增 5 条断言）。
+
+**0.5.17 新增**（用户 2026-10-20 问「表格里 `user_uid` 是什么，不是抖音号、搜到也没用」）：
+
+1. **CSV 末尾追加 3 列能用的用户标识**：`user_sec_uid`、`user_unique_id`、`user_short_id`
+   （单视频 17 → **20 列**；「全部视频」18 → **21 列**，`video_id` 仍在最后一列）。
+   原因：`user_uid` 是抖音**内部数字 ID**，既搜不到人、也拼不出主页；`unique_id` 才是账号页上的**抖音号**
+   （用户没设自定义号时为空，此时用 `short_id` 补），`sec_uid` 可直接拼主页
+   `https://www.douyin.com/user/<sec_uid>`。插件写盘与扩展面板导出**两处写入器同步追加**（同源契约不 drift）。
+2. 前 17 列（老读者按位置读）**列序与含义完全不变**，仍是 append-only；三件套版本同步到 `0.5.17`，
+   自测 196/196 全绿（新增 1 条「两处写入器都追加了这三列」的断言）。
 
 **0.5.16 新增**（2026-10-08 代码审查发现的问题，**扩展三件套都有改动**）：
 
@@ -415,6 +530,8 @@ DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**
 
 ## 面板（采集时那个悬浮面板）
 
+面板尺寸固定一档：**宽 310px、基础字号 14px**（0.5.19 起放大；0.1.15~0.5.18 是 236px / 11px，
+2026-10-20 客户反馈「字太小、框太小」），设置浮层撑到 430px 起（6 行不滚动）；
 面板标题栏右侧是设置齿轮 `⚙`（0.2.5 起，在「—」收起按钮左边）；主体自上而下：
 
 | 行 | 内容 |
@@ -513,6 +630,7 @@ dsh plugin --profile web add file:D:\dycopy\dsh-douyin-comments
 | `replyGlobalGapMs` | 0 | 回复请求**跨线程的全局最小间隔** ms（0~2000）；**0 = 用扩展内置的 250ms**（≈ ≤4 次/秒）。设了就是硬下限，撞限流时扩展会在此基础上翻倍（封顶 1000ms） |
 | `replyThrottleSec` | 120 | 撞上限流窗口时本轮**总共**最多等几秒（10~600）。扩展 0.2.14 起分波重试：单波最多 12 秒，波间停 15/30/60 秒再打一波，总等待封顶在这个值；**设 10 = 老行为**（十秒不行就收尾） |
 | `replyNoProgressSec` | 900 | 回复阶段连续多久没新数据就收工（60~7200） |
+| `replyWarmupSec` | 10 | **0.5.18 新增**：顶层采完后、开始补二级回复前**先静默几秒**（0~600，**0 = 不预热**）。刚扫完列表就打回复接口容易被服务端成片拒（HTTP 200 + 0 字节 body），停一下能显著减少失败；v0.5.17 及以前在扩展里写死 30 秒、改不了。面板「回复预热 s」优先级更高 |
 | `failSnapshot` | true | **0.5.14 新增**：失败或没采完（超时/无进展/被取消）或抛错时，自动存一份现场到 `~/.dsh/douyin-collector/failures/<时间戳>-<videoId>/`（截图 + 页面 HTML + 状态 JSON + 日志副本）。正常采完不留；工具参数 `failSnapshot` 可按次覆盖 |
 | `keepSnapshots` | 20 | **0.5.14 新增**：失败现场最多保留几份（1~500），超出的按目录名（时间戳）从旧到新删 |
 
@@ -521,8 +639,9 @@ dsh plugin --profile web add file:D:\dycopy\dsh-douyin-comments
 - 字段都是 `volatile`：`execute()` **每次调用现读一遍**（volatile 值在 cordis 里是只有 `get` 的只读引用，
   缓存快照会读到旧值），所以改完下一次调用就生效。
 - 工具参数（`max`/`lanes`/`timeoutMs`/`waitLoginSec`/`clearBefore`）**只覆盖当次调用**，不会改设置。
-- 表单里改的路数由插件在点「开始采集」前写进扩展：`chrome.storage.local.dts_settings = {maxCount?, lanes, replyLanes?, replyGlobalGapMs?, replyThrottleMaxWaitMs?}`；
+- 表单里改的路数由插件在点「开始采集」前写进扩展：`chrome.storage.local.dts_settings = {maxCount?, lanes, replyLanes?, replyGlobalGapMs?, replyThrottleMaxWaitMs?, replyWarmupMs}`；
   扩展每轮读它（读不到或越界就退回内置值），并把实际用的值写回 `dts_settings_effective`，插件据此回报返回值里的 `lanes`。
+  **注意（0.5.18 起）**：`replyWarmupMs` **总是**下发（0 = 不预热），不能用「> 0 才发」的写法，否则「显式设 0」会被当未指定。
   **注意（0.5.11 起）**：`max` 会作为 `maxCount` 下发给扩展（0.5.10 及以前**从不下发**，所以旧版 `max` 完全不封一级）。
   写下去后插件会读回 `dts_settings_effective.maxCount` 自检：**旧扩展（≤ 0.2.12）不认识这个键**，
   自检不过才退回旧行为（进入回复阶段时点「暂停」）并把原因写进日志。
@@ -569,9 +688,15 @@ dsh plugin --profile web add file:D:\dycopy\dsh-douyin-comments
 
 ## 输出格式
 
-- **CSV**（UTF-8 BOM，Excel 直接打开）17 列：`cid,create_time,create_time_str,text,text_clean,text_len,digg_count,reply_comment_total,ip_label,is_hot,is_folded,level,stick_position,user_nickname,user_uid,is_reply,parent_cid`。
+- **CSV**（UTF-8 BOM，Excel 直接打开）19 列：`cid,create_time,create_time_str,text,text_clean,text_len,digg_count,reply_comment_total,ip_label,is_hot,is_folded,level,stick_position,user_nickname,user_uid,is_reply,parent_cid,user_sec_uid,user_unique_id`。
   文本里保留表情贴纸（如 `[比心]`）。
-- **JSON**：`{exportedAt, videoId, title, totalReported, count, topLevelCount, replyCount, note, freshOnly:true, extension{version,installed}, comments:[…]}`。
+  - `user_uid` 是抖音**内部数字 ID**，搜不到人、也拼不出主页；要找这个评论者用
+    `user_unique_id`（账号页上的**抖音号**；v0.5.29 起为空时改填数字短号，所以不会空。要定位到人/拼主页用 `user_sec_uid`），
+    主页链接 = `https://www.douyin.com/user/<user_sec_uid>`。
+- **CSV 第 2 行是中文列名说明**（v0.5.27）：第 1 行仍是英文键（机器/AI 口径不变），第 2 行是同一列序的中文标签，
+  首列写成 `# 评论ID`。**解析时跳过首列以 `#` 开头的行**（数据行数 = 总行数 − 2）；多条视频（20 列）说明行末列是
+  `视频ID(多视频导出)`，与 `video_id` 对齐。
+- **JSON**：`{exportedAt, videoId, title, totalReported, count, topLevelCount, replyCount, note, freshOnly:true, extension{version,installed}, comments:[…]}`（`comments[].user` 本来就带 `sec_uid`/`unique_id`/`short_id`，JSON 不受 v0.5.27 影响）。
 - 文件名：`douyin-comments-<videoId>-<时间戳>.csv/.json`。
 
 上面是**插件自己写盘**的那份（一次调用只导当前这一个视频，列契约与扩展 `background.js` 同源）。
@@ -579,7 +704,7 @@ dsh plugin --profile web add file:D:\dycopy\dsh-douyin-comments
 
 | | 单视频（默认「本条视频」） | 全部视频（v0.2.9 新增） |
 | --- | --- | --- |
-| CSV 列 | 17 列（同上，列序冻结） | **18 列：末尾追加 `video_id`**；前 17 列的顺序与含义完全不变，老读者按位置读前 17 列仍然正确 |
+| CSV 列 | 19 列（同上，列序冻结；v0.5.17 起末尾多用户标识列、v0.5.28 起去掉 `user_short_id`） | **20 列：末尾追加 `video_id`**；前 19 列的顺序与含义完全不变，老读者按位置读前 17 列仍然正确 |
 | JSON | `{exportedAt, videoId, title, count, …comments[]}` | 顶层多 `scope: "all"` 与 `videos: [{ videoId, title, count }]`；每条评论也带 `videoId` |
 | 文件名 | `douyin-comments-<videoId>-<时间戳>.csv\|json` | `douyin-comments-all-<时间戳>.csv\|json` |
 
@@ -595,6 +720,8 @@ dsh plugin --profile web add file:D:\dycopy\dsh-douyin-comments
 - 正常采完（`phase=done` 或到量 `paused`）**不写现场**，`snapshotDir` 是空串——不会越跑越占盘。
 - 采集器抛错时错误文本形如 `…（运行日志：…；失败现场：…）`，插件 render 会把它们单列成行。
 - 页面在采集途中跳转/关闭（`Execution context was destroyed` / `Target closed`）会补一句人话提示，方便判断是视频被删还是需要重新登录。
+  实测过一种：视频播完/feed 自动前进到 `https://www.douyin.com/?recommend=1`（`status.json` 的 `pageUrl` 能看到）。
+  **这时不需要改参数，重新调一次同一个工具即可**（新一轮会先清空、从头再采一遍；不会把中断那轮当成结果返回）。
 - 想临时关掉：工具参数 `failSnapshot: false`，或插件设置里关；日志不受影响，照写。
 
 ## 数据新鲜度怎么保证
@@ -621,7 +748,16 @@ $env:DTS_MAX='60'; node verify-tool.mjs --live https://www.douyin.com/video/7600
 node _test_freshness.mjs https://www.douyin.com/video/7600000000000000010 60 300   # 两轮 + 文件自洽
 node _test_nosig.mjs https://www.douyin.com/video/7600000000000000010              # 负向：没签名必须失败
 node _demo_autoinstall.mjs https://www.douyin.com/video/7600000000000000010        # 删掉已装扩展，验证「从零自动装上」
+node _probe_pick_0520.mjs https://www.douyin.com/video/7600000000000000010        # 面板「自选视频…」浮层 + 多选/单选导出（13 项）
 ```
+
+实测记录（2026-10-20，v0.5.20 + 扩展 0.5.20，导出范围支持「自选视频…」）：
+
+| 用例 | 结果 |
+| --- | --- |
+| 离线自检 `node verify-tool.mjs` | **209/209 全绿**（0.5.19 为 202；新增 7 条：background 的 `videoIds`/`multi`/`fileTag`/`scopeTag`/`EMPTY_POOL scope:'selected'`、content 的自选浮层与 `exportPick`、MCP `ai_export.videoIds`） |
+| 真机浮层 + 多选/单选导出（`_probe_pick_0520.mjs`，日志 `D:\dycopy\devkit\_probe-pick-0520.txt`） | **13/13 PASS**：浮层列出本地 5 个视频；勾 2 个（109 + 1365 条）→ info「已选 2 个（约 1474 条）」、按钮「自选视频（2 条）」→ 导出 `douyin-comments-selected2-<ts>.csv` **421676 B、21 列、末列 `video_id`、行数 1474 = 109+1365、视频 id 正好是勾的那两个**；改选 1 个 → `douyin-comments-7600000000000000010-<ts>.csv` **20 列**（不加 `video_id`） |
+| 探针注意（踩坑记录） | 探针直接 `launchPersistentContext` 时必须先调 `clearStaleScriptCaches(profile)`：Chrome 会缓存扩展 background（MV3 SW）的编译脚本，**扩展文件变了、manifest 版本号变了，浏览器里仍跑旧 background.js**（本次排查「导出没生效」就是它，正式路径 `collectDouyinComments` 已按扩展 hash 自动清理） |
 
 实测记录（2026-10-07，v0.5.15 + 扩展 0.5.15，**纯版本号统一**）：
 
@@ -759,22 +895,23 @@ node sync-extension.mjs D:\path\to\ext
 ## 打包 / 发布
 
 **正式分发走 GitHub Releases**（仓库里不放二进制包，`release/` 只在本地做打包输出）：
-<https://github.com/monagisa/douyin-ai-collector/releases> —— 当前版本 [v0.5.16](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.16)，
-附件有 `dsh-douyin-comments-v0.5.16.zip`（整目录单文件）、`dsh-douyin-comments-0.5.16.tgz`、
-`douyin-collector-extension-v0.5.16.zip`、`douyin-collector-mcp-v0.5.16.zip`、`USAGE-zh-CN.md`（中文说明，zip 里叫 `使用说明.md`）、`SHA256SUMS.txt`。
-**v0.5.15 起三件套同号**（插件 = 扩展 = MCP = `0.5.16`）。
-更早一版 [v0.5.15](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.15)（纯版本号统一，功能与 v0.5.14 一致）。
+<https://github.com/monagisa/douyin-ai-collector/releases> —— 当前版本 [v0.5.29](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.29)，
+附件有 `dsh-douyin-comments-v0.5.29.zip`（整目录单文件）、`dsh-douyin-comments-0.5.29.tgz`、
+`douyin-collector-extension-v0.5.29.zip`、`douyin-collector-mcp-v0.5.29.zip`、`USAGE-zh-CN.md`（中文说明，zip 里叫 `使用说明.md`）、`SHA256SUMS.txt`。
+**v0.5.15 起三件套同号**（插件 = 扩展 = MCP = `0.5.29`）。
+更早一版 [v0.5.17](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.17)（CSV 末尾加 3 列用户标识）、
+[v0.5.16](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.16)（修 8 处数据正确性缺陷）。
 
-本地发布物在 `D:\dycopy\release\dsh-douyin-comments-v0.5.16\`：
+本地发布物在 `D:\dycopy\release\dsh-douyin-comments-v0.5.29\`：
 
 | 文件 | 说明 |
 | --- | --- |
-| `dsh-douyin-comments-0.5.16.tgz` | 插件本体，14 个文件（`index.js`/`collector.mjs`/`cordis.patch.yml`/`README.md`/`package.json` + `client/client.js` + `extension/` 8 个） |
-| `douyin-collector-extension-v0.5.16.zip` | 单独的扩展 zip，顶层目录 `douyin-collector/`（8 个文件），供 `chrome://extensions` 手动「加载已解压的扩展程序」（**本版扩展代码与 manifest 版本号都变了 ⇒ 必须重新打包**，不能沿用旧 zip） |
+| `dsh-douyin-comments-0.5.29.tgz` | 插件本体，14 个文件（`index.js`/`collector.mjs`/`cordis.patch.yml`/`README.md`/`package.json` + `client/client.js` + `extension/` 8 个） |
+| `douyin-collector-extension-v0.5.29.zip` | 单独的扩展 zip，顶层目录 `douyin-collector/`（8 个文件），供 `chrome://extensions` 手动「加载已解压的扩展程序」（**本版扩展代码与 manifest 版本号都变了 ⇒ 必须重新打包**，不能沿用旧 zip） |
 | `使用说明.md` | 给收件人看的中文说明（安装/扫码/两处设置/参数/FAQ/macOS） |
 | `SHA256SUMS.txt` | 三个文件的 SHA256 |
 
-整包单文件 `dsh-douyin-comments-v0.5.16.zip`（把上面整目录打成一个单文件，方便直接发给人）**也放在同一个 `release\dsh-douyin-comments-v0.5.16\` 目录里**（v0.5.12 起改为随版本目录存放，不再放在 `release\` 根下）。
+整包单文件 `dsh-douyin-comments-v0.5.29.zip`（把上面整目录打成一个单文件，方便直接发给人）**也放在同一个 `release\dsh-douyin-comments-v0.5.29\` 目录里**（v0.5.12 起改为随版本目录存放，不再放在 `release\` 根下）。
 
 更早的草稿目录（`D:\dycopy\release\dsh-douyin-comments-v0.5.7\` 及以前）都保留作对照，不删。
 
@@ -782,14 +919,14 @@ node sync-extension.mjs D:\path\to\ext
 
 ```powershell
 cd D:\dycopy\dsh-douyin-comments
-npm pack --pack-destination D:\dycopy\release\dsh-douyin-comments-v0.5.16
+npm pack --pack-destination D:\dycopy\release\dsh-douyin-comments-v0.5.29
 
 # 扩展开 zip（顶层目录名必须是 douyin-collector；只装 8 个运行文件，别把 md 打进去）。
 # 用 .NET ZipFile 逐个 CreateEntry 造，避免 Compress-Archive 多套一层目录：
-# 本版扩展的**代码和 manifest 版本号都变了**（0.5.15 → 0.5.16），**必须重新打**，不能沿用旧 zip。
-$rel = 'D:\dycopy\release\dsh-douyin-comments-v0.5.16'
+# 本版扩展的**代码和 manifest 版本号都变了**（0.5.17 → 0.5.29），**必须重新打**，不能沿用旧 zip。
+$rel = 'D:\dycopy\release\dsh-douyin-comments-v0.5.29'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-$zip = [IO.Compression.ZipFile]::Open("$rel\douyin-collector-extension-v0.5.16.zip", 'Create')
+$zip = [IO.Compression.ZipFile]::Open("$rel\douyin-collector-extension-v0.5.29.zip", 'Create')
 Get-ChildItem D:\dycopy\douyin-collector -File |
   Where-Object { $_.Extension -in '.js','.json','.css','.html' } |
   ForEach-Object { [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $_.FullName, "douyin-collector/$($_.Name)") | Out-Null }

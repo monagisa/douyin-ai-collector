@@ -21,30 +21,31 @@
 
 /* -----------------------------------------------------------------------------
  * 1. 面板容器
- *    固定右下角、宽 236px（v0.1.15 起**只有这一档**：用户反馈 340px 太大，不再提供
- *    「大/小」切换）、深色主题、z-index 拉满（2147483647 = 32 位有符号上限）。
+ *    固定右下角、宽 310px / 基础字号 14px（v0.1.15 起**只有这一档**；v0.5.19 起客户反馈
+ *    「字太小、框太小」，宽度与字号/间距整体放大 ≈1.3 倍，仍不提供「大/小」切换）、
+ *    深色主题、z-index 拉满（2147483647 = 32 位有符号上限）。
  * -------------------------------------------------------------------------- */
 #dts-collector-panel {
   position: fixed;
   right: 16px;
   bottom: 16px;
-  width: 236px;
+  width: 310px;
   max-width: calc(100vw - 32px);
   box-sizing: border-box;
   z-index: 2147483647;
   margin: 0;
-  padding: 8px 10px 9px;
+  padding: 11px 13px 12px;
   background: linear-gradient(180deg, #22272e 0%, #1b1f25 100%);
   color: #e8eaed;
   border: 1px solid #363c45;
-  border-radius: 10px;
+  border-radius: 12px;
   box-shadow:
     0 1px 0 rgba(255, 255, 255, 0.04) inset,
     0 10px 30px rgba(0, 0, 0, 0.5),
     0 2px 6px rgba(0, 0, 0, 0.35);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
-  font-size: 11px;
-  line-height: 1.45;
+  font-size: 14px;
+  line-height: 1.5;
   text-align: left;
   text-shadow: none;
   letter-spacing: normal;
@@ -84,10 +85,10 @@
  *    另兼容 .dts-header / .dts-title / .dts-head 命名（命中任一即可）。
  * -------------------------------------------------------------------------- */
 #dts-collector-panel > .dts-row:first-child {
-  padding: 0 0 6px;
-  margin: 0 0 6px;
+  padding: 0 0 8px;
+  margin: 0 0 8px;
   border-bottom: 1px solid #30363e;
-  font-size: 12px;
+  font-size: 15px;
   font-weight: 600;
   color: #ffffff;
   cursor: move;
@@ -97,11 +98,11 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
-  padding: 0 0 6px;
-  margin: 0 0 6px;
+  gap: 8px;
+  padding: 0 0 8px;
+  margin: 0 0 8px;
   border-bottom: 1px solid #30363e;
-  font-size: 12px;
+  font-size: 15px;
   font-weight: 600;
   color: #ffffff;
   white-space: nowrap;
@@ -116,7 +117,7 @@
 #dts-collector-panel .dts-header .dts-title {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   flex: 1 1 auto;
   min-width: 0;
   text-align: left;
@@ -131,7 +132,7 @@
 #dts-collector-panel .dts-header > .dts-tools {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   flex: 0 0 auto;
   overflow: visible;
 }
@@ -139,8 +140,8 @@
 /* 状态点：颜色由 content.js 按阶段切换（见 DOT_CLASS） */
 #dts-collector-panel .dts-dot {
   flex: 0 0 auto;
-  width: 7px;
-  height: 7px;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
   background: #6b7280;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
@@ -183,7 +184,7 @@
 #dts-collector-panel .dts-panel-body {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
   padding: 0;
   margin: 0;
 }
@@ -193,9 +194,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
+  gap: 8px;
   margin: 0;
-  padding: 1px 0;
+  padding: 2px 0;
   min-width: 0;
 }
 
@@ -218,8 +219,8 @@
 #dts-collector-panel .dts-row.dts-actions {
   flex-wrap: wrap;
   justify-content: flex-start;
-  gap: 4px;
-  margin-top: 5px;
+  gap: 6px;
+  margin-top: 7px;
 }
 
 /* 两个按钮的普通按钮行（开始/暂停、导出CSV/JSON）：等宽均分整行，左右对称 */
@@ -260,8 +261,8 @@
 #dts-collector-panel .dts-bar {
   position: relative;
   width: 100%;
-  height: 5px;
-  margin: 5px 0 2px;
+  height: 7px;
+  margin: 7px 0 3px;
   background: #171b20;
   border: 1px solid #2b3138;
   border-radius: 999px;
@@ -295,16 +296,16 @@
 #dts-collector-panel .dts-btn {
   display: inline-block;
   box-sizing: border-box;
-  padding: 3px 8px;
+  padding: 5px 11px;
   margin: 0;
   background: #2b3138;
   color: #e8eaed;
   border: 1px solid #3a4048;
   border-radius: 6px;
   font-family: inherit;
-  font-size: 11px;
+  font-size: 14px;
   font-weight: 500;
-  line-height: 16px;
+  line-height: 21px;
   text-align: center;
   white-space: nowrap;
   cursor: pointer;
@@ -381,14 +382,14 @@
 
 #dts-collector-panel .dts-panel-body > .dts-row.dts-scope > .dts-btn {
   flex: 0 0 auto;
-  padding: 2px 8px;
-  font-size: 11px;
-  line-height: 16px;
+  padding: 3px 11px;
+  font-size: 14px;
+  line-height: 21px;
 }
 
 #dts-collector-panel .dts-scope-label {
   flex: 1 1 auto;
-  font-size: 11px;
+  font-size: 14px;
   text-align: left;
 }
 
@@ -402,10 +403,10 @@
 
 /* 收起按钮（—）通常只有一个字符，压窄一点 */
 #dts-collector-panel .dts-btn.dts-btn-collapse {
-  padding: 2px 6px;
-  min-width: 22px;
-  font-size: 12px;
-  line-height: 14px;
+  padding: 3px 8px;
+  min-width: 28px;
+  font-size: 15px;
+  line-height: 19px;
   background: transparent;
   border-color: #3a4048;
   color: #c7ccd4;
@@ -413,10 +414,10 @@
 
 /* 设置齿轮（v0.2.5）：跟「—」并排在标题栏右侧、齿轮在左。单字符按钮，压窄 */
 #dts-collector-panel .dts-btn.dts-btn-gear {
-  padding: 2px 5px;
-  min-width: 22px;
-  font-size: 13px;
-  line-height: 14px;
+  padding: 3px 7px;
+  min-width: 28px;
+  font-size: 16px;
+  line-height: 19px;
   background: transparent;
   border-color: #3a4048;
   color: #c7ccd4;
@@ -443,7 +444,7 @@
  *    用 !important 是因为收起是硬性的视觉状态，必须压过页面/内联规则。
  * -------------------------------------------------------------------------- */
 #dts-collector-panel.dts-collapsed {
-  padding: 6px 9px;
+  padding: 8px 12px;
 }
 
 #dts-collector-panel.dts-collapsed .dts-panel-body,
@@ -481,10 +482,10 @@
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 8px 10px 9px;
+  gap: 3px;
+  padding: 11px 13px 12px;
   background: linear-gradient(180deg, #22272e 0%, #1b1f25 100%);
-  border-radius: 10px;
+  border-radius: 12px;
   overflow-y: auto;
   z-index: 1;
 }
@@ -494,20 +495,21 @@
   flex: 0 0 auto;
 }
 
-/* 浮层打开时把面板撑到够高，免得 5 行设置还要滚动（实测内容比 276px 高 10px） */
+/* 浮层打开时把面板撑到够高，免得设置行还要滚动（v0.5.18 起 6 行、292px→322px；
+ * v0.5.19 字号放大后 322px 不够用，改成 430px） */
 #dts-collector-panel.dts-settings-open {
-  min-height: 292px;
+  min-height: 430px;
 }
 
 #dts-collector-panel .dts-settings-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
-  padding: 0 0 6px;
+  gap: 8px;
+  padding: 0 0 8px;
   margin: 0 0 4px;
   border-bottom: 1px solid #30363e;
-  font-size: 12px;
+  font-size: 15px;
   font-weight: 600;
   color: #ffffff;
   cursor: default;
@@ -516,8 +518,8 @@
 /* 一行设置：左标签 + 右输入框 */
 #dts-collector-panel .dts-field {
   justify-content: space-between;
-  gap: 6px;
-  padding: 1px 0;
+  gap: 8px;
+  padding: 2px 0;
 }
 
 #dts-collector-panel .dts-field-label {
@@ -529,18 +531,18 @@
 }
 
 #dts-collector-panel .dts-input {
-  flex: 0 0 78px;
-  width: 78px;
+  flex: 0 0 96px;
+  width: 96px;
   box-sizing: border-box;
   margin: 0;
-  padding: 2px 6px;
+  padding: 3px 8px;
   background: #14181d;
   color: #e8eaed;
   border: 1px solid #3a4048;
   border-radius: 6px;
   font-family: inherit;
-  font-size: 11px;
-  line-height: 16px;
+  font-size: 14px;
+  line-height: 21px;
   text-align: right;
   font-variant-numeric: tabular-nums;
   outline: none;
@@ -554,8 +556,8 @@
 #dts-collector-panel .dts-settings-hint {
   display: block;
   margin: 4px 0 0;
-  font-size: 10px;
-  line-height: 1.4;
+  font-size: 13px;
+  line-height: 1.45;
   white-space: normal;
 }
 
@@ -569,8 +571,129 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 10px;
-  margin: -2px 0 6px;
+  font-size: 13px;
+  margin: -2px 0 8px;
+}
+
+/* -----------------------------------------------------------------------------
+ * 9.1 自选视频浮层（v0.5.20）
+ *     「导出范围」从只有「本条 / 全部」两个极端，扩成可勾选任意几条视频。
+ *     清单本身滚动，浮层不跟着滚（否则下面的「全选/确定」会被推出去）。
+ * -------------------------------------------------------------------------- */
+#dts-collector-panel .dts-picker-info {
+  flex: 0 0 auto;
+  font-size: 13px;
+  margin: -2px 0 4px;
+  white-space: normal;
+}
+
+#dts-collector-panel .dts-picker-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0 0 4px;
+  padding: 2px 2px 2px 0;
+  border-top: 1px solid #30363e;
+  border-bottom: 1px solid #30363e;
+}
+
+#dts-collector-panel .dts-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px;
+  font-size: 13px;
+  color: #c7ccd4;
+  cursor: pointer;
+  user-select: none;
+}
+
+#dts-collector-panel .dts-picker-item:hover {
+  background: rgba(87, 166, 255, 0.08);
+  border-radius: 4px;
+}
+
+/* v0.5.23：选中反馈——之前只有 15px 小方框变色，勾了哪几条不明显（用户「选中没有提示」）。
+ * 现在整行高亮 + 左侧亮条 + 标题提亮；复选框也放大到 17px。 */
+#dts-collector-panel .dts-picker-item:has(.dts-picker-box:checked) {
+  background: rgba(63, 142, 224, 0.16);
+  box-shadow: inset 3px 0 0 #3f8ee0;
+  border-radius: 4px;
+}
+
+#dts-collector-panel .dts-picker-item:has(.dts-picker-box:checked) .dts-picker-title {
+  color: #eaf1fb;
+  font-weight: 600;
+}
+
+#dts-collector-panel .dts-picker-item:has(.dts-picker-box:checked) .dts-picker-count {
+  color: #a9c7ea;
+}
+
+#dts-collector-panel .dts-picker-box {
+  flex: 0 0 auto;
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  accent-color: #3f8ee0;
+  cursor: pointer;
+}
+
+/* v0.5.23：顶部「已选 K 个」在有条目被选中时高亮，一眼能看出选了几个 */
+#dts-collector-panel .dts-picker-info.dts-has-sel {
+  color: #8fc0ff;
+  font-weight: 600;
+}
+
+#dts-collector-panel .dts-picker-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* v0.5.24：标题下面补一行小字（ID 末 8 位 · 采集时间）——标题还是通用页名时也能区分
+ * （用户「很难区分啊，能不能把这个变成视频的标题」）。 */
+#dts-collector-panel .dts-picker-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+#dts-collector-panel .dts-picker-sub {
+  color: #7e8794;
+  font-size: 11px;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+#dts-collector-panel .dts-picker-item:has(.dts-picker-box:checked) .dts-picker-sub {
+  color: #8fb4e0;
+}
+
+#dts-collector-panel .dts-picker-count {
+  flex: 0 0 auto;
+  color: #8b939e;
+  font-variant-numeric: tabular-nums;
+}
+
+#dts-collector-panel .dts-picker-empty {
+  padding: 10px 2px;
+  font-size: 13px;
+  color: #8b939e;
+  white-space: normal;
+}
+
+/* v0.5.20：自选浮层底部「导出选中的 K 个…」文案长，独占一行（否则会被挤到半宽、
+ * 右边空一块，看着像没对齐） */
+#dts-collector-panel .dts-picker .dts-actions .dts-btn-primary {
+  flex: 1 0 100%;
+  margin-top: 6px;
 }
 
 /* -----------------------------------------------------------------------------

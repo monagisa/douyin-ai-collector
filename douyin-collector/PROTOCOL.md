@@ -2,7 +2,7 @@
 
 > 所有实现必须严格按本文件。改协议要先改本文件并通知所有实现者。
 >
-> **版本号（v0.5.15 起）**：扩展 / DSH 插件 / MCP **统一编号**，当前均为 `0.5.16`。正文里的 `v0.2.x` 是**扩展侧历史编号**：0.2.11↔发布 v0.5.9、0.2.12↔v0.5.10、0.2.13↔v0.5.11、0.2.14↔v0.5.12、0.2.15↔v0.5.13/v0.5.14。
+> **版本号（v0.5.15 起）**：扩展 / DSH 插件 / MCP **统一编号**，当前均为 `0.5.29`。正文里的 `v0.2.x` 是**扩展侧历史编号**：0.2.11↔发布 v0.5.9、0.2.12↔v0.5.10、0.2.13↔v0.5.11、0.2.14↔v0.5.12、0.2.15↔v0.5.13/v0.5.14。
 
 ## 0. 文件边界（禁止跨界写入）
 
@@ -370,23 +370,66 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
 
 ### 3.6 UI 面板
 - 容器 `id="dts-collector-panel"`，固定右下角，深色，`z-index: 2147483647`。
-  **尺寸：只有紧凑一档，宽 236px（v0.1.15）**。v0.1.14 曾提供 `small`（236px）/`normal`（340px）
+  **尺寸：只有一档，宽 310px / 基础字号 14px（v0.5.19 起；v0.1.15~v0.5.18 为 236px / 11px）**。v0.1.14 曾提供 `small`（236px）/`normal`（340px）
   两档 + 标题栏「大/小」按钮 + `chrome.storage.local.dts_panel_size` 持久化；用户在 m08775 明确
   「不用留大的了，已经完全能用了」⇒ v0.1.15 把 340px 那一档、`大/小` 按钮（`dts-btn-size`）、
-  尺寸 class 与存储键**全部删除**：所有尺寸值（宽 236px、字号 11px、内边距/间距/按钮/进度条）
+  尺寸 class 与存储键**全部删除**：所有尺寸值（宽 310px、字号 14px、内边距/间距/按钮/进度条；v0.5.19 前是 236px / 11px）
   直接写进 `panel.css` 的各条基础规则里，content.js 不再切任何尺寸 class，也不再读写
   `dts_panel_size`（老用户存过的 `'normal'` 被忽略，见判据 D17）。实现只写内联 `left/top` 做定位，
   尺寸完全归 CSS，两者解耦。
 - 显示：阶段、已采条数、服务端 total、当前 cursor、进度条（`count/total`，`total` 为 0 时用不确定态）、每页耗时、错误信息。
-- 按钮：`开始采集` / `暂停` / `导出 CSV` / `导出 JSON` / `本条视频` / `全部视频` / `清空` / `全部清空` / `—`（收起）。
-  **v0.2.9 新增「导出范围」一行**（`.dts-row.dts-actions.dts-scope`，行首标签 `.dts-muted.dts-scope-label`
-  文案 `导出范围`）：两个**互斥**小按钮
-  · `本条视频`（默认选中，等于旧行为，只导当前这条视频；`data-dts-act="export-scope-video"`，
-    选中带 `.dts-on`）
-  · `全部视频`（把本地**所有**视频的评论合成一份导出；`data-dts-act="export-scope-all"`）
-  点任一按钮走 `setExportScope(all)`：只改 `exportAll` 并刷新选中态与提示文案，**不动任何数据**；
-  导出时由 `exportAs(format)` 把 `all: exportAll` 传给 `dts-export`（见 §3.10）。
-  选中态互斥在 `render()` 里同步（`exportAll` 为真则 `scopeAll` 加 `.dts-on`、`scopeVideo` 去掉，反之亦然）。
+- 按钮：`开始采集` / `暂停` / `导出 CSV` / `导出 JSON` / **`导出范围 ▾`** / `清空` / `全部清空` / `—`（收起）。
+  **v0.5.21：导出范围只剩「导出范围 ▾」一个入口**（用户「那本条和全部那个就可以不要了」）。
+  行结构不变（`.dts-row.dts-actions`，行首标签 `.dts-muted.dts-scope-label` 文案 `导出范围`），
+  但只有一个按钮 `data-dts-act="export-scope-pick"`，文案由 `exportScopeText()` 生成：
+  `导出范围：本条视频 ▾` / `导出范围：自选 N 个视频 ▾` / `导出范围：未选择 ▾`，有选择时带 `.dts-on`。
+  语义：
+  · **默认 = 当前视频**：`ensureExportPickDefault()`（`exportPick` 为空且用户没改过时置 `[videoId]`），
+    所以不点浮层直接「导出 CSV / 导出 JSON」= 旧的「本条视频」行为；
+  · `exportPickTouched`：用户点过「确定」后置 true，之后**不再**自动跟随当前视频（换视频不会悄悄改范围）；
+  · 「清空」本条视频成功后从 `exportPick` 剔除它；若因此空了则回到默认跟随（`exportPickTouched = false`）；
+  · **v0.5.22**：「全部清空」成功后 `exportPick = null; exportPickTouched = false;`，按钮立刻回
+    `导出范围：本条视频 ▾`。两条清空路径都**必须先改 `exportPick` 再 `setPhase()`**（`setPhase` 内部会 `render()`，
+    顺序反了会画出旧文案，要等下一次刷新才更新——v0.5.21 的真机 bug，判据见 `_probe_clearall_0522.mjs`）；
+  · **v0.5.23**：选中反馈（用户「导出视频那里，选中没有提示」）——`.dts-picker-item:has(.dts-picker-box:checked)`
+    整行 `background: rgba(63,142,224,0.16)` + `box-shadow: inset 3px 0 0 #3f8ee0`，选中项标题 `font-weight: 600`；
+    `.dts-picker-box` 由 15px 放大到 17px；`updatePickerInfo()` 给 `.dts-picker-info` 加 / 去 `.dts-has-sel`
+    （蓝字加粗）。判据见 `_probe_picksel_0523.mjs`（13 项）。
+  · **v0.5.24**：列表每行标题取 `dts_videos[id].title`，但网格页采集时会存成通用页名
+    （「抖音精选电脑版」「抖音-记录美好生活」等）。现在：
+    `pickLabel(id)` 对通用标题返回 `视频 <shortVideoId(id)>`；`pickSubLabel(id)` 返回
+    `ID <末 8 位> · 采集 <MM-DD HH:mm>`（`.dts-picker-sub` 小字，重名也能区分）；
+    浮层打开时 `loadPickerList()` 若发现 `genericPickIds()` 非空就自动调
+    `fixPickerTitles(true)` → 发消息 `{ type: 'dts-fix-titles', videoIds: [...] }`；后台
+    `fixVideoTitles(ids)` 跳过已有真实标题的，逐条 `chrome.tabs.create({url: <详情页>, active:false})`
+    + `chrome.scripting.executeScript({ target: { tabId }, func: () => document.title })`（40 轮 ×500ms）
+    读到就 `updateVideoMetaUnlocked(id, { title, titleFixedAt })`，`finally` 里关标签页。
+    **只改 `title` 字段，不动 `dts_c_<id>` 评论桶**。另有手动按钮 `data-dts-act="picker-fix-titles"`
+    「读取真实标题」。判据见 `_probe_titles_0524.mjs`（7 项）。
+  · **v0.5.25**：按用户要求**删掉**手动按钮 `data-dts-act="picker-fix-titles"`（连同 `.dts-btn-wide` 样式），
+    只保留自动补全（`loadPickerList()` 里 `if (!pickFixAutoTried && genericPickIds().length) { pickFixAutoTried = true; fixPickerTitles(); }`，
+    `fixPickerTitles()` 不再有 `auto` 参数）。判据见 `_probe_titles_0525.mjs`（6 项：按钮 count=0、
+    通用标题显示 `视频 <末 8>`、无按钮也自动补成真标题、原真标题不被写坏）。
+  · **v0.5.26**：客户问「能不打开其他的浏览器就获得标题吗」——实测**不开页面拿不到**作品标题：
+    视频页 `fetch` 回来是 SPA 空壳（无 `<title>`、`RENDER_DATA` 只有 `app`），
+    `iesdouyin.com/web/api/v2/aweme/iteminfo` 返回 `status_code=11110`（接口失效），
+    `aweme/v1/web/aweme/detail` 不带 `a_bogus` 直接 **403**。因此把 v0.5.24/v0.5.25 的整条补标题链路**全部删除**：
+    消息 `dts-fix-titles`、`fixVideoTitles`、`readTitleFromVideoPage`、`fixPickerTitles`、`genericPickIds`、
+    `pickFixAutoTried`、`titleFixedAt` 写入，以及 `chrome.tabs.create` 调用点。**打开浮层不再新增任何标签页/窗口**；
+    通用/空标题继续由 `pickLabel(id)` 显示 `视频 <末 8 位>`，`pickSubLabel(id)` 提供 `ID … · 采集 …` 便于区分。
+    判据见 `_probe_titles_0526.mjs`（8 项：显示「视频 96371819」、小字存在、无按钮、开浮层前后
+    `chrome.windows.getAll` 的窗口数与标签页数不变、测完还原原标题）。
+  · 没选（`exportPick` 空）时点导出会在面板报错文案并**自动打开浮层**。
+
+  浮层 `.dts-picker`（复用 `.dts-settings` 的绝对定位模态骨架）：标题「选择要导出的视频」，
+  `.dts-picker-info` 写「本地 N 个视频 · 已选 K 个（约 M 条）」，
+  `.dts-picker-list` 里每个 `.dts-picker-item` = `checkbox.dts-picker-box[data-video-id]` +
+  `.dts-picker-title`（视频标题）+ `.dts-picker-count`（条数）；底部按钮挂点
+  `data-dts-act="picker-select-all"` / `picker-clear` / `picker-cancel` / `picker-ok`。
+  清单来自 `dts-stats` 回包的 `videos`（只列 `count>0` 的，按 `updatedAt` 倒序）。
+  实现入口：`buildPickerBox(root)` / `openPicker()` / `closePicker()` / `loadPickerList()` /
+  `renderPickerList()` / `pickSelectAll(on)` / `confirmPicker()` / `ensureExportPickDefault()` / `exportScopeText()`。
+  `dts-stats` 回包不改（直接复用 `videos`）。
   **状态镜像（v0.2.9 补充）**：`down('status', {...})` 新增 `localStats`（`{videos,total,current}`）与
   `exportAll`；`localStats` 由 `refreshLocalStats()` 读 `dts-stats` 后填充（面板构建时一次 + 每 20 秒
   一次 + 落库后 + 点「清空」后）。**v0.2.10 起** `refreshLocalStats()` 带请求序号 `localStatsSeq`，
@@ -493,7 +536,7 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
    - **`status_code = 5`** → `STATUS_5`（**会话级限流**的形态：body 只有 200 字节、
      `comments: null`；`probe-replyburst.mjs` 实测此时**连列表接口一起被限**）
    耐心策略（`recoverReply()`）：
-   - 进入补采前先 `REPLY_WARMUP_MS = 1500` 停顿，让刚被列表扫描用掉的配额回血；
+   - 进入补采前先 `REPLY_WARMUP_MS = 30000` 停顿（原 1500；列表扫描刚结束就打回复接口是风控挑战的高发点）；
    - 单页失败按 `REPLY_BACKOFF_BASE_MS = 1000` 起指数退避（上限
      `REPLY_BACKOFF_MAX_MS = 3000`，即 1s → 2s → 3s → 3s…）**持续重试**（不是只重试固定次数）；
      退避压到 3s 上限是因为**单波**预算只有 12 秒（v0.2.14），拖长只会让用户干等；
@@ -504,6 +547,11 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
      **`STATUS_5`、`STATUS_NULL`、`EMPTY_BODY` 一律算「限流、签名还活着」**→ 继续退避重试，
      面板只说「服务端暂时不回数据（…），自动退避重试中，这一波最多试 12 秒（无需你操作；
      不成会停一会儿再自动来一波）」；
+   - **`VERIFY_REQUIRED`（风控验证，优先于上面所有判断）**：响应带 `x-vc-bdturing-parameters`（或 `bdturing-verify`）头
+     即判定。`hook.js` 的 `isVerify()` 在 `replay()` / `replayReply()` 读完 body 后检查，命中就返回
+     `VERIFY_REQUIRED`。扩展**不解析、不尝试通过**验证。`content.js` 收到后：回复阶段立即停止、不重试、
+     已采数据落盘、状态 `paused`，提示用户在普通浏览器完成验证后再点「开始采集」（断点续采）；
+     顶层列表阶段同样停止，已拿到的那几路照常落库。
    - **`EMPTY_BODY` 的判据是「服务端回了 200、body 0 字节」**（`hook.js` 只在 `await res.text()`
      拿到空串时产生它，并把往返 `ms` 记在返回值里）；「本地请求没回来 / 太慢」是**另一个错误码**
      `REPLAY_TIMEOUT`。2026-10-07 真机 A/C/D 三轮的 `replyLastError` 从头到尾只有 `EMPTY_BODY`，
@@ -564,7 +612,7 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
 |---|---|
 | `dts_settings` | 外部写入的运行时设置；`startLoop()` **每轮开头**读一次 |
 | `dts_user_settings` | v0.2.4：**面板设置**（v0.2.5 起入口是标题栏齿轮 `⚙`）写入的用户设置；优先级高于 `dts_settings`（`chrome.storage.local.remove('dts_user_settings')` 即恢复插件/内置值） |
-| `dts_settings_effective` | 本轮**实际**用的值 + 时间戳（`{lanes, lanesWanted, lanesNote, maxCount, replyLanes, replyGlobalGapMs, replyGapMs, replyThrottleMaxWaitMs, replyWaveBudgetMs, replyParkPlanMs, from: 'panel'\|'plugin', at}`），回写给调用方核对。**v0.2.15 起**：`lanes` 是**本轮实际在用的路数**（正常 = 设置值，检测到「两路返回同一页」会就地改成 `1`）、`lanesWanted` 是设置/请求的原始值、`lanesNote` 平时是空串、被降路时写明原因（形如「第 N 页前后发现两路返回了同一页（服务端合并并发请求），已自动降回单路…」，排查的人一眼能看出这一轮是不是被降过路）。**v0.2.13 起**：`maxCount` 是真正下发的目标条数，DSH 插件据此判断「扩展是否自己管住了 max」（读不到就退回插件侧点暂停的兜底逻辑）。**v0.2.14 起**：`replyWaveBudgetMs`（单波预算，12 秒）与 `replyParkPlanMs`（波间停顿计划 `15/30/60`）也回写，排查「到底打了几波、每波多久」时一眼可见 |
+| `dts_settings_effective` | 本轮**实际**用的值 + 时间戳（`{lanes, lanesWanted, lanesNote, maxCount, replyLanes, replyGlobalGapMs, replyGapMs, replyWarmupMs, replyThrottleMaxWaitMs, replyWaveBudgetMs, replyParkPlanMs, from: 'panel'\|'plugin', at}`），回写给调用方核对。**v0.2.15 起**：`lanes` 是**本轮实际在用的路数**（正常 = 设置值，检测到「两路返回同一页」会就地改成 `1`）、`lanesWanted` 是设置/请求的原始值、`lanesNote` 平时是空串、被降路时写明原因（形如「第 N 页前后发现两路返回了同一页（服务端合并并发请求），已自动降回单路…」，排查的人一眼能看出这一轮是不是被降过路）。**v0.2.13 起**：`maxCount` 是真正下发的目标条数，DSH 插件据此判断「扩展是否自己管住了 max」（读不到就退回插件侧点暂停的兜底逻辑）。**v0.2.14 起**：`replyWaveBudgetMs`（单波预算，12 秒）与 `replyParkPlanMs`（波间停顿计划 `15/30/60`）也回写，排查「到底打了几波、每波多久」时一眼可见 |
 
 **取值优先级（v0.2.4 起）**：面板 `dts_user_settings` > 外部 `dts_settings` > 内置常量。逐字段判断，
 面板里没填的字段继续用外部值 / 内置值（`loadRuntimeSettings()` 里对每个 key 先看面板那份、再看插件那份）。
@@ -579,12 +627,13 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
 | `replyLanes` | 二级回复的并发线程数（v0.2.3）；**v0.2.13 起撞限流会自动降 1 路**（下限 1） | `REPLY_LANES = 4` | `1..8` |
 | `replyGapMs` | 同一回复线程两页之间的间隔（v0.2.3） | `REPLY_GAP_MS = 600` | `0..60000` |
 | `replyGlobalGapMs` | v0.2.13：**跨线程**的全局最小间隔（真正只有这一个 `await replyGate()` 闸门，取到线程就发的老行为没了） | `REPLY_GLOBAL_GAP_MS = 250` | `0..2000`（**`0` = 用内置 250ms**，v0.2.14 起真的如此——v0.2.13 及更早把 `0` 当成「关掉闸门」，与 DSH 设置页/MCP/本文档的说法相反，AI 一条 `ai_set_settings{replyGlobalGapMs:0}` 就能静默关掉限速；撞限流时闸门自动翻倍，上限 `REPLY_GLOBAL_GAP_MAX_MS = 1000`） |
-| `replyWarmupMs` | 进入补采前的静默时间（v0.2.3） | `REPLY_WARMUP_MS = 1500` | `0..600000` |
+| `replyWarmupMs` | 进入补采前的静默时间（v0.2.3；默认值 v0.5.17 起从 1500 调到 30000，**v0.5.18 起调到 10000**，并暴露成面板设置「回复预热 s」） | `REPLY_WARMUP_MS = 10000` | `0..600000`（**`0` = 不预热**，立即开始补采；刚扫完列表就打回复接口容易被成片拒，除非明知会被限流才设 0） |
 | `replyThrottleMaxWaitMs` | **总**窗口上限：整轮「等服务端放行回复接口」的墙钟上限（v0.2.3；**v0.2.14 起从「一波判决」变成「总窗口」**，波内退避 + 波间停顿都算在里面） | `REPLY_THROTTLE_MAX_WAIT_MS = 120 * 1000`（v0.2.14 起；v0.2.3~v0.2.13 是 `10 * 1000`） | `10000..600000`（下限仍是 10 秒：设 10 = 老行为「十秒不行就收尾」） |
 
-面板设置（v0.2.4 文字按钮 → v0.2.5 标题栏齿轮 `⚙`）暴露的是其中 5 项（`maxCount`（标签 `目标条数 max`） /
-`lanes` / `replyLanes` / `replyGapMs` / `replyThrottleSec`＝秒，存盘时换算成 `replyThrottleMaxWaitMs`），
-存进 `dts_user_settings`；`replyGlobalGapMs` 与 `replyWarmupMs` **不在面板里**（面板尽量少占高度），
+面板设置（v0.2.4 文字按钮 → v0.2.5 标题栏齿轮 `⚙`）暴露的是其中 6 项（`maxCount`（标签 `目标条数 max`） /
+`lanes` / `replyLanes` / `replyGapMs` / `replyWarmupSec`＝秒（v0.5.18 起，标签 `回复预热 s`，存盘换算成
+`replyWarmupMs`） / `replyThrottleSec`＝秒，存盘时换算成 `replyThrottleMaxWaitMs`），
+存进 `dts_user_settings`；`replyGlobalGapMs` **仍在面板外**（面板尽量少占高度），
 要改走 DSH 插件设置表 / MCP / 直接写 `dts_settings`。其中 `lanes` 自 **v0.2.15 起重新生效**（标签「顶层并发路数」，
 摘要里写成「顶层 3 路错峰（200ms）」；`1` = 单路）：面板保存时若 `RS.lanes > 1` 就按设置值用错峰多路。
 `replyThrottleSec` 自 **v0.2.14 起语义是「本轮总共最多等多久」**（不是「一波最多等多久」）：
@@ -671,22 +720,36 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
 
 - 单视频（默认，旧行为）：`{ type:'dts-export', videoId, format }`，与 v0.2.8 及以前完全一致。
 - **v0.2.9 新增「全部视频」**：`{ type:'dts-export', videoId, format, all: true }`
-  （`content.js` 的 `exportAs(format)` 传 `all: exportAll`，由面板「导出范围」那两个按钮决定）：
+  （v0.2.9~v0.5.20 由面板「导出范围」两个按钮决定；v0.5.21 起面板不再发 `all:true`，
+  这个参数仍被 background / MCP `ai_export` 支持，供 AI 与外部调用者使用）。
+- **v0.5.20 / v0.5.21「自选视频」**：`{ type:'dts-export', videoId, format, all: false, videoIds: [...] }`
+  （`exportAs(format)` 先 `ensureExportPickDefault()`，再传 `all: false`、
+  `videoIds: pick`，`pick = exportPick` 的副本；**v0.5.21 起 `all` 在面板侧恒为 false**）。
+  **优先级 `all` > `videoIds` > `videoId`**；后台 `exportComments(opts)` 先把 `videoIds` 去重、去空
+  （`pickIds`），`wantPick = !wantAll && pickIds.length > 0`，`multi = wantAll || (wantPick && pickIds.length > 1)`：
+  · 选 **1 条** → 与「本条视频」同契约（19 列、JSON 单视频结构、文件名用该 `videoId`）；
+  · 选 **多条** → 与「全部视频」同契约（20 列、末尾 `video_id`、JSON 带 `videos[]`、文件名
+    `douyin-comments-selected<N>-<时间戳>`）；
+  · 选中视频本地都没数据 → `{ok:false, error:'EMPTY_POOL', scope:'selected', videoIds:[...]}`（不生成空文件）。
+  成功回包带 `scope: 'selected'`（多条）或 `'video'`（单条）、`videoIds`、`videoCount`。
+  面板侧（v0.5.21 起）只走 `videoIds`：默认 `[当前 videoId]`，浮层里勾选后为勾中的那些 id。
 
 | | `all` 不传 / false（本条视频） | `all: true`（全部视频） |
 |---|---|---|
-| CSV 列 | 17 列（`cid … is_reply,parent_cid`） | **18 列：末尾追加 `video_id`**；**前 17 列的列序与含义完全不变**，老读者按位置读前 17 列仍然正确 |
+| CSV 列 | 19 列（`cid … is_reply,parent_cid,user_sec_uid,user_unique_id`；v0.5.17 起末尾多用户标识、**v0.5.28 起去掉 `user_short_id`**） | **20 列：末尾追加 `video_id`**；**前 19 列的列序与含义完全不变**，老读者按位置读前 17 列仍然正确 |
 | JSON | `{exportedAt, videoId, title, count, topLevelCount, replyCount, comments[]}` | 顶层多 `scope: "all"` 与 `videos: [{ videoId, title, count }]`；每条评论也带 `videoId` |
 | 文件名 | `douyin-comments-<videoId>-<时间戳>.csv\|json` | `douyin-comments-all-<时间戳>.csv\|json` |
 
-- background 实现要点：`toCsv(comments, { withVideoId: wantAll })` 只在 `withVideoId` 为真时把
-  `video_id` 推进列头、并给每行追加一列；不带该选项时列数、列序完全不变。
+- background 实现要点：`toCsv(comments, { withVideoId: multi })` 只在 `multi` 为真时把
+  `video_id` 推进列头、并给每行追加一列；不带该选项时列数、列序完全不变（`multi` = 全部视频，
+  或自选 ≥2 条；自选 1 条与单选视频同列数）。
 - 导出是**只读**操作：不删、不改任何存储键（面板「清空」按钮才走 `dts-clear`，见 §3.6）。
 - **v0.2.11 起导出只有一份实现**：面板「导出 CSV/JSON」（`dts-export`）与 Hub(AI/MCP) 的 `export`
   命令**共用** `background.js` 的 `async function exportComments(opts)`（`case 'export':` 与面板按钮
   路径都走它），行为完全一致；Hub `export` 也支持 `all:true`（不传 `videoId` 时把本地所有视频合成
   一份，每条评论标 `videoId`）。Hub 回包约定：**成功主体放 `result`**——`{ok:true, result:{scope, videoId, videoCount, count, topLevelCount, replyCount, format, filename, bytes, downloadId, path}}`；**失败保持顶层** `{ok:false, error, hint}`。失败口径统一：
-  既没 `videoId` 又没 `all:true` → `MISSING_VIDEO_ID`（hint 提示可传 `all:true`）；本地确实没有
+  既没 `videoId`、也没 `all:true`、也没 `videoIds` → `MISSING_VIDEO_ID`（hint 提示可传 `all:true`
+  或 `videoIds:[...]`）；本地确实没有
   评论数据 → `EMPTY_POOL`（全量时 hint 提示先采集或用 `list_videos` / `get_comments` 确认）。
   **不再下载一个只有表头的空 CSV**（以前「导出成功」会掩盖「本来就是空的」）。
 - 面板导出失败时的提示会带上后台给的 `hint`：文案形如 `导出失败：<error>（<hint>）`。
@@ -696,6 +759,14 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
 用本机 node 全局安装的 `playwright-core` +
 本机 Playwright 的 chromium 可执行文件（路径因机器而异，`npx playwright install chromium` 后自查），
 `chromium.launchPersistentContext(PROFILE, { headless:false, args:['--disable-extensions-except=<EXT>','--load-extension=<EXT>'] })`。
+
+⚠️ **自己写探针（直接 `launchPersistentContext`、不经 `collectDouyinComments`）时，启动前必须先调
+`clearStaleScriptCaches(profile)`**（`dsh-douyin-comments/collector.mjs` 导出）。Chrome 把扩展
+background（MV3 SW）的编译脚本缓存在 profile 的 `Default/Service Worker/ScriptCache` 与
+`Default/Code Cache` 里，**扩展文件换了、连 manifest 版本号都变了，浏览器里跑的仍是旧 background.js**。
+2026-10-20 排查「自选视频导出没生效」正是这个：`chrome.runtime.getURL('background.js')` 读到的是新代码，
+SW 里 `exportComments.toString()` 却是旧的。正式路径已按扩展 hash 自动清理（见 collector.mjs 里
+`readLaunchState`/`clearStaleScriptCaches`），探针绕过了它就得自己清。
 
 **登录态**：用 `（本机探针 profile，不入库）.profile` 的**副本**（先 `Copy-Item -Recurse` 到 `douyin-collector-test\.profile`），因为原目录可能被占用。**绝不可关掉所有标签页**（Chromium 会整个退出）；测试结束不要 `browser.close()`，让调用方用 `job_kill` 结束。
 
@@ -726,7 +797,18 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
    - 覆盖率：`实际回复数 / Σ(顶层评论的 reply_comment_total)` 应达到 ~90% 以上
      （降级时改判：必须留下 `replyLastError` 失败原因，且顶层评论完好）
      （拉不回来的那部分是已删除回复）
-   - 导出 CSV 是 **17 列**，`is_reply=1` 的行数 = 落库回复数；顶层行 `is_reply=0` 且 `parent_cid` 为空
+   - 导出 CSV 的**第 2 行是中文列名说明**（v0.5.27）：首列写成 `# 评论ID`，其余列是同一列序的中文标签；
+  第 1 行英文键不变。**解析器必须跳过首列以 `#` 开头的行**，数据行数 = 总行数 − 2。
+  两个写入器（插件 `collector.mjs` 的 `CSV_COL_LABELS` / 扩展 `background.js` 的同名常量）必须逐字一致，
+  `verify-tool.mjs` 断言它们同源。
+- CSV 的用户标识列（v0.5.28）：只保留 `user_sec_uid`（加密 ID，`https://www.douyin.com/user/<sec_uid>` 即主页）与
+  `user_unique_id`（抖音号，用户没设自定义号时服务端返回空串）；**v0.5.29 起该列为空时改填数字短号**
+  v0.5.29 起：写 CSV 时 `user_unique_id` 取 `u.unique_id || u.short_id`（客户要求「加个兜底」），不新增列；
+  中文说明行对应标签为 `抖音号(空则填数字短号)`。两个写入器（插件 / 扩展）必须同口径，`verify-tool.mjs` 有断言。
+  JSON / AI 返回里的 `user.short_id` 字段**仍然保留**（只是不写进 CSV）。
+- 导出 CSV 是 **19 列**（v0.5.17 起末尾多用户标识；**v0.5.28 起去掉 `user_short_id`**，只剩 `user_sec_uid,user_unique_id`；
+      v0.5.20/0.5.21 起「导出范围 ▾」勾 ≥2 条时与 `all` 一致、末尾再追加 `video_id` 共 20 列，默认当前视频 / 只勾 1 条仍 19 列）
+），`is_reply=1` 的行数 = 落库回复数；顶层行 `is_reply=0` 且 `parent_cid` 为空
    - ⚠️ 解析 CSV 时**必须做引号感知**：评论文本里可能含换行，按 `\n` 直接切行会把 1 行拆成多行
      （实测踩到：2377「行」里有 177 行是同一条评论的换行）
    参考实现：`douyin-collector-test/run-replies.mjs`（22 项，含降级判据 R9b/R9c/R9d/R9e）、
@@ -742,10 +824,11 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
     没生效时拖动也不会「拖到一半停住、松手后位置没记住」（判据：check-zip 的「content: 拖动有窗口兜底」）。
     **测试依赖的类名一个都不能改**（`dts-panel-body`/`dts-row`/`dts-muted`/`dts-err`/
     `dts-bar`/`dts-bar-fill`/`dts-btn`/`dts-btn-primary`/`dts-collapsed`，进度条仍由 `style.width` 驱动）。
-    **面板尺寸（v0.1.15）**：只有紧凑一档 —— 宽 236px、字号 11px，写死在 `panel.css` 基础规则里；
+    **面板尺寸（v0.1.15；v0.5.19 放大）**：只有一档 —— 宽 310px、基础字号 14px（v0.5.19 前 236px / 11px；
+    客户反馈「字太小、框太小」⇒ 宽度与全部字号/间距整体放大 ≈1.3 倍），写死在 `panel.css` 基础规则里；
     不得再出现「大/小」按钮（`dts-btn-size`）、尺寸 class 或 `dts_panel_size` 存储键，
     老用户存过的 `'normal'` 必须被忽略（D17 会把 `dts_panel_size='normal'` 塞回存储再刷新，
-    面板必须仍是 236px）。
+    面板必须仍是 310px）。
     参考实现：`douyin-collector-test/probe-panel-drag.mjs`（17 项：拖动位移、变量、落盘、刷新保持、
     双击复位、按钮不触发拖动、收起仍可用、固定紧凑档、无大小按钮/存储键、旧「大」档失效）
 11. **精选页能采（v0.1.9，协议 §3.5；该页是 `/jingxuan` 网格，不是真推荐页）**：
@@ -955,7 +1038,7 @@ Hub 对 **MCP 客户端** 的内部接口（同进程 in-memory / 可选 localho
 | `clear_page` | content.js | 等价面板「清空」（页面内存 + `dts-clear`）。**v0.2.8 起面板有两个清空按钮，它对应的是「清空」（只清本条视频）**，不是「全部清空」。**v0.2.10 起**桥回包 `{ok:true}` 之后内容脚本仍会读回 `chrome.storage.local` 自检（`verifyCleared`），**只有真清掉才显示「已清空」**；失败时回「清空没有生效」并带「`edge://extensions` 重新加载 + F5 刷新」指引（详见 §3.6） |
 | `list_videos` | background | `dts_videos` 列表 |
 | `get_comments` | background | 按 videoId 读评论；支持 `mode=summary\|page` |
-| `export` | background / content | 复用 `dts-export`，返回 `filename/bytes/path`；v0.2.9 起可带 `all:true` 走「全部视频」（CSV 末尾多 `video_id` 列，见 §3.10）。**v0.2.11 起与面板「导出 CSV/JSON」共用 `exportComments()`**：`all:true` 时不传 `videoId` 也能导出；**成功回包主体放 `result`**（`scope / videoCount / count / topLevelCount / replyCount / format / filename / bytes / downloadId / path`），**失败保持顶层** `{ok:false, error, hint}`，口径统一 `MISSING_VIDEO_ID`（既没 videoId 又没 all，hint 提示可传 `all:true`）/ `EMPTY_POOL`（本地无数据），**不再下载只有表头的空 CSV**（详见 §3.10） |
+| `export` | background / content | 复用 `dts-export`，返回 `filename/bytes/path`；v0.2.9 起可带 `all:true` 走「全部视频」（CSV 末尾多 `video_id` 列，见 §3.10）；v0.5.20 起可带 `videoIds:[...]` 只导指定几条（选 1 条不加 `video_id`）。**v0.2.11 起与面板「导出 CSV/JSON」共用 `exportComments()`**：`all:true` 时不传 `videoId` 也能导出；**成功回包主体放 `result`**（`scope / videoCount / count / topLevelCount / replyCount / format / filename / bytes / downloadId / path`），**失败保持顶层** `{ok:false, error, hint}`，口径统一 `MISSING_VIDEO_ID`（既没 videoId 又没 all，hint 提示可传 `all:true`）/ `EMPTY_POOL`（本地无数据），**不再下载只有表头的空 CSV**（详见 §3.10） |
 | `clear_storage` | background | 与 `dts-clear` 同口径：带 `videoId` = 只清那条视频（等价面板「清空」）；显式 `all:true` = 清全部（等价面板「全部清空」，面板那层多一个连点两次的 UI 护栏，桥调用不需要）；两者都没有 → `MISSING_VIDEO_ID`，绝不兜底成全清 |
 
 页面类命令失败时必须回 **可操作 hint**（例如：没有抖音 tab、扩展未就绪请刷新页面、网格页请先点开视频）。
@@ -986,7 +1069,7 @@ Hub 对 **MCP 客户端** 的内部接口（同进程 in-memory / 可选 localho
 | `ai_get_settings` | — | 读设置快照（external / user / effective / precedence / limits） |
 | `ai_set_settings` | `scope?=external\|panel`、`clear?=external\|user\|all`，以及「设置参数」 | 写设置或清设置；两样都空 → `NO_SETTINGS`（不会发桥命令） |
 | `ai_get_comments` | `videoId`, `mode=summary\|page`, `limit?`, `offset?`, `fields?` | 默认摘要，避免刷爆上下文 |
-| `ai_export` | `videoId?`, `all?`, `format=csv\|json` | 文件名/路径；`all:true`（需扩展 ≥ 0.2.11）不传 `videoId` 也能导出本地全部视频合成一份（CSV 末列 `video_id`、回包带 `videoCount`）；两者都不传时 MCP 自己就拒（`videoId 必填`，不发桥命令），旧扩展回 `MISSING_VIDEO_ID` 时补一句「扩展可能太旧（< 0.2.11）」。回包已把 Hub 的 `result` **拍平**（`scope / videoCount / count / topLevelCount / replyCount / format / filename / bytes / path`） |
+| `ai_export` | `videoId?`, `all?`, `videoIds?`, `format=csv\|json` | 文件名/路径；`all:true`（需扩展 ≥ 0.2.11）不传 `videoId` 也能导出本地全部视频合成一份（CSV 末列 `video_id`、回包带 `videoCount`）；两者都不传时 MCP 自己就拒（`videoId 必填`，不发桥命令），旧扩展回 `MISSING_VIDEO_ID` 时补一句「扩展可能太旧（< 0.2.11）」。回包已把 Hub 的 `result` **拍平**（`scope / videoCount / count / topLevelCount / replyCount / format / filename / bytes / path`） |
 | `ai_clear_storage` | `videoId?` / `all?` | 清空：`videoId` 清一条；`all:true` 清全部；都不传 → 拒绝 |
 
 **设置参数**（`ai_start_collect` / `ai_set_settings` 通用）: `max`（AI 别名，等价面板齿轮的「目标条数 max」）、`maxCount`、`lanes`、`replyLanes`、`replyGapMs`、`replyWarmupMs`、`replyThrottleMaxWaitMs`。`max` 与 `maxCount` 同时给时以 `max` 为准。其中 `lanes` 是**顶层列表路数**：**v0.2.15 起重新生效**（默认 3 路错峰 200ms，`1` = 老单路；v0.2.12~v0.2.14 期间被固定为单路），实际用的值在 `dts_settings_effective.lanes` 里回显，被自动降路时原因写在 `lanesNote`。

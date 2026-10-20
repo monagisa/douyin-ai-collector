@@ -28,7 +28,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-const VERSION = '0.5.16';
+const VERSION = '0.5.29';
 const HUB_NAME = 'douyin-collector-mcp';
 
 const argv = process.argv.slice(2);
@@ -506,7 +506,9 @@ const SETTINGS_PROPS = {
     + '跨线程的限速用 replyGlobalGapMs（0.5.11 起默认 250ms）' },
   replyGlobalGapMs: { type: 'number', description: '回复请求**跨线程**的全局最小间隔 ms 0~2000（0 = 用扩展内置的 250ms ≈ ≤4 次/秒）。'
     + 'v0.5.11 起所有回复请求都过这个闸门（旧版单页线程等于零间隔），撞限流还会自动翻倍到上限 1000ms' },
-  replyWarmupMs: { type: 'number', description: '进补采前的静默 ms 0~600000（默认 1500）' },
+  replyWarmupMs: { type: 'number', description: '进补采前的静默 ms 0~600000（默认 10000，v0.5.18 起；0 = 不预热）。'
+    + '顶层评论扫完会先静默这么久再开始打二级回复接口——刚扫完列表就打回复容易被成片拒；'
+    + 'v0.5.18 起扩展面板也暴露了「回复预热 s」这一项' },
   replyThrottleMaxWaitMs: { type: 'number', description: '回复请求被拒时「等窗口」的**总**墙钟预算 ms 10000~600000（v0.5.12 起内置 120000）。'
     + 'v0.5.12 不再一波判终局：单波最多撞 12 秒，波间停 15/30/60 秒再打一波，总等待封顶在这个预算上；'
     + '设 10000 = 旧行为（十秒不行就收尾，再点一次「开始采集」断点续补采）' }
@@ -589,13 +591,20 @@ const TOOLS = [
     name: 'ai_export',
     description: '把已采集的评论导出为 CSV 或 JSON，写入浏览器下载目录，并返回文件名/路径/字节数。'
       + '默认导某一个 videoId（scope=video）；传 all:true 时把本地所有视频合成一份（scope=all，CSV 末尾多一列 video_id，'
-      + '回包带 videoCount），此时 videoId 可以不传。本地没有数据时返回 EMPTY_POOL（不会生成只有表头的空文件）。'
-      + '全部视频导出需要扩展 v0.5.9 或更新。',
+      + '回包带 videoCount），此时 videoId 可以不传；传 videoIds:[...] 时只导这几条视频（v0.5.20 新增，'
+      + 'scope=selected：选 1 条与单视频同列数，选多条才追加 video_id 列）。'
+      + '本地没有数据时返回 EMPTY_POOL（不会生成只有表头的空文件）。'
+      + '全部视频导出需要扩展 v0.5.9 或更新；自选几条需要 v0.5.20 或更新。',
     inputSchema: {
       type: 'object',
       properties: {
         videoId: { type: 'string', description: '要导出的视频 ID；all:true 时可不传（传了则把它也并进这份合集）' },
         all: { type: 'boolean', description: 'true = 导出本地全部视频并合成一份（CSV 末尾追加 video_id 列）；默认 false' },
+        videoIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '自选视频 ID 列表（v0.5.20）：只导这几条，优先级低于 all、高于 videoId；选 1 条时保持单视频列数，选多条才追加 video_id 列'
+        },
         format: { type: 'string', enum: ['csv', 'json'], description: '默认 csv' }
       },
       additionalProperties: false
@@ -664,17 +673,23 @@ async function callTool(name, args) {
         if (!a.videoId) return toolResult(JSON.stringify({ ok: false, error: 'videoId 必填' }), true);
         return toolResult(JSON.stringify(await callExtension('get_comments', a), null, 2));
       case 'ai_export': {
-        if (!a.videoId && a.all !== true) {
+        const pickList = Array.isArray(a.videoIds) ? a.videoIds.filter((x) => String(x || '').trim()) : [];
+        if (!a.videoId && a.all !== true && !pickList.length) {
           return toolResult(JSON.stringify({
             ok: false,
             error: 'videoId 必填',
-            hint: '导出一条视频请传 videoId；要导出本地全部视频请传 all:true'
+            hint: '导出一条视频请传 videoId；要导出本地全部视频请传 all:true；要导指定几条请传 videoIds:[...]'
           }), true);
         }
-        const r = await callExtension('export', a);
+        const exportArgs = Object.assign({}, a, { videoIds: pickList.length ? pickList : undefined });
+        const r = await callExtension('export', exportArgs);
         // 旧扩展（< v0.5.9）的 Hub export 不认 all，会回 MISSING_VIDEO_ID —— 别让用户以为是自己的参数问题
         if (r && r.ok === false && r.error === 'MISSING_VIDEO_ID' && a.all === true) {
           r.hint = '扩展可能太旧（< v0.5.9）：「全部视频导出」是 v0.5.9 起才有的，请更新扩展后重试。';
+        }
+        // 旧扩展（< v0.5.20）不认 videoIds：会把这次请求当成缺 videoId —— 明确指向版本
+        if (r && r.ok === false && r.error === 'MISSING_VIDEO_ID' && !a.videoId && pickList.length) {
+          r.hint = '扩展可能太旧（< v0.5.20）：「自选视频导出」是 v0.5.20 起才有的，请更新扩展后重试。';
         }
         // 成功时按 Hub 约定主体在 result 里（scope/videoCount/count/filename/bytes/path），拍平给模型
         return toolResult(JSON.stringify(r && r.result ? r.result : r, null, 2));

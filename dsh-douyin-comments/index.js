@@ -163,6 +163,11 @@ export const Config = Schema ? Schema.object({
   replyNoProgressSec: vol(Schema.number()
     .description('二级回复阶段多久没有新数据就收工（秒，默认 900 = 15 分钟）。退避重试期间条数本来就长时间不动，太小会导致回复采不到就收工')
     .default(900).min(60).max(7200).step(10)),
+  // 0.5.18：把「进二级回复补采前的静默预热」暴露出来。以前扩展里写死 30 秒、面板和插件都改不了，
+  // 用户看到的就是「顶层采完 → 卡着等半分钟」。默认降到 10 秒；0 = 不预热（直接开打，可能撞风控）。
+  replyWarmupSec: vol(Schema.number()
+    .description('顶层评论采完后、开始补二级回复前先静默几秒（默认 10，0 = 不预热）。刚扫完列表就打回复接口容易被成片拒绝/空 body，停一下能减少失败；嫌切换慢就调小。面板「回复预热 s」优先级更高')
+    .default(10).min(0).max(600).step(1)),
   // 0.5.14：失败/没采完时自动留现场。以前只有一行「60s 没动静」，事后完全看不出当时页面停在哪、
   // 扩展报了什么；现在每次运行都写日志，失败时另存截图 + 页面 HTML + 状态 JSON。
   failSnapshot: vol(Schema.boolean()
@@ -210,6 +215,8 @@ export function readSettings(config) {
     replyGlobalGapMs: Math.max(0, Math.min(2000, Math.round(readCfg(cfg, 'replyGlobalGapMs', Number(DEFAULTS.replyGlobalGapMs) > 0 ? Number(DEFAULTS.replyGlobalGapMs) : 0)))),
     replyThrottleSec: Math.max(10, Math.round(readCfg(cfg, 'replyThrottleSec', Number(DEFAULTS.replyThrottleSec) > 0 ? Number(DEFAULTS.replyThrottleSec) : 120))),
     replyNoProgressSec: Math.max(60, Math.round(readCfg(cfg, 'replyNoProgressSec', Number(DEFAULTS.replyNoProgressSec) > 0 ? Number(DEFAULTS.replyNoProgressSec) : 900))),
+    // v0.5.18：回复预热（0 = 不预热，允许显式 0）
+    replyWarmupSec: Math.max(0, Math.min(600, Math.round(readCfg(cfg, 'replyWarmupSec', Number.isFinite(Number(DEFAULTS.replyWarmupSec)) ? Number(DEFAULTS.replyWarmupSec) : 10)))),
     // v0.5.14：运行日志 + 失败现场快照
     failSnapshot: readCfgBool(cfg, 'failSnapshot', DEFAULTS.failSnapshot !== false),
     keepSnapshots: Math.max(1, Math.round(readCfg(cfg, 'keepSnapshots', Number(DEFAULTS.keepSnapshots) > 0 ? Number(DEFAULTS.keepSnapshots) : 20) || 20)),

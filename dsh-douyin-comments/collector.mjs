@@ -98,6 +98,16 @@ export const DEFAULTS = {
    */
   replyThrottleSec: Number(process.env.DOUYIN_REPLY_THROTTLE_SEC || 0) || 0,
   /**
+   * v0.5.18：进入二级回复补采前的「静默预热」秒数（写进扩展 dts_settings.replyWarmupMs）。
+   * 顶层列表刚扫完就打回复接口是风控挑战的高发点（实测会被成片拒绝/空 body），停一下让配额回血，
+   * 能明显削掉进入补采时的失败尖峰。**默认 10 秒**（v0.5.17 及以前扩展里写死 30 秒、谁也改不了）；
+   * 0 = 不预热。面板「回复预热 s」优先级更高（dts_user_settings > dts_settings）。
+   * 关闭/改时长：DOUYIN_REPLY_WARMUP_SEC=0 或 DSH 设置 → 插件 → 二级回复预热。
+   */
+  replyWarmupSec: Number.isFinite(Number(process.env.DOUYIN_REPLY_WARMUP_SEC))
+    ? Math.max(0, Math.min(600, Math.round(Number(process.env.DOUYIN_REPLY_WARMUP_SEC))))
+    : 10,
+  /**
    * 二级回复阶段「多久没有新数据就收工」的秒数（默认 15 分钟）。
    * 原来只有 120 秒：回复被限流、退避重试的过程中条数自然会长时间不动，
    * 结果刚进回复阶段就被判定「没有新评论」直接收工 —— 回复永远是 0 条。
@@ -584,14 +594,54 @@ export function cleanText(t) {
     .trim();
 }
 
+/**
+ * v0.5.27：CSV 第 2 行是中文列名解释，方便不看英文的同事直接读表。
+ * 第 1 行仍是英文键（机器解析、AI 读取口径不变）；说明行首列以 "# " 开头，
+ * 解析器看到 cid 以 "#" 开头就当说明行跳过即可。
+ */
+export const CSV_COL_LABELS = {
+  cid: '评论ID',
+  create_time: '发布时间戳(秒)',
+  create_time_str: '发布时间(UTC)',
+  text: '评论原文',
+  text_clean: '文本(去表情话题)',
+  text_len: '字数',
+  digg_count: '点赞数',
+  reply_comment_total: '该评论回复数',
+  ip_label: 'IP属地',
+  is_hot: '是否热评(1/0)',
+  is_folded: '是否折叠(1/0)',
+  level: '层级(1一级2二级)',
+  stick_position: '置顶位(0非置顶)',
+  user_nickname: '昵称',
+  user_uid: '用户内部ID(不可搜)',
+  is_reply: '是否二级回复(1/0)',
+  parent_cid: '父评论ID',
+  user_sec_uid: 'sec_uid(主页链接用)',
+  user_unique_id: '抖音号(空则填数字短号)',
+  video_id: '视频ID(多视频导出)'
+};
+
+/** 说明行：按 cols 顺序取中文标签，首列加 "# " 标记 */
+export function csvLabelRow(cols) {
+  return cols
+    .map((k, i) => csvCell((i === 0 ? '# ' : '') + (CSV_COL_LABELS[k] || k)))
+    .join(',');
+}
+
 export function toCsv(comments) {
   const cols = [
     'cid', 'create_time', 'create_time_str', 'text', 'text_clean', 'text_len',
     'digg_count', 'reply_comment_total', 'ip_label', 'is_hot', 'is_folded',
     'level', 'stick_position', 'user_nickname', 'user_uid',
     'is_reply', 'parent_cid',
+    // v0.5.17：末尾追加「能用的用户标识」列。user_uid 是抖音内部数字 ID，不是抖音号、
+    // 搜不到人也拼不出主页；用户真正需要的是 sec_uid（拼主页）与 unique_id（抖音号）。
+    // v0.5.28：按客户要求删掉 user_short_id（抖音内部短号，客户用不到；JSON 里仍有原始字段）。
+  // v0.5.29：按客户要求加回兜底——`user_unique_id` 为空时改填数字短号（不新增列，标签改成「抖音号(空则填数字短号)」）。
+    'user_sec_uid', 'user_unique_id',
   ];
-  const rows = [cols.join(',')];
+  const rows = [cols.join(','), csvLabelRow(cols)];
   for (const c of comments) {
     const t = c.text || '';
     const ct = c.create_time ? new Date(c.create_time * 1000).toISOString() : '';
@@ -603,6 +653,7 @@ export function toCsv(comments) {
       csvCell(c.is_hot), csvCell(c.is_folded), csvCell(c.level), csvCell(c.stick_position),
       csvCell(u.nickname), csvCell(u.uid),
       csvCell(c.is_reply ? 1 : 0), csvCell(c.parent_cid),
+      csvCell(u.sec_uid), csvCell(u.unique_id || u.short_id),
     ].join(','));
   }
   return rows.join('\r\n');
@@ -802,6 +853,12 @@ export async function collectDouyinComments(o = {}) {
   // v0.5.11：回复请求全局限速（0 = 用扩展内置的 250ms）
   const replyGlobalGapMs = Math.max(0, Math.min(2000, Math.round(numOr(o.replyGlobalGapMs, DEFAULTS.replyGlobalGapMs))));
   const replyThrottleSec = numOr(o.replyThrottleSec, DEFAULTS.replyThrottleSec);
+  // v0.5.18：回复预热允许显式 0（= 不预热），所以不能用 numOr（它把 0 当「未指定」）
+  const replyWarmupSec = Math.max(0, Math.min(600, Math.round(
+    (o.replyWarmupSec === undefined || o.replyWarmupSec === null || o.replyWarmupSec === ''
+      ? Number(DEFAULTS.replyWarmupSec)
+      : Number(o.replyWarmupSec)) || 0,
+  )));
   const replyNoProgressMs = Math.max(60000, Math.round(
     (numOr(o.replyNoProgressSec, DEFAULTS.replyNoProgressSec) || 900) * 1000,
   ));
@@ -1312,6 +1369,8 @@ export async function collectDouyinComments(o = {}) {
     if (replyLanes > 0) extSettings.replyLanes = replyLanes;
     if (replyGlobalGapMs > 0) extSettings.replyGlobalGapMs = replyGlobalGapMs;
     if (replyThrottleSec > 0) extSettings.replyThrottleMaxWaitMs = Math.round(replyThrottleSec * 1000);
+    // v0.5.18：回复预热**总是**下发（0 = 不预热，不能被 `> 0` 判断吞掉）
+    extSettings.replyWarmupMs = Math.round(replyWarmupSec * 1000);
     const pushed = await pushExtensionSettings(extSettings);
     if (pushed.ok) log('已把设置写进扩展：dts_settings=' + JSON.stringify(pushed.value));
     else log('写扩展设置失败（改用扩展内置值）：' + pushed.error);

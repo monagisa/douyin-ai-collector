@@ -64,6 +64,39 @@
     } catch (e) { /* postMessage 失败不影响页面 */ }
   }
 
+  /**
+   * 风控验证头（2026-10-08 真机实测）：回复接口被服务端要求验证时，空 body 的响应每一个都带
+   * `x-vc-bdturing-parameters`，成功响应没有这个头。扩展**不解析、不尝试通过**验证，
+   * 只把「有这个头」报成稳定错误码 VERIFY_REQUIRED，让 content.js 立刻停下、如实告诉用户。
+   */
+  function isVerify(res) {
+    try {
+      return !!(res.headers.get('x-vc-bdturing-parameters') || res.headers.get('bdturing-verify'));
+    } catch (e) { return false; }
+  }
+
+  /**
+   * 把挑战头解出来（base64 JSON），只取几个能说明「这是哪一类挑战」的字段，供本地观测日志用。
+   * 纯读取：不尝试应答、不缓存复用、不参与任何请求构造。
+   */
+  function challengeOf(res) {
+    var raw = null;
+    try { raw = res.headers.get('x-vc-bdturing-parameters') || res.headers.get('bdturing-verify'); } catch (e) { return null; }
+    if (!raw) return null;
+    var out = { raw_bytes: raw.length };
+    try {
+      if (typeof atob !== 'function') { out.decode_error = 'no atob'; return out; }
+      var j = JSON.parse(atob(raw));
+      if (j && typeof j === 'object') {
+        out.type = j.type;
+        out.verify_event = j.verify_event;
+        out.subtype = j.subtype;
+        out.scene = j.scene;
+      }
+    } catch (e) { out.decode_error = String(e).slice(0, 60); }
+    return out;
+  }
+
   function absUrl(u) {
     try { return new URL(String(u), location.href).href; } catch (e) { return String(u); }
   }
@@ -183,6 +216,16 @@
     try {
       var res = await nativeFetch.call(window, u.toString(), { credentials: 'include' });
       var text = await res.text();
+      if (isVerify(res)) {
+        base.ms = Math.round(((window.performance || Date).now()) - t0);
+        base.ok = false;
+        base.verify = true;
+        base.error = 'VERIFY_REQUIRED';
+        base.empty = !text;
+        base.bytes = text ? text.length : 0;
+        base.challenge = challengeOf(res);
+        return base;
+      }
       // 空 body 是服务端的一种拒绝形态：实测回复接口在被限流时回 0 字节，
       // JSON.parse('') 会抛 SyntaxError: Unexpected end of JSON input，
       // 把 JS 异常串当协议很脆（文案会变、无法稳定判定）。归一成稳定错误码。
@@ -262,6 +305,16 @@
     try {
       var res = await nativeFetch.call(window, u.toString(), { credentials: 'include' });
       var text = await res.text();
+      if (isVerify(res)) {
+        base.ms = Math.round(((window.performance || Date).now()) - t0);
+        base.ok = false;
+        base.verify = true;
+        base.error = 'VERIFY_REQUIRED';
+        base.empty = !text;
+        base.bytes = text ? text.length : 0;
+        base.challenge = challengeOf(res);
+        return base;
+      }
       // 空 body 是服务端的一种拒绝形态：实测回复接口在被限流时回 0 字节，
       // JSON.parse('') 会抛 SyntaxError: Unexpected end of JSON input，
       // 把 JS 异常串当协议很脆（文案会变、无法稳定判定）。归一成稳定错误码。

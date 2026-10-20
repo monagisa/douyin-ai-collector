@@ -96,7 +96,9 @@
   //     窗口常在十几秒后自己打开。所以改成：单波最多 REPLY_WAVE_BUDGET_MS，
   //     波与波之间停 REPLY_PARK_PLAN_MS，总等待封顶 RS.replyThrottleMaxWaitMs（内置 120 秒）。
   //     老行为（十秒不行就停）仍可复原：面板「限流等待 s」设 10 即可。
-  const REPLY_WARMUP_MS = 1500;           // 进入补采前先停一下，让刚被列表扫描用掉的配额回血
+  const REPLY_WARMUP_MS = 10000;          // 列表扫描刚结束就打回复接口是风控挑战的高发点，进补采前多停一会儿
+                                          // v0.5.18：默认 30s → **10s**（用户反馈「切二级回复时等很久」）。
+                                          // 面板「回复预热 s」/ 插件 replyWarmupSec 可调 0~600，0 = 不停。
   const REPLY_COOLDOWN_MS = 1500;         // 连续失败到阈值后的冷却
   const REPLY_FAIL_STREAK_STOP = 3;       // 连续失败累计到这个数，才做一次「冷却 + 探签名死活」
   const REPLY_BACKOFF_BASE_MS = 1000;     // 重试退避基数（1s 起，指数递增到上限后保持）
@@ -248,6 +250,16 @@
   var replyWaveBudgetMs = REPLY_WAVE_BUDGET_MS;  // v0.5.12：当前这一波的连续重试上限
   var replyStoppedByThrottle = false; // 本轮补采是因为「服务端不放行回复接口」而提前收尾的（面板要如实说明）
   var resumeReplies = false;      // 补采因签名失效停下后，拿到新签名直接回补采（不重扫顶层）
+
+  // ---- 风控观测日志：只记录服务端**已经返回**的挑战信号，不改变任何请求行为 ----
+  // 目的：回答「什么接口、什么节奏、采了多久之后开始被挑战」，供用户评估自己的使用强度。
+  // 不做的事：不伪造签名/指纹、不改 cookie、不尝试通过或解答挑战。
+  var riskLog = [];               // 有界（最近 RISK_LOG_MAX 条），跨视频累计
+  var riskLogDirty = false;
+  var riskLogTimer = 0;
+  var reqTimes = [];              // 最近若干次重放请求的时刻（算间隔与 10 秒内请求数）
+  var RISK_LOG_MAX = 200;
+  var RISK_LOG_KEY = 'dts_risk_log';
   /** 清空/换代号：清空时 +1。旧 startLoop 的在途回包若 epoch 不一致，必须丢弃，
    *  否则清空后旧循环会把 cursor 写回高位，再点开始就“续采”，但池子已是空的。 */
   var collectEpoch = 0;
@@ -268,7 +280,20 @@
   /** 评论桶的 key 前缀（与 background.js 的 PREFIX_COMMENTS 一致）：清空后读回存储自检用 */
   var COMMENT_KEY_PREFIX = 'dts_c_';
   /** 导出范围：false = 只导本条视频（默认，和旧版一致）；true = 把所有视频合成一份导出 */
-  var exportAll = false;
+  var exportAll = false;           // v0.5.21：面板不再有「本条 / 全部」按钮，只走自选；保留给旧测试/镜像兼容
+  /** v0.5.21：自选视频导出 = 面板唯一的导出范围入口。
+   *  - 默认值是「本条视频」（videoId），所以点「导出 CSV」的行为跟原来一样；
+   *  - 用户点开「导出范围」改过选择后 exportPickTouched = true，之后不再自动跟随当前视频；
+   *  - 清空本条视频的数据时会把自选里的它剔掉（见 onClearClick）。
+   */
+  var exportPick = null;
+  var exportPickTouched = false;
+
+  /** 选择浮层的临时态：勾选中的 videoId 集合、清单、标题/条数元数据、是否正在读清单 */
+  var pickSel = {};
+  var pickIds = [];
+  var pickMeta = {};
+  var pickLoading = false;
 
   // ================== 小工具 ==================
 
@@ -1221,6 +1246,7 @@
         }
       }, REPLAY_TIMEOUT_MS);
       pendingReplay.set(key, { cursor: key, timer: timer, resolve: resolve });
+      noteReqAt();
       down('replay', { cursor: key, count: cnt });
     });
   }
@@ -1233,6 +1259,7 @@
     pendingReplay.delete(key);
     clearTimeout(pr.timer);
     pr.resolve(p);
+    if (p.verify) noteRisk('list', p, p);
   }
 
   /** 收尾：把所有在飞的请求按失败放掉（暂停/停止/切视频时用） */
@@ -1273,6 +1300,7 @@
         }
       }, REPLAY_TIMEOUT_MS);
       pendingReplies.set(key, { parentCid: String(parentCid), cursor: Number(cur), timer: timer, resolve: resolve });
+      noteReqAt();
       down('replay-reply', { parentCid: String(parentCid), cursor: Number(cur), count: cnt });
     });
   }
@@ -1284,6 +1312,101 @@
     pendingReplies.delete(key);
     clearTimeout(pr.timer);
     pr.resolve(p);
+    if (p.verify) noteRisk('reply', p, p);
+  }
+
+  // ================== 风控观测日志 ==================
+
+  /** 记一次重放请求的时刻（用于算「距上一个请求多久」「前 10 秒内打了几个请求」） */
+  function noteReqAt() {
+    var now = Date.now();
+    reqTimes.push(now);
+    if (reqTimes.length > 60) reqTimes.shift();
+    return now;
+  }
+
+  /**
+   * 记录一次挑战。字段都是**观测得到**的：挑战头解码、空 body、请求节奏、签名年龄。
+   * 不解释、不尝试应答挑战 —— 只留证据。
+   */
+  function noteRisk(kind, p, r) {
+    var now = Date.now();
+    var prev = 0;
+    for (var i = reqTimes.length - 1; i >= 0; i--) {
+      if (reqTimes[i] < now) { prev = reqTimes[i]; break; }
+    }
+    var in10 = 0;
+    for (i = 0; i < reqTimes.length; i++) { if (now - reqTimes[i] <= 10000) in10++; }
+    riskLog.push({
+      at: now,
+      kind: kind,                                     // list = 顶层列表，reply = 二级回复
+      videoId: videoId,
+      cursor: kind === 'list' ? Number(p.cursor) : undefined,
+      parentCid: kind === 'reply' ? String(p.parentCid) : undefined,
+      empty: !!(r && r.empty),                        // 挑战响应是不是空 body
+      bytes: r && typeof r.bytes === 'number' ? r.bytes : undefined,
+      challenge: (r && r.challenge) || null,          // 挑战头解码（type / verify_event / subtype）
+      ms: r && typeof r.ms === 'number' ? r.ms : undefined,
+      gapMs: prev ? now - prev : null,                // 距上一个重放请求的间隔
+      reqsLast10s: in10,                              // 前 10 秒内发出去的重放请求数
+      signAgeMs: signedAt ? now - signedAt : null,    // 这份签名用了多久
+      replyWave: kind === 'reply' ? replyWaves : undefined,
+    });
+    if (riskLog.length > RISK_LOG_MAX) riskLog = riskLog.slice(-RISK_LOG_MAX);
+    riskLogDirty = true;
+    render();
+    scheduleRiskPersist();
+  }
+
+  function scheduleRiskPersist() {
+    if (riskLogTimer) return;
+    riskLogTimer = setTimeout(function () { riskLogTimer = 0; persistRiskLog(); }, 2000);
+  }
+
+  /** 落盘（节流后的批量写；写失败不影响采集） */
+  function persistRiskLog() {
+    if (!riskLogDirty) return;
+    riskLogDirty = false;
+    try { chrome.storage.local.set({ dts_risk_log: riskLog.slice(-RISK_LOG_MAX) }); } catch (e) { /* 忽略 */ }
+  }
+
+  function loadRiskLog() {
+    try {
+      chrome.storage.local.get(RISK_LOG_KEY, function (o) {
+        if (o && Array.isArray(o[RISK_LOG_KEY])) { riskLog = o[RISK_LOG_KEY]; render(); }
+      });
+    } catch (e) { /* 首次运行时没有这个键 */ }
+  }
+
+  function riskLogText() {
+    if (!riskLog.length) return '未出现';
+    var last = riskLog[riskLog.length - 1];
+    var d = new Date(last.at);
+    var hh = ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2) + ':' + ('0' + d.getSeconds()).slice(-2);
+    return riskLog.length + ' 次（最近 ' + hh + ' ' + (last.kind === 'list' ? '列表' : '回复') + '）';
+  }
+
+  /** 导出为 JSON 文件（面板按钮；数据就在本机，不上传任何地方） */
+  function exportRiskLog() {
+    try {
+      var payload = {
+        exportedAt: new Date().toISOString(),
+        videoId: videoId,
+        count: riskLog.length,
+        entries: riskLog,
+      };
+      var blob = new Blob([JSON.stringify(payload, null, 1)], { type: 'application/json' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = 'dts-risk-log-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json';
+      (document.body || document.documentElement).appendChild(a);
+      a.click();
+      setTimeout(function () { try { URL.revokeObjectURL(url); a.remove(); } catch (e) {} }, 5000);
+    } catch (e) {
+      errText = '导出风控日志失败：' + String(e);
+      render();
+    }
   }
 
   // 多路共用同一次签名探测（requestReplay 按 cursor 去重，并发探同一 cursor 会互相踩）
@@ -1442,6 +1565,8 @@
       if (!r || !r.ok) {
         var err = (r && r.error) || 'unknown';
         if (err === 'NO_SIGNED_URL') return { got: got, needSign: true };
+        // 风控验证（VERIFY_REQUIRED）：不是「服务端暂时不回」，等也等不出来，直接收手
+        if (err === 'VERIFY_REQUIRED') { replyLastError = '服务端要求完成验证（风控）'; return { got: got, verify: true }; }
         replyFailStreak++;
         replyLastError = err + '（连续 ' + replyFailStreak + ' 次）';
         var out = await recoverReply(parentCid, cur, err);
@@ -1479,12 +1604,14 @@
     });
     if (!todo.length) return;
 
-    setPhase('replies', '', '顶层评论已采完，开始补采二级回复：共 ' + todo.length + ' 个线程……');
+    setPhase('replies', '', '顶层评论已采完，开始补采二级回复：共 ' + todo.length + ' 个线程……' +
+      (RS.replyWarmupMs > 0 ? '（先预热 ' + Math.round(RS.replyWarmupMs / 1000) + ' 秒，面板「回复预热 s」/ 插件 replyWarmupSec 可调）' : ''));
     // 主扫描刚把列表接口轰完，紧接着打回复接口会被服务端用字面量 null 拒掉一批；
     // 先停一下让配额回血，能明显削掉进入补采时的失败尖峰（实测 probe-replyfail）。
-    await sleep(RS.replyWarmupMs);
+    // v0.5.18：默认 30s → 10s，且不再写死（RS.replyWarmupMs 来自面板/插件设置，0 = 不停）。
+    if (RS.replyWarmupMs > 0) await sleep(RS.replyWarmupMs);
     if (stopFlag) return;
-    var needSignStop = false, hardStop = false, throttledStop = false;
+    var needSignStop = false, hardStop = false, throttledStop = false, verifyStop = false;
     replyThrottledMs = 0;   // 每次进入补采重算「等窗口」预算
     replyThrottleStartAt = 0;
     replyParkedMs = 0;      // v0.5.12：波间停顿累计
@@ -1500,7 +1627,7 @@
     async function runRound(list, label) {
       var idx = 0, failed = [];
       async function worker(myLane) {
-        while (!stopFlag && !needSignStop && !hardStop && !throttledStop) {
+        while (!stopFlag && !needSignStop && !hardStop && !throttledStop && !verifyStop) {
           // v0.5.11：撞限流后 replyLaneLimit 会降到 1..n-1，多出来的 worker 主动退出
           if (myLane >= (replyLaneLimit > 0 ? replyLaneLimit : RS.replyLanes)) return;
           // 补采可能跑很久（线程多），签名过期检查必须在这里也做一遍，
@@ -1513,6 +1640,7 @@
           if (replyDoneSet.has(cid)) continue;
           var r = await fetchThread(cid);
           if (r.needSign) { needSignStop = true; return; }
+          if (r.verify) { verifyStop = true; return; }
           if (r.throttled) { throttledStop = true; return; }
           if (r.stop) { hardStop = true; return; }
           if (r.failed) failed.push(cid); else {
@@ -1540,7 +1668,7 @@
 
     // 失败线程退避后重试一轮 —— 实测第一轮会有零星失败（超时/限流），
     // 不重试就直接丢掉会明显压低覆盖率。
-    if (failed.length && !needSignStop && !throttledStop && !stopFlag) {
+    if (failed.length && !needSignStop && !throttledStop && !verifyStop && !stopFlag) {
       noteText = '第一轮有 ' + failed.length + ' 个线程失败，退避 2.5s 后重试……';
       render();
       await sleep(2500);
@@ -1581,6 +1709,17 @@
     await flushComments(0);
     replyFailCount = failed.length;
     if (throttledStop) replyStoppedByThrottle = true;
+
+    if (verifyStop) {
+      // 风控验证：停下，不再重试。每一次重试都是在加重风控，而且等也等不出来。
+      // resumeReplies 让下次「开始采集」直接续补采，不重扫顶层、已采到的不重复拉。
+      resumeReplies = true;
+      setPhase('paused',
+        '服务端要求完成验证（风控）：已停止采集，没有继续重试。请在普通浏览器（非自动化）打开这条视频，'
+          + '完成页面上的验证后，过一会儿再点「开始采集」，会从断点续补采二级回复。',
+        '二级回复已采 ' + repliesCollected + ' 条（' + replyDoneSet.size + '/' + replyTargets.size + ' 个线程），已落盘');
+      return;
+    }
 
     if (needSignStop) {
       resumeReplies = true;   // 拿到新签名后直接回补采，不再重扫顶层（省时间，也少轰一次列表接口）
@@ -1868,6 +2007,7 @@
       replyLanes: RS.replyLanes,
       replyGlobalGapMs: RS.replyGlobalGapMs,
       replyGapMs: RS.replyGapMs,
+      replyWarmupMs: RS.replyWarmupMs,          // v0.5.18：进补采前的静默预热（面板/插件可调）
       replyThrottleMaxWaitMs: RS.replyThrottleMaxWaitMs,
       replyWaveBudgetMs: REPLY_WAVE_BUDGET_MS,      // v0.5.12：单波连续重试上限
       replyParkPlanMs: REPLY_PARK_PLAN_MS.join('/'), // v0.5.12：波间停顿计划
@@ -1969,6 +2109,18 @@
         }
         reqs = await Promise.all(reqs);
         if (stopFlag || epoch !== collectEpoch) break;
+        // 列表接口也可能被风控验证：已经拿到的那些路照常落库，然后停下，不再重试
+        if (reqs.some(function (z) { return z && z.error === 'VERIFY_REQUIRED'; })) {
+          for (i = 0; i < reqs.length; i++) {
+            if (reqs[i] && reqs[i].ok) pushComments(accept(reqs[i].items || []), 1);
+          }
+          await flushComments(1);
+          setPhase('paused',
+            '服务端要求完成验证（风控）：顶层列表已停止，没有继续重试。请在普通浏览器（非自动化）打开这条视频，'
+              + '完成页面上的验证后，过一会儿再点「开始采集」（已采数据已保存，会断点续采）。',
+            '顶层已采 ' + topSeenCount + ' 条，已落盘');
+          break;
+        }
         // 清空/换代发生在请求在途时：丢弃回包，禁止把 cursor 写回高位
         if (!reqs.length) continue;
 
@@ -2207,6 +2359,7 @@
       running = false;
       if (epoch === collectEpoch) drainReplay('REPLAY_DRAINED');
       down('stop-capture');
+      persistRiskLog();   // 收工时把观测日志落盘（节流窗口内还没写的那几条别丢）
       render();
     }
   }
@@ -2433,6 +2586,15 @@
           setPhase('error', clearFailedText('清空', err, detail), '本条视频的本地数据还在，别当成清过了');
           return;
         }
+        // v0.5.22：自选导出的选择必须**先**改、再 setPhase —— setPhase 内部就会 render()，
+        // 顺序反了会出现「已经清空了，按钮还写着『自选 N 个视频』，点进浮层才变」的问题。
+        // v0.5.20：自选导出里如果包含这条视频，清空后要把它剔掉（否则导出一个空桶会报 EMPTY_POOL）
+        if (exportPick && exportPick.length) {
+          exportPick = exportPick.filter(function (id) { return id !== videoId; });
+          if (!exportPick.length) exportPick = null;
+        }
+        // v0.5.21：清空后回到「默认跟着当前视频走」（数据已没了，再钉着旧选择没意义）
+        if (!exportPick || !exportPick.length) exportPickTouched = false;
         setPhase('idle', '', '已清空本视频的本地去重表与扩展存储；下次「开始采集」将从头重扫');
         // 清完立刻刷新「本地已存」总量（本条视频那部分已经归零）
         localStatsSeq++;
@@ -2480,6 +2642,11 @@
             setPhase('error', clearFailedText('全部清空', err, detail), '所有视频的本地数据都还在，别当成清过了');
             return;
           }
+          // v0.5.22：全部清空后自选导出的选择必须失效——所有视频的数据都没了，
+          // 还钉着旧选择的话面板会一直显示「导出范围：自选 N 个视频」，点进浮层才变回默认。
+          // 同样要在 setPhase 之前改（setPhase 内部会 render）。
+          exportPick = null;
+          exportPickTouched = false;
           setPhase('idle', '', '已清空全部视频的评论与本地去重表'
             + (n > 0 ? '（共 ' + n + ' 个视频）' : '') + '；下次「开始采集」将从头重扫');
           // 全清之后「本地已存」必须立刻显示为 0；序号 +1 作废清空前发出的旧统计回包
@@ -2539,12 +2706,219 @@
     }
   }
 
-  /** 面板「导出范围」的两个小按钮：本条视频（默认，兼容旧行为）/ 全部视频 */
-  function setExportScope(all) {
-    exportAll = !!all;
-    noteText = exportAll
-      ? '导出范围：全部视频（所有视频的评论合成一份；CSV 末尾多一列 video_id）'
-      : '导出范围：本条视频（只导当前这条视频链接的评论）';
+  /** v0.5.21：面板只剩「导出范围」= 自选浮层。没被用户改过时默认跟着当前视频走（等价旧「本条视频」） */
+  function ensureExportPickDefault() {
+    if (exportPickTouched || (exportPick && exportPick.length)) return;
+    var v = videoId || pageViewId();
+    if (v) exportPick = [v];
+  }
+
+  /** 导出范围按钮上的文案（也是当前口径的唯一提示） */
+  function exportScopeText() {
+    if (!exportPick || !exportPick.length) return '导出范围：未选择';
+    if (exportPick.length === 1) {
+      var v = videoId || pageViewId();
+      return exportPick[0] === v ? '导出范围：本条视频' : '导出范围：1 个视频';
+    }
+    return '导出范围：自选 ' + exportPick.length + ' 个视频';
+  }
+
+  // ---------- v0.5.20：自选视频导出 ----------
+  // 客户反馈「只能本条 / 全部」限制太大。这里给一个勾选浮层：列出本地已存的视频
+  // （标题 + 条数，按最近采集时间倒序），勾哪几条就只导哪几条。
+  // v0.5.24：客户「很难区分啊，能不能把这个变成视频的标题」——从推荐/精选网格页采到的视频，
+  // 标题只能是「抖音精选电脑版」这类通用页名，几条同名根本分不清。对策：
+  //   ① 每行标题下面补一行小字「ID 末 8 位 · 采集时间」，至少能区分；
+  //   ② 浮层里发现通用/空标题就自动（或手动点按钮）让后台开后台标签页读详情页标题补全。
+  var GENERIC_TITLE_RE = /^(抖音|抖音精选|抖音精选电脑版|抖音网页版|抖音[-–—·\s]*记录美好生活|记录美好生活)([\s\-–—|·].*)?$/;
+
+  function isGenericTitle(t) {
+    var s = String(t || '').replace(/\s+/g, ' ').trim();
+    if (!s) return true;
+    return GENERIC_TITLE_RE.test(s);
+  }
+
+  function shortVideoId(id) {
+    var s = String(id || '');
+    return s.length > 8 ? s.slice(-8) : s;
+  }
+
+  function fmtPickTime(iso) {
+    if (!iso) return '';
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    function p(n) { return (n < 10 ? '0' : '') + n; }
+    return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+
+  function pickLabel(id) {
+    var t = (pickMeta[id] && pickMeta[id].title) || '';
+    if (t && !isGenericTitle(t)) return t;
+    return '视频 ' + shortVideoId(id);
+  }
+
+  function pickSubLabel(id) {
+    var m = pickMeta[id] || {};
+    var when = fmtPickTime(m.updatedAt);
+    return 'ID ' + shortVideoId(id) + (when ? ' · 采集 ' + when : '');
+  }
+
+  // v0.5.26：不再打开任何页面去补标题（客户「能不打开其他的浏览器就获得标题吗」）。
+  // 实测视频页 HTML 是空壳、老分享接口失效、detail 接口无签名 403 ⇒ 不开页面拿不到。
+  // 所以通用/空标题就显示「视频 <末 8 位>」，下一行仍有「ID … · 采集 …」可区分。
+  function selectedPickIds() {
+    return pickIds.filter(function (id) { return !!pickSel[id]; });
+  }
+
+  function updatePickerInfo() {
+    if (!ui || !ui.pickerInfo) return;
+    var sel = selectedPickIds();
+    var total = 0;
+    sel.forEach(function (id) { total += Number(pickMeta[id] && pickMeta[id].count) || 0; });
+    ui.pickerInfo.textContent = pickIds.length
+      ? ('本地 ' + pickIds.length + ' 个视频 · 已选 ' + sel.length + ' 个（约 ' + total + ' 条）')
+      : '';
+    // v0.5.23：选中反馈——用户「选中没有提示」。除了每行高亮（CSS :has），顶部这行也变色加粗，
+    // 让「选了几个 / 大概多少条」一眼可见。
+    ui.pickerInfo.classList.toggle('dts-has-sel', sel.length > 0);
+    if (ui.pickerOk) {
+      var txt = sel.length ? ('导出选中的 ' + sel.length + ' 个…') : '确定';
+      if (ui.pickerOk.textContent !== txt) ui.pickerOk.textContent = txt;
+    }
+  }
+
+  function renderPickerList() {
+    if (!ui || !ui.pickerList) return;
+    var list = ui.pickerList;
+    list.textContent = '';
+    if (pickLoading) {
+      var l = document.createElement('div');
+      l.className = 'dts-picker-empty';
+      l.textContent = '正在读取本地视频…';
+      list.appendChild(l);
+      if (ui.pickerInfo) ui.pickerInfo.textContent = '';
+      return;
+    }
+    if (!pickIds.length) {
+      var e = document.createElement('div');
+      e.className = 'dts-picker-empty';
+      e.textContent = '本地还没有评论数据：先采集一条视频回来再选。';
+      list.appendChild(e);
+      updatePickerInfo();
+      return;
+    }
+    pickIds.forEach(function (id) {
+      var item = document.createElement('label');
+      item.className = 'dts-picker-item';
+      var box = document.createElement('input');
+      box.type = 'checkbox';
+      box.className = 'dts-picker-box';
+      box.setAttribute('data-video-id', id);
+      box.checked = !!pickSel[id];
+      box.addEventListener('change', function () {
+        if (box.checked) pickSel[id] = true; else delete pickSel[id];
+        updatePickerInfo();
+      });
+      var txt = document.createElement('span');
+      txt.className = 'dts-picker-title';
+      txt.textContent = pickLabel(id);
+      txt.title = id + '\n' + pickLabel(id);
+      // v0.5.24：第二行小字（ID 末 8 位 + 采集时间），标题重名时也能区分
+      var sub = document.createElement('span');
+      sub.className = 'dts-picker-sub';
+      sub.textContent = pickSubLabel(id);
+      var textBox = document.createElement('span');
+      textBox.className = 'dts-picker-text';
+      textBox.appendChild(txt);
+      textBox.appendChild(sub);
+      var cnt = document.createElement('span');
+      cnt.className = 'dts-picker-count';
+      cnt.textContent = (Number(pickMeta[id] && pickMeta[id].count) || 0) + ' 条';
+      item.appendChild(box);
+      item.appendChild(textBox);
+      item.appendChild(cnt);
+      list.appendChild(item);
+    });
+    updatePickerInfo();
+  }
+
+  function loadPickerList() {
+    pickLoading = true;
+    pickIds = [];
+    pickMeta = {};
+    renderPickerList();
+    try {
+      chrome.runtime.sendMessage({ type: 'dts-stats', videoId: videoId || pageViewId() }, function (resp) {
+        pickLoading = false;
+        if (chrome.runtime.lastError) {
+          var le = chrome.runtime.lastError.message || '';
+          if (isExtContextInvalid(le)) { onExtContextLost(le); return; }
+          errText = '读取本地视频失败：' + le;
+          renderPickerList();
+          return;
+        }
+        var videos = (resp && resp.videos) || {};
+        pickMeta = videos;
+        pickIds = Object.keys(videos)
+          .filter(function (id) { return Number(videos[id] && videos[id].count) > 0; })
+          .sort(function (a, b) {
+            return (Number(videos[b] && videos[b].updatedAt) || 0) - (Number(videos[a] && videos[a].updatedAt) || 0);
+          });
+        renderPickerList();
+        // v0.5.26：不再触发后台补标题（见上方注释），通用标题就显示「视频 <末 8 位>」。
+      });
+    } catch (e) {
+      pickLoading = false;
+      if (isExtContextInvalid(e)) { onExtContextLost(String(e && e.message || e)); return; }
+      errText = '读取本地视频失败：' + String(e && e.message || e);
+      renderPickerList();
+    }
+  }
+
+  function openPicker() {
+    if (!ui || !ui.picker) return;
+    if (ui.root) {
+      ui.root.classList.remove('dts-collapsed');
+      ui.root.classList.add('dts-settings-open');   // 撑高面板，够放视频清单
+    }
+    ui.picker.classList.remove('dts-hidden');
+    pickSel = {};
+    if (exportPick) exportPick.forEach(function (id) { pickSel[id] = true; });
+    errText = '';
+    noteText = '选择要导出的视频：勾选后点「确定」，再点面板上的「导出 CSV / JSON」';
+    loadPickerList();
+    render();
+  }
+
+  function closePicker() {
+    if (ui && ui.picker) ui.picker.classList.add('dts-hidden');
+    if (ui && ui.root) ui.root.classList.remove('dts-settings-open');
+  }
+
+  function pickSelectAll(on) {
+    pickSel = {};
+    if (on) pickIds.forEach(function (id) { pickSel[id] = true; });
+    renderPickerList();
+  }
+
+  function confirmPicker() {
+    var sel = selectedPickIds();
+    var total = 0;
+    sel.forEach(function (id) { total += Number(pickMeta[id] && pickMeta[id].count) || 0; });
+    exportPickTouched = true;      // 用户亲手改过选择：之后不再自动跟随当前视频
+    if (!sel.length) {
+      exportPick = null;
+      errText = '没选任何视频：点「导出范围」重新选，或直接点「导出 CSV」前先在浮层里勾几条';
+      noteText = '';
+      closePicker();
+      render();
+      return;
+    }
+    exportPick = sel;
+    errText = '';
+    noteText = '导出范围：已选 ' + sel.length + ' 个视频（共约 ' + total
+      + ' 条）；点「导出 CSV / 导出 JSON」就只导这几条';
+    closePicker();
     render();
   }
 
@@ -2552,10 +2926,14 @@
     // 必须用 videoId —— 本视频采到的评论就存在这个键下（background 按 videoId 分池）。
     // 不能现场重新识别：用户滚到别的视频后再点导出，重识别会得到新 ID，
     // 于是导出一个空池，看起来像「数据丢了 / 导出的是别的视频」。
+    ensureExportPickDefault();
     var vid = videoId || pageViewId();
-    if (!vid && !exportAll) {
-      errText = '未识别到视频 ID，无法导出本条视频；可把导出范围切到「全部视频」导出本地已存的评论';
+    var pick = exportPick && exportPick.length ? exportPick.slice() : null;
+    if (!pick) {
+      // v0.5.21：范围只剩自选，没选就当场把浮层打开，别让用户猜要先去哪选
+      errText = '还没选要导哪些视频：先在「导出范围」里勾几条（「全选」= 本地全部视频）';
       render();
+      openPicker();
       return;
     }
     if (extContextLost) {
@@ -2565,12 +2943,16 @@
     // background 会等到下载真正进入终态才回包（用户可能还在「另存为」对话框里），
     // 所以先把面板切成「进行中」，否则这段等待期面板看起来像没反应。
     errText = '';
-    noteText = exportAll
-      ? '正在导出全部视频…（所有视频的评论合成一份；若弹出「另存为」对话框，请选择保存位置）'
-      : '正在导出本条视频…（若弹出「另存为」对话框，请选择保存位置）';
+    noteText = '正在导出选中的 ' + pick.length + ' 个视频…（若弹出「另存为」对话框，请选择保存位置）';
     render();
     try {
-      chrome.runtime.sendMessage({ type: 'dts-export', videoId: vid, format: format, all: exportAll }, function (resp) {
+      chrome.runtime.sendMessage({
+        type: 'dts-export',
+        videoId: vid,
+        format: format,
+        all: false,
+        videoIds: pick
+      }, function (resp) {
         if (chrome.runtime.lastError) {
           var le = chrome.runtime.lastError.message || '';
           if (isExtContextInvalid(le)) {
@@ -2584,7 +2966,8 @@
         }
         if (resp && resp.ok) {
           errText = '';
-          noteText = '已导出 ' + resp.filename + '（' + resp.bytes + ' 字节）';
+          noteText = '已导出 ' + resp.filename + '（' + resp.bytes + ' 字节' +
+            (resp.videoCount > 1 ? ' · ' + resp.videoCount + ' 个视频' : '') + '）';
         } else if (resp && resp.cancelled) {
           noteText = '';
           errText = '已取消保存，文件没有导出（评论数据仍在本地，可随时重新导出）';
@@ -2807,6 +3190,9 @@
     { key: 'lanes', label: '顶层并发路数', min: 1, max: LANES_HARD_MAX, step: 1, title: '顶层列表同时推进几路：1 = 老老实实单路；内置默认 3，每路错峰 200ms 出发。一旦发现两路拿到同一页（服务端合并并发请求）会自动降回单路并在面板说明。' },
     { key: 'replyLanes', label: '回复并发', min: 1, max: LANES_HARD_MAX, step: 1, title: '二级回复同时拉几条线程：1~8，内置默认 4' },
     { key: 'replyGapMs', label: '回复间隔 ms', min: 0, max: 60000, step: 100, title: '同一线程两次回复请求之间的间隔，内置默认 600ms' },
+    // v0.5.18：把「进补采前的静默预热」暴露出来（用户反馈切换二级回复时等很久）：
+    // 以前写死 30 秒、面板和插件都改不了。默认降到 10 秒，0 = 不停。
+    { key: 'replyWarmupSec', label: '回复预热 s', min: 0, max: 600, step: 5, title: '顶层评论采完后先静默几秒再开始补二级回复（刚扫完列表就打回复接口容易被拒，会白撞限流）。内置默认 10 秒；0 = 不停' },
     { key: 'replyThrottleSec', label: '限流等待 s', min: 10, max: 600, step: 10, title: '服务端暂时不回数据时，本轮**总共**最多等这么久（分波重试：单波 12 秒，波间停 15/30/60 秒）。内置 120 秒；设 10 = 老行为「十秒不行就收尾」' },
   ];
 
@@ -2826,6 +3212,7 @@
       lanes: pick('lanes', RS.lanes),
       replyLanes: pick('replyLanes', RS.replyLanes),
       replyGapMs: pick('replyGapMs', RS.replyGapMs),
+      replyWarmupSec: Math.round(pick('replyWarmupMs', RS.replyWarmupMs) / 1000),
       replyThrottleSec: Math.round(pick('replyThrottleMaxWaitMs', RS.replyThrottleMaxWaitMs) / 1000),
     };
   }
@@ -2837,6 +3224,7 @@
       lanes: clampInt(v.lanes, 1, LANES_HARD_MAX, MAX_LANES),
       replyLanes: clampInt(v.replyLanes, 1, LANES_HARD_MAX, REPLY_LANES),
       replyGapMs: clampInt(v.replyGapMs, 0, 60000, REPLY_GAP_MS),
+      replyWarmupMs: clampInt(v.replyWarmupSec, 0, 600, Math.round(REPLY_WARMUP_MS / 1000)) * 1000,
       replyThrottleMaxWaitMs: clampInt(v.replyThrottleSec, 10, 600, Math.round(REPLY_THROTTLE_MAX_WAIT_MS / 1000)) * 1000,
     };
   }
@@ -2862,7 +3250,7 @@
     if (!ui || !ui.settings) return;
     if (ui.root) {
       ui.root.classList.remove('dts-collapsed');      // 收起态点齿轮：先展开，否则浮层压着一条标题栏
-      ui.root.classList.add('dts-settings-open');     // 让面板撑高到够放 5 行设置（panel.css §9）
+      ui.root.classList.add('dts-settings-open');     // 让面板撑高到够放 6 行设置（v0.5.18 起多一行「回复预热」；panel.css §9）
     }
     loadUserSettings(function (st) { fillSettingsInputs(st); });
     ui.settings.classList.remove('dts-hidden');
@@ -2893,12 +3281,13 @@
           maxCount: st.maxCount,
           replyLanes: st.replyLanes,
           replyGapMs: st.replyGapMs,
-          replyWarmupMs: RS.replyWarmupMs,
+          replyWarmupMs: st.replyWarmupMs,
           replyThrottleMaxWaitMs: st.replyThrottleMaxWaitMs,
           replyGlobalGapMs: RS.replyGlobalGapMs,   // 面板不管这项，别在保存时丢掉
         };
         noteText = '设置已保存：并发 ' + st.lanes + ' 路 · 目标 ' +
           (st.maxCount > 0 ? st.maxCount + ' 条' : '不限') + ' · 回复并发 ' + st.replyLanes +
+          ' · 回复预热 ' + (st.replyWarmupMs / 1000) + 's' +
           ' · 限流等待 ' + (st.replyThrottleMaxWaitMs / 1000) + 's（下次开始采集生效）';
         closeSettings();
         render();
@@ -2980,6 +3369,46 @@
     return { box: box, inputs: inputs, cur: cur };
   }
 
+  /**
+   * v0.5.20：自选视频浮层。列出本地已存视频（标题 + 条数），勾选后「确定」，
+   * 面板上的「导出 CSV / JSON」就只导这几条。复用 .dts-settings 的浮层骨架（覆盖整个面板）。
+   */
+  function buildPickerBox(root) {
+    var box = document.createElement('div');
+    box.className = 'dts-settings dts-picker dts-hidden';
+
+    var head = document.createElement('div');
+    head.className = 'dts-row dts-settings-head';
+    var t = document.createElement('span');
+    t.textContent = '选择要导出的视频';
+    var tools = document.createElement('div');
+    tools.className = 'dts-tools';
+    tools.appendChild(mkBtn('×', 'dts-btn-collapse', function () { closePicker(); render(); }));
+    head.appendChild(t);
+    head.appendChild(tools);
+    box.appendChild(head);
+
+    var info = document.createElement('div');
+    info.className = 'dts-row dts-muted dts-picker-info';
+    box.appendChild(info);
+
+    var list = document.createElement('div');
+    list.className = 'dts-picker-list';
+    box.appendChild(list);
+
+    var btns = document.createElement('div');
+    btns.className = 'dts-row dts-actions';
+    btns.appendChild(mkBtn('全选', '', function () { pickSelectAll(true); }, 'picker-select-all'));
+    btns.appendChild(mkBtn('清空', '', function () { pickSelectAll(false); }, 'picker-clear'));
+    btns.appendChild(mkBtn('取消', '', function () { closePicker(); render(); }, 'picker-cancel'));
+    var ok = mkBtn('确定', 'dts-btn-primary', function () { confirmPicker(); }, 'picker-ok');
+    btns.appendChild(ok);
+    box.appendChild(btns);
+
+    root.appendChild(box);
+    return { box: box, list: list, info: info, ok: ok };
+  }
+
   function buildPanel() {
     if (ui || document.getElementById('dts-collector-panel')) return;
 
@@ -3022,6 +3451,8 @@
     refs.total = row(body, '服务端 total');
     refs.cursor = row(body, 'cursor');
     refs.ms = row(body, '每页耗时');
+    // 风控观测：服务端挑战过几次、最近一次是什么时候（明细见「导出风控日志」）
+    refs.risk = row(body, '风控观测');
 
     var bar = document.createElement('div');
     bar.className = 'dts-bar';
@@ -3053,22 +3484,25 @@
     r2.appendChild(mkBtn('导出 JSON', '', function () { exportAs('json'); }));
     body.appendChild(r2);
 
-    // v0.2.9：导出范围。「本条视频」= 旧行为（当前视频那个桶）；「全部视频」= 把所有视频的评论合成一份。
-    // 用户报过「滑到下一条视频点开始采集，上一条的数据没了」——分开视频存的数据仍在，
-    // 只是导出/计数都只认当前视频，所以必须给一个显式的「全部视频」出口。
-    var rScope = document.createElement('div');
-    rScope.className = 'dts-row dts-actions dts-scope';
-    var scopeLabel = document.createElement('span');
-    scopeLabel.className = 'dts-muted dts-scope-label';
-    scopeLabel.textContent = '导出范围';
-    rScope.appendChild(scopeLabel);
-    var btnScopeVideo = mkBtn('本条视频', 'dts-btn-scope dts-on', function () { setExportScope(false); }, 'export-scope-video');
-    btnScopeVideo.title = '只导出当前这条视频链接的评论（旧行为）';
-    rScope.appendChild(btnScopeVideo);
-    var btnScopeAll = mkBtn('全部视频', 'dts-btn-scope', function () { setExportScope(true); }, 'export-scope-all');
-    btnScopeAll.title = '导出本地已存的**所有**视频的评论（合成一份；CSV 末尾多一列 video_id）';
-    rScope.appendChild(btnScopeAll);
-    body.appendChild(rScope);
+    // v0.5.21：导出范围只留「自选」一个入口（客户反馈「本条 / 全部」两个按钮多余）。
+    // 默认值是当前视频，所以不选也能直接点「导出 CSV」；点开浮层可以勾任意几条、
+    // 「全选」等于原来的「全部视频」（CSV 末尾多一列 video_id）。
+    var rPick = document.createElement('div');
+    rPick.className = 'dts-row dts-actions';
+    var pickLabelEl = document.createElement('span');
+    pickLabelEl.className = 'dts-muted dts-scope-label';
+    pickLabelEl.textContent = '导出范围';
+    rPick.appendChild(pickLabelEl);
+    var pickBtn = mkBtn('本条视频 ▾', 'dts-btn-scope', function () { openPicker(); }, 'export-scope-pick');
+    pickBtn.title = '点开勾选要导出的视频：可多选，「全选」= 本地全部视频（导出 CSV / JSON 时用）';
+    rPick.appendChild(pickBtn);
+    body.appendChild(rPick);
+
+    // 风控观测日志：本机数据，导出成 JSON 供自己分析（扩展不上传任何东西）
+    var rRisk = document.createElement('div');
+    rRisk.className = 'dts-row dts-actions';
+    rRisk.appendChild(mkBtn('导出风控日志', '', exportRiskLog, 'export-risk-log'));
+    body.appendChild(rRisk);
 
     // 清空拆成两个按钮：范围完全不同，不能共用一个入口
     //   「清空」    —— 只清本条视频链接的评论（其它视频、面板设置都保留）
@@ -3086,8 +3520,9 @@
     // 设置入口在标题栏的齿轮里（buildPanel 顶部），这里不再占一行
     root.appendChild(head);
     root.appendChild(body);
-    // 设置浮层：面板内的模态层（absolute 覆盖整个面板），默认隐藏
+    // 设置浮层 + 自选视频浮层：面板内的模态层（absolute 覆盖整个面板），默认隐藏
     var sbox = buildSettingsBox(root);
+    var pbox = buildPickerBox(root);
     (document.body || document.documentElement).appendChild(root);
 
     refs.root = root;
@@ -3096,8 +3531,11 @@
     refs.summary = sbox.cur;
     refs.settings = sbox.box;
     refs.clearAll = clearAllBtn;   // render() 里同步「全部清空」的上膛文案/配色
-    refs.scopeVideo = btnScopeVideo;
-    refs.scopeAll = btnScopeAll;
+    refs.scopePick = pickBtn;
+    refs.picker = pbox.box;
+    refs.pickerList = pbox.list;
+    refs.pickerInfo = pbox.info;
+    refs.pickerOk = pbox.ok;
     refs.inputs = sbox.inputs;
     ui = refs;
     makeDraggable(root, head);
@@ -3109,6 +3547,7 @@
     loadUserSettings(function (st) { hasUserSettings = !!st; fillSettingsInputs(st); render(); });
     // 本地已存规模：立刻读一次，之后每 20 秒刷新（别的标签页/AI 桥在采时也能看到总量变化）
     refreshLocalStats();
+    loadRiskLog();   // 上次运行攒下的风控观测记录（跨会话保留）
     if (!localStatsTimer) {
       localStatsTimer = setInterval(function () {
         if (!ui || document.hidden || extContextLost) return;
@@ -3138,6 +3577,7 @@
     ui.total.textContent = total ? String(total) : '未知';
     ui.cursor.textContent = String(cursor);
     ui.ms.textContent = lastMs ? lastMs + ' ms' : '—';
+    if (ui.risk) ui.risk.textContent = riskLogText();
     ui.note.textContent = noteText || '';
     ui.err.textContent = errText || '';
     if (ui.summary) ui.summary.textContent = '当前：' + settingsSummaryText();
@@ -3161,10 +3601,14 @@
       ui.bar.classList.add('dts-bar-indeterminate');
     }
 
-    // 导出范围按钮的选中态（两个按钮互斥）
-    if (ui.scopeVideo && ui.scopeAll) {
-      if (exportAll) { ui.scopeAll.classList.add('dts-on'); ui.scopeVideo.classList.remove('dts-on'); }
-      else { ui.scopeVideo.classList.add('dts-on'); ui.scopeAll.classList.remove('dts-on'); }
+    // 导出范围（v0.5.21：面板只剩「导出范围 ▾」一个入口，默认 = 本条视频）
+    ensureExportPickDefault();
+    if (ui.scopePick) {
+      var pickOn = !!(exportPick && exportPick.length);
+      var pickText = exportScopeText() + ' ▾';
+      if (ui.scopePick.textContent !== pickText) ui.scopePick.textContent = pickText;
+      if (pickOn) ui.scopePick.classList.add('dts-on');
+      else ui.scopePick.classList.remove('dts-on');
     }
 
     // 镜像到主世界，供 __DTS_COLLECTOR__.getStatus() 读取（隔离世界的变量外部拿不到）
@@ -3173,7 +3617,13 @@
       unique: seen.size, total: total, savedCount: savedCount,
       // v0.5.11：**一级评论**去重条数（seen 混了一二级）——maxCount 与采集器的 max 都用它
       topSeen: topSeenCount,
-      localStats: localStats, exportAll: exportAll,
+      localStats: localStats,
+      // v0.5.21：面板不再有「本条 / 全部」按钮 ⇒ 恒为 false（保留字段兼容旧脚本）
+      exportAll: false,
+      // v0.5.20：自选导出的 videoId 列表（默认 [当前视频]；null = 未选择），测试/排障据此判断当前口径
+      exportPick: exportPick ? exportPick.slice() : null,
+      // v0.5.21：用户是否亲手改过选择（改过后不再自动跟随当前视频）
+      exportPickTouched: exportPickTouched,
       lastMs: lastMs, failStreak: failStreak, running: running,
       signedAt: signedAt,
       error: errText, note: noteText,
@@ -3291,6 +3741,9 @@
       replyFailed: replyFailCount, replyLastError: replyLastError,
       replyThrottledMs: replyThrottledMs,
       replyStoppedByThrottle: replyStoppedByThrottle,
+      // 风控观测：挑战次数 + 最近 5 条明细（完整日志见 storage 的 dts_risk_log / 面板导出）
+      riskCount: riskLog.length,
+      riskLast: riskLog.slice(-5),
       constants: {
         COUNT: COUNT,
         MIN_INTERVAL_MS: MIN_INTERVAL_MS,

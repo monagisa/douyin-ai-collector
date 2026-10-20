@@ -108,8 +108,8 @@ const Cfg = mod.Config;
 check('导出了 Config（设置表单靠它生成）', !!Cfg && 'toJSON' in Cfg && Cfg.type === 'object',
   Cfg ? `type=${Cfg.type} keys=${Object.keys(Cfg.dict || {}).join(',')}` : '没有 Config');
 const cfgKeys = Object.keys((Cfg && Cfg.dict) || {});
-check('设置项含 max/lanes/timeoutMs/waitLoginSec/clearBefore/replyLanes/replyGlobalGapMs/replyThrottleSec/replyNoProgressSec/failSnapshot/keepSnapshots',
-  ['max', 'lanes', 'timeoutMs', 'waitLoginSec', 'clearBefore', 'replyLanes', 'replyGlobalGapMs', 'replyThrottleSec', 'replyNoProgressSec', 'failSnapshot', 'keepSnapshots']
+check('设置项含 max/lanes/timeoutMs/waitLoginSec/clearBefore/replyLanes/replyGlobalGapMs/replyThrottleSec/replyWarmupSec/replyNoProgressSec/failSnapshot/keepSnapshots',
+  ['max', 'lanes', 'timeoutMs', 'waitLoginSec', 'clearBefore', 'replyLanes', 'replyGlobalGapMs', 'replyThrottleSec', 'replyWarmupSec', 'replyNoProgressSec', 'failSnapshot', 'keepSnapshots']
     .every((k) => cfgKeys.includes(k)), cfgKeys.join(','));
 const volKeys = cfgKeys.filter((k) => Cfg.dict[k].meta && Cfg.dict[k].meta.volatile === true);
 check('设置项全部 volatile（改完立即生效、不用重启）', cfgKeys.length === volKeys.length && cfgKeys.length >= 9,
@@ -169,6 +169,8 @@ check('出厂默认不清空（保住扩展的断点续采）', DEFAULTS.clearBe
 check('回复类出厂默认：并发 0=跟扩展内置、限流 0=跟内置、无进展 900s',
   DEFAULTS.replyLanes === 0 && DEFAULTS.replyThrottleSec === 0 && DEFAULTS.replyNoProgressSec === 900,
   `${DEFAULTS.replyLanes} / ${DEFAULTS.replyThrottleSec} / ${DEFAULTS.replyNoProgressSec}`);
+check('v0.5.18 出厂默认：回复预热 10 秒（v0.5.17 及以前扩展里写死 30 秒）',
+  DEFAULTS.replyWarmupSec === 10, String(DEFAULTS.replyWarmupSec));
 
 // ---------- 2f) v0.5.14：运行日志 + 失败现场快照（离线可测，不开浏览器）----------
 check('设置项含 failSnapshot/keepSnapshots（表单能改）',
@@ -619,6 +621,22 @@ check('总预算下限仍是 10 秒（面板/插件可设回老行为），内�
   /pick\('replyThrottleMaxWaitMs', 10000, 600000, REPLY_THROTTLE_MAX_WAIT_MS\)/.test(contentSrc)
   && /const REPLY_THROTTLE_MAX_WAIT_MS = 120 \* 1000;/.test(contentSrc)
   && /key: 'replyThrottleSec', label: '限流等待 s', min: 10, max: 600/.test(contentSrc));
+// v0.5.18：进入二级回复补采前的静默预热（以前写死 30 秒，用户反馈「切二级回复等很久」）
+check('v0.5.18：回复预热默认 10 秒、面板可调 0~600（0 = 不停）',
+  /const REPLY_WARMUP_MS = 10000;/.test(contentSrc)
+  && /key: 'replyWarmupSec', label: '回复预热 s', min: 0, max: 600/.test(contentSrc)
+  && /replyWarmupMs: clampInt\(v\.replyWarmupSec, 0, 600, Math\.round\(REPLY_WARMUP_MS \/ 1000\)\) \* 1000/.test(contentSrc)
+  && /replyWarmupSec: Math\.round\(pick\('replyWarmupMs', RS\.replyWarmupMs\) \/ 1000\)/.test(contentSrc),
+  (contentSrc.match(/const REPLY_WARMUP_MS = \d+;/) || [''])[0]);
+check('v0.5.18：插件把 replyWarmupSec 总是下发给扩展（0 也不能被当「未指定」吞掉）',
+  /extSettings\.replyWarmupMs = Math\.round\(replyWarmupSec \* 1000\)/.test(collectorSrc)
+  && /replyWarmupSec: Number\.isFinite/.test(collectorSrc) && DEFAULTS.replyWarmupSec === 10,
+  String(DEFAULTS.replyWarmupSec));
+check('v0.5.18：DSH 设置表单有「二级回复预热 replyWarmupSec」（默认 10、0~600）',
+  cfgKeys.includes('replyWarmupSec')
+  && /key: 'replyWarmupSec', label: '二级回复预热 replyWarmupSec'/.test(clientSrc)
+  && /replyWarmupSec: vol\(Schema\.number\(\)/.test(indexSrc)
+  && /\.default\(10\)\.min\(0\)\.max\(600\)/.test(indexSrc));
 check('收尾文案如实报「本轮共等 N 秒 / 分 M 波」与剩余线程（不再只报最后一波）',
   /本轮共等 '/.test(contentSrc) && /分 ' \+ replyWaves/.test(contentSrc)
   && /HTTP 200 \+ 0 字节 body/.test(contentSrc)
@@ -640,6 +658,16 @@ check('浮层里有「当前：…」生效值一行（v0.2.5 从按钮行移入
 check('浮层打开时面板撑高、且浮层子项不被压扁（修「当前：…」被 flex 挤成一条缝）',
   contentSrc.includes("classList.add('dts-settings-open')") && /\.dts-settings-open\b/.test(cssSrc)
   && /\.dts-settings > \*\s*\{[\s\S]{0,90}?flex: 0 0 auto/.test(cssSrc));
+// v0.5.18：面板设置从 5 行变 6 行（多「回复预热 s」），撑高值要跟着加，否则最后一行要滚动
+// v0.5.19：客户反馈「字太小、框太小」⇒ 整体放大 ≈1.3 倍，撑高值也跟着 322→430
+check('v0.5.19：设置浮层撑到 430px（放大后 6 行仍不滚动）',
+  /#dts-collector-panel\.dts-settings-open\s*\{[^}]*min-height:\s*430px/.test(cssSrc),
+  (cssSrc.match(/\.dts-settings-open\s*\{[^}]*\}/) || [''])[0].replace(/\s+/g, ' '));
+// v0.5.19：面板尺寸/字号（客户反馈字太小）——宽度 236→310、基础字号 11→14、行高 1.5
+const baseRule = (cssSrc.match(/#dts-collector-panel\s*\{[^}]*\}/) || [''])[0];
+check('v0.5.19：面板基础规则是 宽 310px / 字号 14px / 行高 1.5（客户反馈字太小）',
+  /width:\s*310px/.test(baseRule) && /font-size:\s*14px/.test(baseRule) && /line-height:\s*1\.5/.test(baseRule),
+  baseRule.replace(/\s+/g, ' ').slice(0, 120));
 
 // ---------- 3b) DSH 兼容性预检 ----------
 // 血案：peerDependencies 里写 `@deepseek-ai/dsh-tools: ^0.1.5-rc.3`，而运行时是 0.2.0-rc.2
@@ -822,41 +850,140 @@ if (fs.existsSync(path.join(devExtDir, 'manifest.json'))) {
     /async function exportComments\(opts\) \{/.test(bgSrc)
     && /const wantAll = o\.all === true;/.test(bgSrc)
     && /Object\.assign\(\{\}, c, \{ videoId: v \}\)/.test(bgSrc)
-    && /scope: wantAll \? 'all' : 'video',/.test(bgSrc));
-  check('「全部视频」导出只在 CSV 末尾追加 video_id 列（前 17 列契约不变）',
+    && /const scopeTag = wantAll \? 'all' : \(wantPick \? \(multi \? 'selected' : 'video'\) : 'video'\);/.test(bgSrc)
+    && /scope: scopeTag,/.test(bgSrc));
+  check('「全部视频」导出只在 CSV 末尾追加 video_id 列（前 20 列契约不变）',
     /const withVideoId = !!\(opts && opts\.withVideoId\);/.test(bgSrc)
     && /if \(withVideoId\) cols\.push\('video_id'\);/.test(bgSrc)
     && /\.concat\(withVideoId \? \[csvCell\(c\.videoId \|\| c\.video_id \|\| ''\)\] : \[\]\)/.test(bgSrc));
-  check('「全部视频」导出文件名带上 all（不是某个 videoId，避免与单视频文件混淆）',
-    /douyin-comments-\$\{wantAll \? 'all' : videoId\}-\$\{stamp\}\.json/.test(bgSrc)
-    && /douyin-comments-\$\{wantAll \? 'all' : videoId\}-\$\{stamp\}\.csv/.test(bgSrc));
+  // v0.5.17：user_uid 是抖音内部数字 ID（搜不到人、拼不出主页），真正能用的是
+  // unique_id/short_id（抖音号）和 sec_uid（主页 https://www.douyin.com/user/<sec_uid>）。
+  // 两个 CSV 写入器（插件 collector.mjs / 扩展 background.js）必须同时追加这三列，否则同源契约 drift。
+  check('CSV 末尾追加 user_sec_uid / user_unique_id（插件与扩展两处一致，v0.5.28 已删 user_short_id）',
+    /'user_sec_uid', 'user_unique_id'/.test(collectorSrc)
+    && /'user_sec_uid', 'user_unique_id'/.test(bgSrc)
+    && /csvCell\(u\.sec_uid\), csvCell\(u\.unique_id \|\| u\.short_id\)/.test(collectorSrc)
+    && /csvCell\(u\.sec_uid\), csvCell\(u\.unique_id \|\| u\.short_id\)/.test(bgSrc)
+    && !/'user_short_id'/.test(collectorSrc) && !/'user_short_id'/.test(bgSrc)
+    && !/csvCell\(u\.short_id\)/.test(collectorSrc) && !/csvCell\(u\.short_id\)/.test(bgSrc));
+  check('导出文件名口径（all / selected<N> / 单条 videoId，避免混在一起分不清）',
+    /const fileTag = wantAll \? 'all' : \(wantPick \? \(multi \? 'selected' \+ pickIds\.length : pickIds\[0\]\) : videoId\);/.test(bgSrc)
+    && /douyin-comments-\$\{fileTag\}-\$\{stamp\}\.json/.test(bgSrc)
+    && /douyin-comments-\$\{fileTag\}-\$\{stamp\}\.csv/.test(bgSrc));
+  // v0.5.27：CSV 第 2 行是中文列名说明（第 1 行英文键不变，机器/AI 解析口径不动）。
+  // 两个写入器必须用同一份标签表，否则插件与扩展导出的表头说明会不一致。
+  const labelsOf = (src) => {
+    const m = /const CSV_COL_LABELS = \{([\s\S]*?)\n\};/.exec(src);
+    return m ? m[1].replace(/\s+/g, ' ').trim() : '';
+  };
+  const labelCount = (block) => (block.match(/\w+: '/g) || []).length;
+  const cLabels = labelsOf(collectorSrc);
+  const bLabels = labelsOf(bgSrc);
+  check('CSV 第 2 行是中文列名说明（两处都插到表头后，v0.5.27）',
+    /const rows = \[cols\.join\(','\), csvLabelRow\(cols\)\];/.test(collectorSrc)
+    && /const rows = \[cols\.join\(','\), csvLabelRow\(cols\)\];/.test(bgSrc)
+    && /\(i === 0 \? '# ' : ''\)/.test(collectorSrc)
+    && /\(i === 0 \? '# ' : ''\)/.test(bgSrc));
+  check('中文标签表插件与扩展完全同源（19 个键 + video_id 兜底）',
+    !!cLabels && cLabels === bLabels && labelCount(cLabels) === 20,
+    `collector=${labelCount(cLabels)} bg=${labelCount(bLabels)} same=${cLabels === bLabels}`);
+  // v0.5.29：抖音号（unique_id）是用户自定义的、约 11% 为空；客户要求「加个兜底」，
+  // 空时填数字短号（short_id），不新增列。两个写入器必须同口径，标签也要写明。
+  check('user_unique_id 为空时兜底填数字短号（v0.5.29，两处一致）',
+    /csvCell\(u\.unique_id \|\| u\.short_id\)/.test(collectorSrc)
+    && /csvCell\(u\.unique_id \|\| u\.short_id\)/.test(bgSrc)
+    && /user_unique_id: '抖音号\(空则填数字短号\)'/.test(collectorSrc)
+    && /user_unique_id: '抖音号\(空则填数字短号\)'/.test(bgSrc));
   // v0.5.9：Hub(AI/MCP) 的 export 命令与面板导出合并成 exportComments 一份实现。
   // 成功必须按 Hub 约定把主体放进 result（否则 aiPollOnce 的旧拍平分支会把
   // scope / videoCount / count 全丢掉，MCP 只能看到 filename/bytes/path）；失败保持顶层 error+hint。
   check('Hub(AI/MCP) 的 export 命令也支持 all（成功放 result、失败保持顶层 error+hint）',
-    /case 'export': \{[\s\S]{0,700}?const r = await exportComments\(\{ all: args\.all === true, videoId: args\.videoId, format: args\.format \}\);/.test(bgSrc)
+    /case 'export': \{[\s\S]{0,700}?const r = await exportComments\(\{ all: args\.all === true, videoId: args\.videoId, videoIds: args\.videoIds, format: args\.format \}\);/.test(bgSrc)
     && /if \(!r\.ok\) return r;\s*\n\s*return \{ ok: true, result: r \};/.test(bgSrc));
-  check('导出失败口径统一（MISSING_VIDEO_ID 提示可传 all / EMPTY_POOL，不再下载只有表头的空 CSV）',
-    /error: 'MISSING_VIDEO_ID', hint: 'export 需要 videoId 参数；要导出本地全部视频请传 all:true'/.test(bgSrc)
+  check('导出失败口径统一（MISSING_VIDEO_ID 提示可传 all / videoIds / EMPTY_POOL，不再下载只有表头的空 CSV）',
+    /error: 'MISSING_VIDEO_ID', hint: 'export 需要 videoId 参数；要导出本地全部视频请传 all:true；要导指定几条请传 videoIds:\[\.\.\.\]'/.test(bgSrc)
     && /return \{ ok: false, error: 'EMPTY_POOL', scope: 'all'/.test(bgSrc)
     && /return \{ ok: false, error: 'EMPTY_POOL', videoId/.test(bgSrc));
-  check('面板有「本地已存」一行 + 导出范围两个按钮（都带 data-dts-act 挂点）',
+  check('面板有「本地已存」一行 + 导出范围只剩「导出范围 ▾」一个入口（v0.5.21 去掉本条/全部两个按钮）',
     /refs\.local = row\(body, '本地已存'\);/.test(ctSrc)
-    && /mkBtn\('本条视频', 'dts-btn-scope dts-on', function \(\) \{ setExportScope\(false\); \}, 'export-scope-video'\)/.test(ctSrc)
-    && /mkBtn\('全部视频', 'dts-btn-scope', function \(\) \{ setExportScope\(true\); \}, 'export-scope-all'\)/.test(ctSrc));
+    && /mkBtn\('本条视频 ▾', 'dts-btn-scope', function \(\) \{ openPicker\(\); \}, 'export-scope-pick'\)/.test(ctSrc)
+    && /refs\.scopePick = pickBtn;/.test(ctSrc)
+    && !/export-scope-video/.test(ctSrc)
+    && !/export-scope-all/.test(ctSrc)
+    && !/function setExportScope\(/.test(ctSrc));
   check('面板读一次 dts-stats 并周期刷新（20s），换视频后也能看到旧数据还在',
     /function refreshLocalStats\(id\)/.test(ctSrc)
     && /chrome\.runtime\.sendMessage\(\{ type: 'dts-stats', videoId: vid \}, function \(resp\)/.test(ctSrc)
     && /}, 20000\);/.test(ctSrc));
-  check('导出把范围传给后台（all: exportAll）+ 无视频 ID 时提示可切「全部视频」',
-    /all: exportAll \}/.test(ctSrc)
-    && /可把导出范围切到「全部视频」导出本地已存的评论/.test(ctSrc));
+  check('导出把范围传给后台（面板侧 all 恒 false，只传 videoIds）+ 没选时自动打开浮层',
+    /all: false,\s*videoIds: pick\s*\}/.test(ctSrc)
+    && /if \(!pick\) \{\s*\/\/ v0\.5\.21：范围只剩自选/.test(ctSrc)
+    && /openPicker\(\);\s*return;\s*\}/.test(ctSrc));
   check('AI 桥的导出命令也支持 all:true（与面板同一条链路）',
     /if \(t === 'dts-ai-export'\) \{[\s\S]{0,200}?var wantAll = !!\(msg && msg\.all === true\);/.test(ctSrc)
     && /type: 'dts-export', videoId: vid, format: format, all: wantAll \}/.test(ctSrc)
     && /scope: wantAll \? 'all' : 'video',/.test(ctSrc));
   check('面板 CSS 有导出范围小按钮与选中态样式',
     /\.dts-row\.dts-scope > \.dts-btn \{/.test(cssSrc) && /\.dts-btn-scope\.dts-on \{/.test(cssSrc));
+
+  // ---------- 3a-8b) v0.5.20：导出范围从「本条 / 全部」扩成「自选任意几条视频」 ----------
+  // 用户原话：「这个导出要不改成选择导出哪几条视频？现在这个限制有点大」。
+  // 契约：videoIds 优先级 all > videoIds > videoId；选 1 条与单视频导出同列数，
+  //      选多条才在 CSV 末尾追加 video_id（前 20 列契约不变，与「全部视频」一致）。
+  check('后台 exportComments 支持 videoIds（去重 + 优先级 all > videoIds > videoId）',
+    /const pickIds = Array\.isArray\(o\.videoIds\)/.test(bgSrc)
+    && /const wantPick = !wantAll && pickIds\.length > 0;/.test(bgSrc)
+    && /if \(!wantAll && !wantPick && !videoId\) \{/.test(bgSrc));
+  check('自选多条才追加 video_id 列（选 1 条保持原列数契约）',
+    /const multi = wantAll \|\| \(wantPick && pickIds\.length > 1\);/.test(bgSrc)
+    && /toCsv\(comments, \{ withVideoId: multi \}\)/.test(bgSrc)
+    && /videoIds: multi && !wantAll \? pickIds : null,/.test(bgSrc));
+  check('自选视频本地没数据时如实报 EMPTY_POOL（scope/selected + videoIds）',
+    /error: 'EMPTY_POOL', scope: 'selected', videoIds: pickIds,/.test(bgSrc));
+  check('面板有「导出范围 ▾」按钮 + 选择浮层（列表/全选/确定都带挂点）',
+    /mkBtn\('本条视频 ▾', 'dts-btn-scope', function \(\) \{ openPicker\(\); \}, 'export-scope-pick'\)/.test(ctSrc)
+    && /function buildPickerBox\(root\) \{/.test(ctSrc)
+    && /className = 'dts-settings dts-picker dts-hidden'/.test(ctSrc)
+    && /dts-picker-list/.test(ctSrc));
+  check('选中的 videoId 真正进导出请求（v0.5.21：exportPick 是唯一口径，默认跟随当前视频）',
+    /var exportPick = null/.test(ctSrc)
+    && /function ensureExportPickDefault\(\) \{/.test(ctSrc)
+    && /function exportScopeText\(\) \{/.test(ctSrc)
+    && /var pick = exportPick && exportPick\.length \? exportPick\.slice\(\) : null;/.test(ctSrc)
+    && /videoIds: pick\s*\}/.test(ctSrc)
+    && /function confirmPicker\(\) \{/.test(ctSrc)
+    && /exportPickTouched = true;/.test(ctSrc));
+  check('清空本条视频时把自选里的它剔掉（避免导出空桶）',
+    /exportPick = exportPick\.filter\(function \(id\) \{ return id !== videoId; \}\);/.test(ctSrc)
+    && /if \(!exportPick \|\| !exportPick\.length\) exportPickTouched = false;/.test(ctSrc));
+  check('全部清空后自选导出选择立即失效（v0.5.22：先改 exportPick 再 setPhase，避免按钮停在「自选 N 个视频」）',
+    /exportPick = null;\s*\n\s*exportPickTouched = false;\s*\n\s*setPhase\('idle', '', '已清空全部视频的评论与本地去重表'/.test(ctSrc)
+    && /if \(!exportPick \|\| !exportPick\.length\) exportPickTouched = false;\s*\n\s*setPhase\('idle', '', '已清空本视频的本地去重表与扩展存储/.test(ctSrc));
+  check('浮层选中反馈（v0.5.23：整行高亮 + 顶部「已选」变色，用户「选中没有提示」）',
+    /\.dts-picker-item:has\(\.dts-picker-box:checked\)/.test(cssSrc)
+    && /\.dts-picker-info\.dts-has-sel/.test(cssSrc)
+    && /classList\.toggle\('dts-has-sel', sel\.length > 0\)/.test(ctSrc));
+  check('浮层里显示真实作品标题（v0.5.24：通用页名换成「视频 <id 末 8>」，另补 ID/采集时间小字）',
+    /var GENERIC_TITLE_RE = \/\^\(抖音\|抖音精选/.test(ctSrc)
+    && /function isGenericTitle\(t\) \{/.test(ctSrc)
+    && /return '视频 ' \+ shortVideoId\(id\);/.test(ctSrc)
+    && /function pickSubLabel\(id\) \{/.test(ctSrc)
+    && /dts-picker-sub/.test(ctSrc) && /\.dts-picker-sub \{/.test(cssSrc)
+    && /\.dts-picker-text \{/.test(cssSrc));
+  check('不再打开任何页面补标题（v0.5.26：用户「能不打开其他的浏览器就获得标题吗」——实测做不到，退化成「视频 <末 8 位>」）',
+    !/fixPickerTitles/.test(ctSrc)
+    && !/pickFixAutoTried/.test(ctSrc) && !/genericPickIds/.test(ctSrc)
+    && !/dts-fix-titles/.test(ctSrc) && !/dts-fix-titles/.test(bgSrc)
+    && !/readTitleFromVideoPage/.test(bgSrc) && !/fixVideoTitles/.test(bgSrc)
+    && !/chrome\.tabs\.create/.test(bgSrc) && !/titleFixedAt/.test(bgSrc)
+    && /return '视频 ' \+ shortVideoId\(id\);/.test(ctSrc)
+    && /return 'ID ' \+ shortVideoId\(id\)/.test(ctSrc));
+  check('render() 不再引用已删除的本条/全部按钮（只同步 exportScopeText 文案与选中态）',
+    !/ui\.scopeVideo/.test(ctSrc)
+    && !/ui\.scopeAll/.test(ctSrc)
+    && /var pickText = exportScopeText\(\) \+ ' ▾';/.test(ctSrc));
+  check('面板 CSS 有自选视频浮层样式（可滚动列表 + 勾选框）',
+    /\.dts-picker-list \{/.test(cssSrc) && /\.dts-picker-item \{/.test(cssSrc) && /\.dts-picker-box \{/.test(cssSrc));
 
   // ---------- 3a-9) 清空必须自检、失败必须如实报错（用户 2026-10-06：「全部清空没有用，本地已存还是在」） ----------
   // 真机复现两件事：① 存储其实清掉了，但清空前发出的 dts-stats 旧回包晚到，把「本地已存」又写成旧数字，
@@ -973,9 +1100,11 @@ if (liveIdx > -1) {
   check('CSV/JSON 真存在', fs.existsSync(value.csvPath) && fs.existsSync(value.jsonPath), `${value.csvPath} | ${value.jsonPath}`);
   if (fs.existsSync(value.csvPath)) {
     const csv = fs.readFileSync(value.csvPath, 'utf8');
-    const lines = csv.split('\r\n').filter(Boolean).length - 1;
-    check('CSV 行数 = count', lines === value.count, `rows=${lines} count=${value.count}`);
+    const csvLines = csv.split('\r\n').filter(Boolean);
+    const lines = csvLines.length - 2;
+    check('CSV 行数 = count（表头 + 中文说明行之外）', lines === value.count, `rows=${lines} count=${value.count}`);
     check('CSV 带 BOM', csv.charCodeAt(0) === 0xFEFF);
+    check('CSV 第 2 行是中文说明行', /^#\s*评论ID$/.test(String(csvLines[1] || '').split(',')[0]), String(csvLines[1] || '').slice(0, 40));
   }
   liveOk = value.ok === true && value.count > 0;
 }

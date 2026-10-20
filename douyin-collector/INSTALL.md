@@ -1,12 +1,12 @@
 # 安装 · 使用 · 打包
 
-> 抖音评论采集器 **v0.5.16**（v0.5.15 起与 DSH 插件 / MCP 统一编号）— 无 npm 依赖、无构建步骤。  
+> 抖音评论采集器 **v0.5.29**（v0.5.15 起与 DSH 插件 / MCP 统一编号）— 无 npm 依赖、无构建步骤。  
 > **适用浏览器：Chrome 111+ / Edge（Chromium）**；**不支持** Firefox / Safari（详见 README「适用范围」）。  
 > **版本号对照（v0.5.15 起三件套同号）**：发布 v0.5.9~v0.5.12 = 扩展 0.2.11~0.2.14；v0.5.13 / v0.5.14 = 扩展 0.2.15（MCP 依次 0.3.2~0.3.6）；**v0.5.15 起三者同号**。下文 `v0.2.x` 指当年的扩展编号。  
 > v0.2.x：AI Bridge（本地 MCP，见 `../douyin-mcp/README.md`）；采集核心仍为「复用页面签名、只改 cursor」。  
 > 历史要点：v0.1.5 起采二级回复；v0.1.11 起面板绝对坐标拖动 + 开始采集时自动打开评论区；  
 > v0.1.12 起按 DOM 判页面形态（关注/朋友/我的可用）；v0.1.13 起换视频/清空后自动重取签名、  
-> `hook.js` 由 manifest 在主世界 `document_start` 注入；v0.1.15 起面板固定紧凑档（宽约 236px）；  
+> `hook.js` 由 manifest 在主世界 `document_start` 注入；v0.1.15 起面板固定一档（**v0.5.19 起放大为宽 310px / 基础字号 14px**，v0.1.15~v0.5.18 是 236px / 11px）；  
 > v0.2.2 起并发路数可由 `chrome.storage.local.dts_settings = {lanes}` 设置（1~8，见 PROTOCOL §3.9；**v0.2.12~v0.2.14 该设置被固定成单路，v0.2.15 起重新生效**）；  
 > v0.2.3 起二级回复的四档限速也能从 `dts_settings` 覆盖（`replyLanes` / `replyGapMs` / `replyWarmupMs` / `replyThrottleMaxWaitMs`，默认值不变，见 PROTOCOL §3.9）；  
 > **v0.2.13 起**再加一道**跨线程全局闸门** `replyGlobalGapMs`（默认 250ms、范围 0~2000；撞限流自动翻倍到 1000ms 封顶、并把并发降 1 路），
@@ -63,11 +63,11 @@
 >    落库后与点「清空」后立刻刷新），「已采（去重）」在本轮还没落库但本地已有该视频数据时显示
 >    `（本地已有 N 条）`，点「开始采集」时还会写一行
 >    `本机已存：N 个视频 / M 条（含其它视频）；本条视频本地已有 X 条`；
-> ② 面板新增一行 **「导出范围」**：`[本条视频]`（默认，等于旧行为）/ `[全部视频]`
->    （本地所有视频的评论合成一份），两个按钮互斥（挂点 `data-dts-act="export-scope-video"` /
->    `data-dts-act="export-scope-all"`，选中态 `dts-on`）。「全部视频」导出的 **CSV 末尾多一列
->    `video_id`**（18 列，前 17 列列序与含义不变），JSON 多 `scope:"all"` 与
->    `videos:[{videoId,title,count}]`，文件名 `douyin-comments-all-<时间戳>.csv|json`；
+> ② 面板有一行 **「导出范围 ▾」**（**v0.5.21 起只剩这一个入口**，原来「本条视频 / 全部视频」
+>    两个按钮已删除）：默认等于旧的「本条视频」（不点也能直接导出当前视频）；点开浮层可勾选本地已存的
+>    任意几条（「全选」= 本地全部视频）。勾 ≥2 条时 **CSV 末尾多一列 `video_id`**（共 20 列，
+>    前 19 列列序与含义不变），JSON 多 `scope` 与 `videos:[{videoId,title,count}]`，
+>    文件名 `douyin-comments-selected<N>-<时间戳>.csv|json`；
 >    后台 `dts-stats` 相应多回 `totalAll` / `videoCount`。
 
 ---
@@ -85,8 +85,8 @@ content script 把裁剪后的字段交给 background，写入 `chrome.storage.l
 | `dts_videos` | `{ [videoId]: { title, total, count, hasMore, phase, signedUrlAt, … } }` |
 | `dts_c_<videoId>` | `{ [cid]: 评论对象 }` —— 按 cid 去重 |
 | `dts_ai_bridge` | 可选：MCP Hub 地址（`host/port/enabled`） |
-| `dts_settings` | v0.2.2 起：外部写进来的运行时设置（`{lanes, replyLanes, replyGapMs, replyWarmupMs, replyThrottleMaxWaitMs, replyGlobalGapMs}`，都可选）；缺字段就用内置默认（`lanes=3`（v0.2.15 起；v0.2.2~0.2.14 是 4，其中 0.2.12~0.2.14 实际被固定成 1）、`replyLanes=4`、`replyGapMs=600`、`replyWarmupMs=1500`、`replyThrottleMaxWaitMs=120000`、`replyGlobalGapMs=250`）。**`lanes` 自 v0.2.15 起重新生效**（顶层错峰多路，默认 3 路、每路错开 200ms；`1` = 单路）；**v0.2.14 起 `replyThrottleMaxWaitMs` 是「分波重试的总窗口」**（单波 12 秒、波间停 15/30/60 秒），默认 120 秒；`replyGlobalGapMs` 的 0 = 用内置 250ms（v0.2.13 及更早把 0 当关闸门）。v0.2.6 起 AI 经 MCP 的 `ai_set_settings` / `ai_start_collect` 写的就是它 |
-| `dts_user_settings` | v0.2.4 起：**面板「设置」按钮**写进去的用户设置（`{maxCount, lanes, replyLanes, replyGapMs, replyThrottleMaxWaitMs}`）；优先级高于 `dts_settings`，删掉它就回到插件/内置值（`maxCount=0` 表示不限条数；面板里不暴露 `replyGlobalGapMs` / `replyWarmupMs`，保存时不会把它们带进来，所以插件下发的值会保留） |
+| `dts_settings` | v0.2.2 起：外部写进来的运行时设置（`{lanes, replyLanes, replyGapMs, replyWarmupMs, replyThrottleMaxWaitMs, replyGlobalGapMs}`，都可选）；缺字段就用内置默认（`lanes=3`（v0.2.15 起；v0.2.2~0.2.14 是 4，其中 0.2.12~0.2.14 实际被固定成 1）、`replyLanes=4`、`replyGapMs=600`、`replyWarmupMs=10000`（v0.5.18 起；v0.5.17 是 30000）、`replyThrottleMaxWaitMs=120000`、`replyGlobalGapMs=250`）。**`lanes` 自 v0.2.15 起重新生效**（顶层错峰多路，默认 3 路、每路错开 200ms；`1` = 单路）；**v0.2.14 起 `replyThrottleMaxWaitMs` 是「分波重试的总窗口」**（单波 12 秒、波间停 15/30/60 秒），默认 120 秒；`replyGlobalGapMs` 的 0 = 用内置 250ms（v0.2.13 及更早把 0 当关闸门）。v0.2.6 起 AI 经 MCP 的 `ai_set_settings` / `ai_start_collect` 写的就是它 |
+| `dts_user_settings` | v0.2.4 起：**面板「设置」按钮**写进去的用户设置（`{maxCount, lanes, replyLanes, replyGapMs, replyWarmupMs, replyThrottleMaxWaitMs}`；v0.5.18 起 `replyWarmupMs` 也进面板，标签「回复预热 s」）；优先级高于 `dts_settings`，删掉它就回到插件/内置值（`maxCount=0` 表示不限条数；面板里不暴露 `replyGlobalGapMs`，保存时不会把它带进来，所以插件下发的值会保留） |
 | `dts_settings_effective` | v0.2.3：本轮**实际**用的值 `{lanes, lanesWanted, lanesNote, maxCount, replyLanes, replyGlobalGapMs, replyGapMs, replyThrottleMaxWaitMs, replyWaveBudgetMs, replyParkPlanMs, from: 'panel'\|'plugin', at}`，回写给调用方核对；**v0.2.15 起 `lanes` = 本轮实际路数**（正常 = 设置值，检测到「两路同一页」就地降为 1）、`lanesWanted` 是设置值、`lanesNote` 平时空串、被降路时写明原因；**v0.2.13 起 `maxCount` 是真正下发的目标条数**（插件据此判断扩展是否自己管住了 max）；**v0.2.14 起多两个只读键**：`replyWaveBudgetMs`（单波预算，12000）、`replyParkPlanMs`（停顿计划 `"15000/30000/60000"`） |
 
 单视频上限 `MAX_COMMENTS_PER_VIDEO = 80000`（`background.js`），超出时按 `create_time` 淘汰最早数据。  
@@ -100,19 +100,28 @@ content script 把裁剪后的字段交给 background，写入 `chrome.storage.l
 
 面板按钮走 `background.js` 的 `dts-export`：
 
-- **CSV**：`douyin-comments-<videoId>-<时间戳>.csv`，UTF-8 BOM，17 列（前 15 列冻结 + 末尾 `is_reply`/`parent_cid`）
+- **CSV 第 2 行是中文列名说明**（v0.5.27）：第 1 行英文键不变，第 2 行是同一列序的中文说明
+  （首列 `# 评论ID`）。用脚本读 CSV 时跳过首列以 `#` 开头的行即可；用 Excel 打开时直接看第 2 行。
+- **CSV**：`douyin-comments-<videoId>-<时间戳>.csv`，UTF-8 BOM，19 列（前 15 列冻结 + `is_reply`/`parent_cid` + 末尾 `user_sec_uid`/`user_unique_id`；**v0.5.28 起删掉了 `user_short_id`**，v0.5.29 起 `user_unique_id` 为空时填数字短号）
 - **JSON**：同名 `.json`，含 `count` / `topLevelCount` / `replyCount` / `comments[]`
 - 默认 `SAVE_AS = false`：不弹「另存为」，直接进下载目录
 - **成功判据** = 下载进入终态且文件写盘；中断会明确报错，不谎报成功
 
-**v0.2.9 新增「导出范围」**（面板上一行两个互斥按钮，默认「本条视频」）：
+**导出范围（v0.5.21 起只有一个入口「导出范围 ▾」）**：
 
-- **「全部视频」** = 把本地**所有**视频的评论合成一份：CSV **末尾追加一列 `video_id`**（共 18 列，
-  前 17 列的列序与含义完全不变），JSON 顶层多 `scope: "all"` 与 `videos: [{ videoId, title, count }]`
-  （每条评论也带 `videoId`），文件名 `douyin-comments-all-<时间戳>.csv|json`。
-- 想导出所有视频的数据：**先把「导出范围」切成「全部视频」，再点「导出 CSV / 导出 JSON」**。
-  导出是只读的，不会动本地任何数据。
-- 单视频仍是 `douyin-comments-<videoId>-<时间戳>.csv|json`，17 列。
+- **默认 = 当前这条视频**：不点浮层，直接点「导出 CSV / 导出 JSON」就是旧「本条视频」的行为
+  （19 列，文件名 `douyin-comments-<videoId>-<时间戳>.csv|json`）。导出是只读的，不会动本地任何数据。
+- **点「导出范围 ▾」** 打开浮层：列出**本地已存的每个视频**（标题 + 条数，只有真有评论的才列出），
+  勾选任意几条 →「确定」。选 **1 条** 与单视频同列数（19 列）；
+  选 **多条** 时 CSV **末尾追加一列 `video_id`**（共 20 列，前 19 列列序与含义完全不变），
+  JSON 顶层多 `scope` 与 `videos: [{ videoId, title, count }]`（每条评论也带 `videoId`），
+  文件名 `douyin-comments-selected<N>-<时间戳>.csv|json`。
+- 想导出所有视频的数据：点「导出范围 ▾」→「**全选**」→「确定」，再点「导出 CSV / 导出 JSON」。
+- 勾选的视频本地都没数据时如实报 `EMPTY_POOL`，不会下载只有表头的空文件。
+- 用户亲手改过选择后，切到别的视频**不会**自动改动导出范围；「清空」本条视频时若它在选择里会被剔除。
+- 老的 `all: true`（全部视频）与 `videoId` 参数在**后台 / MCP 侧仍然可用**，只是面板不再有两个按钮。
+- `user_uid` 是抖音内部数字 ID（搜不到人）；要找人用 `user_unique_id`（抖音号；v0.5.29 起为空时自动填数字短号）或 `user_sec_uid`（拼主页 `https://www.douyin.com/user/<sec_uid>`），
+  主页链接 = `https://www.douyin.com/user/<user_sec_uid>`。
 
 ### ④ 清库
 
@@ -128,7 +137,7 @@ content script 把裁剪后的字段交给 background，写入 `chrome.storage.l
 - 换视频、清空某一条视频**都不会影响别的视频**的数据；没识别到 video ID 时「清空」不发请求（有护栏），
   「全部清空」不受该护栏限制、任意页面都能用。
 - 数据本身按视频分桶存（`dts_c_<videoId>`），所以「换视频后上一条不见了」只是面板只显示当前这条 ——
-  点「导出范围 → 全部视频」就能把它们一起导出来。
+  点「导出范围 ▾」把要的几条都勾上（「全选」= 本地全部视频）就能一起导出来。
 - **清空会读回存储自检**（v0.2.10）：点「清空 / 全部清空」会先等后台回包，再由内容脚本直接读回
   `chrome.storage.local` 核对（`verifyCleared`）——只有真清掉才显示「已清空」。失败时明确提示
   「清空没有生效」，让你去 `edge://extensions` 点「重新加载」、回到抖音页按 **F5** 刷新后重试，
@@ -146,8 +155,8 @@ content script 把裁剪后的字段交给 background，写入 `chrome.storage.l
 5. 右下角出现面板；必要时按提示打开评论区
 6. 点「开始采集」→ 等待完成/暂停
 7. 点「导出 CSV」或「导出 JSON」——默认只导**当前这条视频**；想一次导出**本地所有视频**的评论，
-   先把“导出范围”那一行切成 **「全部视频」** 再点导出（CSV 会多一列 `video_id`，
-   文件名 `douyin-comments-all-<时间戳>.csv`）。面板上「本地已存 `N 个视频 / M 条`」那行
+   点 **「导出范围 ▾」→「全选」→「确定」** 再点导出（CSV 会多一列 `video_id`，
+   文件名 `douyin-comments-selected<N>-<时间戳>.csv`）。面板上「本地已存 `N 个视频 / M 条`」那行
    就是跨视频的总规模，换视频**不会**把它清零
 8. 想清数据：面板最后一行是 `[清空] [全部清空]` ——「清空」只清**当前这条视频链接**的评论
    （别的视频数据和面板设置都不动）；「全部清空」会清掉所有视频的评论与去重表，

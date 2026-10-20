@@ -123,6 +123,14 @@ async function updateVideoMetaUnlocked(videoId, patch) {
   return videos[videoId];
 }
 
+// ---------- v0.5.26：不再打开任何页面补标题 ----------
+// v0.5.24 曾按需开后台标签页读 https://www.douyin.com/video/<id> 的 document.title 来补
+// 「抖音精选电脑版」这类通用标题。客户 2026-10-20 追问「能不打开其他的浏览器就获得标题吗」，
+// 实测：视频页 HTML 是空壳（无 title、RENDER_DATA 只有 app），老分享接口 status_code=11110，
+// detail 接口无 a_bogus 时 403 —— 不开页面确实拿不到。
+// 因此 v0.5.26 起不再开页面/标签页：标题抓不到的条目在浮层里显示「视频 <末 8 位>」，
+// 下一行仍有「ID … · 采集 …」可区分（由 content.js 的 pickLabel/pickSubLabel 负责）。
+
 /** 清空：videoId = 只清那一条；all = 全清。与落库共用串行队列。 */
 function clearStorage(videoId, all) {
   return serial(async () => {
@@ -186,19 +194,59 @@ function cleanText(t) {
     .trim();
 }
 
+// v0.5.27：CSV 第 2 行是中文列名解释（第 1 行英文键不变，机器/AI 解析口径不动）。
+// 说明行首列以 "# " 开头，解析器看到 cid 以 "#" 开头就当说明行跳过。
+// 插件侧 D:\dycopy\dsh-douyin-comments\collector.mjs 里有一份完全相同的标签表，两处必须一致。
+const CSV_COL_LABELS = {
+  cid: '评论ID',
+  create_time: '发布时间戳(秒)',
+  create_time_str: '发布时间(UTC)',
+  text: '评论原文',
+  text_clean: '文本(去表情话题)',
+  text_len: '字数',
+  digg_count: '点赞数',
+  reply_comment_total: '该评论回复数',
+  ip_label: 'IP属地',
+  is_hot: '是否热评(1/0)',
+  is_folded: '是否折叠(1/0)',
+  level: '层级(1一级2二级)',
+  stick_position: '置顶位(0非置顶)',
+  user_nickname: '昵称',
+  user_uid: '用户内部ID(不可搜)',
+  is_reply: '是否二级回复(1/0)',
+  parent_cid: '父评论ID',
+  user_sec_uid: 'sec_uid(主页链接用)',
+  user_unique_id: '抖音号(空则填数字短号)',
+  video_id: '视频ID(多视频导出)'
+};
+
+/** 说明行：按 cols 顺序取中文标签，首列加 "# " 标记 */
+function csvLabelRow(cols) {
+  return cols
+    .map(function (k, i) { return csvCell((i === 0 ? '# ' : '') + (CSV_COL_LABELS[k] || k)); })
+    .join(',');
+}
+
 function toCsv(comments, opts) {
   // 前 15 列是 v0.1.4 起就有的稳定契约（顺序/含义不变）；
   // v0.1.5 新增的二级回复在**末尾追加**两列，老读者按位置读前 15 列仍然正确。
   // v0.2.9 的「全部视频」导出再往末尾追加 video_id 一列（不带 withVideoId 时列数不变）。
+  // v0.5.17 追加 user_sec_uid / user_unique_id：user_uid 只是抖音内部数字 ID，不是一个能搜的
+  // 「抖音号」；unique_id 才是账号页上的抖音号（用户没设时为空），
+  // sec_uid 用来拼主页 https://www.douyin.com/user/<sec_uid>。
+  // v0.5.28：按客户要求删掉 user_short_id（抖音内部的短号，客户用不到；unique_id 为空时也没必要兜底）。
+  // JSON / AI 返回里的 user.short_id 不动（那是抖音原始字段）。
+  // v0.5.29：按客户要求加回兜底——`user_unique_id` 为空时改填数字短号（不新增列，标签改成「抖音号(空则填数字短号)」）。
   const withVideoId = !!(opts && opts.withVideoId);
   const cols = [
     'cid', 'create_time', 'create_time_str', 'text', 'text_clean', 'text_len',
     'digg_count', 'reply_comment_total', 'ip_label', 'is_hot', 'is_folded',
     'level', 'stick_position', 'user_nickname', 'user_uid',
-    'is_reply', 'parent_cid'
+    'is_reply', 'parent_cid',
+    'user_sec_uid', 'user_unique_id'
   ];
   if (withVideoId) cols.push('video_id');
-  const rows = [cols.join(',')];
+  const rows = [cols.join(','), csvLabelRow(cols)];
   for (const c of comments) {
     const t = c.text || '';
     const tc = cleanText(t);
@@ -211,7 +259,8 @@ function toCsv(comments, opts) {
       csvCell(c.is_hot), csvCell(c.is_folded), csvCell(c.level), csvCell(c.stick_position),
       csvCell(u.nickname), csvCell(u.uid),
       // 二级回复两列：顶层评论为 0 / 空
-      csvCell(c.is_reply ? 1 : 0), csvCell(c.parent_cid)
+      csvCell(c.is_reply ? 1 : 0), csvCell(c.parent_cid),
+      csvCell(u.sec_uid), csvCell(u.unique_id || u.short_id)
     ].concat(withVideoId ? [csvCell(c.videoId || c.video_id || '')] : []).join(','));
   }
   return rows.join('\r\n');
@@ -302,6 +351,9 @@ async function download(text, filename, mime) {
 //   scope=video（默认）：只导 opts.videoId 这一个桶；
 //   scope=all（opts.all === true）：把本地所有视频的评论合成一份，每条评论标上 videoId，
 //     CSV 末尾追加 video_id 列（前 17 列契约不变），JSON 里给 per-video 摘要。
+//   scope=selected（opts.videoIds = [...]，v0.5.20 面板「自选视频…」）：只合选中的那几条；
+//     选 1 条 = 与单视频导出同列数，选多条才追加 video_id 列。
+//   优先级：all > videoIds > videoId。
 // 失败口径统一：既没 videoId 又没 all → MISSING_VIDEO_ID；本地确实没数据 → EMPTY_POOL
 // （不再下载一个只有表头的空文件，否则「导出成功」会掩盖「本来就是空的」）。
 const EXPORT_NOTE = '由「抖音评论采集器」采集：数据来自抖音页面自身的接口响应。未破解或伪造签名、未绕过登录；开始采集前若还没有可用签名，扩展会用一次合成点击替你打开评论区（让页面自己发出请求），不滚动页面、不改动评论内容。二级回复通过复用页面自己已发出的签名 URL 拉取（仅改写 path 与 item_id/comment_id/cut_version/cursor/count）。';
@@ -311,12 +363,20 @@ async function exportComments(opts) {
   const wantAll = o.all === true;
   const videoId = o.videoId ? String(o.videoId) : '';
   const format = o.format === 'json' ? 'json' : 'csv';
-  if (!wantAll && !videoId) {
-    return { ok: false, error: 'MISSING_VIDEO_ID', hint: 'export 需要 videoId 参数；要导出本地全部视频请传 all:true' };
+  // v0.5.20：自选视频（面板「自选视频…」）。videoIds = 要导的那几条；优先级高于 all。
+  const pickIds = Array.isArray(o.videoIds)
+    ? Array.from(new Set(o.videoIds.map((x) => String(x || '').trim()).filter(Boolean)))
+    : [];
+  const wantPick = !wantAll && pickIds.length > 0;
+  if (!wantAll && !wantPick && !videoId) {
+    return { ok: false, error: 'MISSING_VIDEO_ID', hint: 'export 需要 videoId 参数；要导出本地全部视频请传 all:true；要导指定几条请传 videoIds:[...]' };
   }
   const allVideos = await getVideos();
   const perVideo = [];
   let comments = [];
+  // 多条视频合成一份时才需要 video_id 列（单条保持既有列数契约）
+  const multi = wantAll || (wantPick && pickIds.length > 1);
+
   if (wantAll) {
     const ids = Object.keys(allVideos);
     if (videoId && ids.indexOf(videoId) < 0) ids.push(videoId);   // 桶在、但 dts_videos 没记录
@@ -329,6 +389,19 @@ async function exportComments(opts) {
     if (!comments.length) {
       return { ok: false, error: 'EMPTY_POOL', scope: 'all', hint: '本地还没有任何评论数据：先采集，或用 list_videos / get_comments 确认' };
     }
+  } else if (wantPick) {
+    for (const v of pickIds) {
+      const list = Object.values(await getComments(v));
+      if (!list.length) continue;
+      perVideo.push({ videoId: v, title: (allVideos[v] && allVideos[v].title) || '', count: list.length });
+      for (const c of list) comments.push(Object.assign({}, c, { videoId: v }));
+    }
+    if (!comments.length) {
+      return {
+        ok: false, error: 'EMPTY_POOL', scope: 'selected', videoIds: pickIds,
+        hint: '选中的视频本地都没有评论数据：先采集，或重新「自选视频」换个选择'
+      };
+    }
   } else {
     comments = Object.values(await getComments(videoId));
     if (!comments.length) {
@@ -340,30 +413,37 @@ async function exportComments(opts) {
   const meta = allVideos[videoId] || {};
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const replyCount = comments.filter((c) => c && c.is_reply).length;
+  // 文件名：all / selected<N>（自选多条）/ 单条 videoId（自选 1 条时用它自己的 id）
+  const fileTag = wantAll ? 'all' : (wantPick ? (multi ? 'selected' + pickIds.length : pickIds[0]) : videoId);
+  const scopeTag = wantAll ? 'all' : (wantPick ? (multi ? 'selected' : 'video') : 'video');
+  const singleVideoId = wantAll ? null : (wantPick ? (multi ? null : pickIds[0]) : videoId);
   let dl;
   if (format === 'json') {
     const payload = Object.assign({
       exportedAt: new Date().toISOString(),
-      scope: wantAll ? 'all' : 'video',
-      ...(wantAll ? { videos: perVideo } : { videoId, title: meta.title, totalReported: meta.total })
+      scope: scopeTag,
+      ...(multi
+        ? { videos: perVideo }
+        : { videoId: singleVideoId, title: (allVideos[singleVideoId] || {}).title, totalReported: (allVideos[singleVideoId] || {}).total })
     }, {
       count: comments.length,
       topLevelCount: comments.length - replyCount,
-      videoCount: wantAll ? perVideo.length : 1,
+      videoCount: multi ? perVideo.length : 1,
       replyCount,   // v0.1.5：二级回复条数（带 parent_cid 的那些）
       note: EXPORT_NOTE,
       comments
     });
     dl = await download(JSON.stringify(payload, null, 2),
-      `douyin-comments-${wantAll ? 'all' : videoId}-${stamp}.json`, 'application/json');
+      `douyin-comments-${fileTag}-${stamp}.json`, 'application/json');
   } else {
-    dl = await download(toCsv(comments, { withVideoId: wantAll }),
-      `douyin-comments-${wantAll ? 'all' : videoId}-${stamp}.csv`, 'text/csv;charset=utf-8');
+    dl = await download(toCsv(comments, { withVideoId: multi }),
+      `douyin-comments-${fileTag}-${stamp}.csv`, 'text/csv;charset=utf-8');
   }
   return Object.assign({
-    scope: wantAll ? 'all' : 'video',
-    videoId: wantAll ? null : videoId,
-    videoCount: wantAll ? perVideo.length : 1,
+    scope: scopeTag,
+    videoId: singleVideoId,
+    videoIds: multi && !wantAll ? pickIds : null,
+    videoCount: multi ? perVideo.length : 1,
     count: comments.length,
     topLevelCount: comments.length - replyCount,
     replyCount,
@@ -433,7 +513,7 @@ if (chrome && chrome.runtime && chrome.runtime.onMessage && chrome.runtime.onMes
 
         case 'dts-export': {
           // 面板「导出」与 AI 桥 dts-ai-export 都走这里；范围/成败口径见 exportComments（与 Hub export 同一份）。
-          sendResponse(await exportComments({ all: msg.all === true, videoId: msg.videoId, format: msg.format }));
+          sendResponse(await exportComments({ all: msg.all === true, videoId: msg.videoId, videoIds: msg.videoIds, format: msg.format }));
           break;
         }
 
@@ -791,7 +871,7 @@ async function executeAiCommand(cmd) {
       // CSV 末尾追加 video_id 列。成功按 Hub 约定把主体放进 result（scope / videoCount /
       // count / replyCount / filename / bytes / path），失败保持顶层 error+hint
       // （MISSING_VIDEO_ID / EMPTY_POOL），MCP 才能原样透给模型。
-      const r = await exportComments({ all: args.all === true, videoId: args.videoId, format: args.format });
+      const r = await exportComments({ all: args.all === true, videoId: args.videoId, videoIds: args.videoIds, format: args.format });
       if (!r.ok) return r;
       return { ok: true, result: r };
     }
@@ -975,3 +1055,4 @@ if (chrome && chrome.runtime && chrome.runtime.onStartup && chrome.runtime.onSta
 if (chrome && chrome.runtime && chrome.runtime.onInstalled && chrome.runtime.onInstalled.addListener) {
   chrome.runtime.onInstalled.addListener(() => { ensureAiPoller(); });
 }
+

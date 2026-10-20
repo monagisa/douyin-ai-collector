@@ -49,6 +49,8 @@ window.__ModuleLoader__.load({
         hint: '回复被拒时本轮总共最多等多久（分波重试）；10 = 老行为「十秒不行就收尾」。默认 120' },
       { key: 'replyNoProgressSec', label: '回复无进展收工 replyNoProgressSec', kind: 'number', min: 60, max: 7200, step: 60, suffix: '秒',
         hint: '二级回复阶段多久没有新数据就收工。默认 900' },
+      { key: 'replyWarmupSec', label: '二级回复预热 replyWarmupSec', kind: 'number', min: 0, max: 600, step: 1, suffix: '秒',
+        hint: '顶层采完后先静默几秒再补二级回复（刚扫完列表就打回复接口容易被拒）；0 = 不预热。默认 10' },
       { key: 'failSnapshot', label: '失败现场快照 failSnapshot', kind: 'boolean', def: true,
         hint: '失败或没采完时存截图 + 页面 HTML + 状态 JSON + 日志副本。默认开' },
       { key: 'keepSnapshots', label: '快照保留份数 keepSnapshots', kind: 'number', min: 1, max: 500, step: 1, suffix: '份',
