@@ -13,11 +13,13 @@ douyin-ai-collector/          ← 仓库根（可自行命名）
 
 若只上传扩展，可单独使用 `douyin-collector/` 目录；AI 调用请同时带上 `douyin-mcp/`。
 
-> **版本号（v0.5.15 起）**：扩展、DSH 插件、MCP **三件套统一编号**，当前都是 `0.5.16`。更早对照：发布 v0.5.9/0.5.10/0.5.11/0.5.12 = 扩展 0.2.11/0.2.12/0.2.13/0.2.14，v0.5.13 与 v0.5.14 = 扩展 0.2.15（MCP 依次 0.3.2~0.3.6）。
+> **版本号（v0.5.15 起）**：扩展、DSH 插件、MCP **三件套统一编号**，当前都是 `0.5.29`。
+> 最近几版：**0.5.29** CSV 的 `user_unique_id`（抖音号）为空时填数字短号（不新增列）；**0.5.28** 删掉 `user_short_id`（单视频 19 列 / 多条 20 列），保留 `user_sec_uid`（拼主页）与 `user_unique_id`；**0.5.27** CSV 第 2 行加**中文列名说明**（第 1 行英文键不变）；**0.5.26** 起不再为补标题打开页面，拿不到就显示「视频 <末 8 位>」；**0.5.23** 自选浮层选中高亮；**0.5.22** 全部清空后导出选择立刻复位；**0.5.21** 导出范围只留「导出范围 ▾」；**0.5.20** 支持自选任意几条视频导出；**0.5.19** 面板放大（宽 310px / 基础字号 14px）；**0.5.18** 二级回复预热可调（默认 10 秒，0 = 不预热）。
+> 更早对照：发布 v0.5.9~v0.5.12 = 扩展 0.2.11~0.2.14，v0.5.13 / v0.5.14 = 扩展 0.2.15（MCP 依次 0.3.2~0.3.6）。
 
 **下载发布物**（打包好的 tgz / 扩展 zip / 使用说明 / SHA256SUMS）走 **GitHub Releases**，不放在仓库里：
 <https://github.com/monagisa/douyin-ai-collector/releases>（最新版直接看 [releases/latest](https://github.com/monagisa/douyin-ai-collector/releases/latest)）。
-本仓库是 **private**，这些链接要用有权限的 GitHub 账号打开；要发给没有权限的人，请下载附件后直接传文件。
+本仓库是 **public**，release 附件可直接下载；给不熟 GitHub 的人，把 zip / tgz 附件直接传文件即可。
 
 ---
 
@@ -55,10 +57,10 @@ douyin-ai-collector/          ← 仓库根（可自行命名）
    「采集这个视频的评论 <链接>」——扩展由插件自己装，不用手动加载目录；目标条数 `max`（默认 80000，
    **采到这么多只停止顶层扫描，二级回复仍会补完**——0.5.11 + 扩展 0.2.13 起真正如此）、
    顶层列表路数 `lanes`（0.5.13 + 扩展 0.2.15 起生效：默认 **3 路错峰 200ms**，1 = 单路；发现两路同页会自动降回 1 路）、
-   超时、等扫码秒数、是否先清空、二级回复限速（`replyLanes` / `replyGlobalGapMs` / `replyGapMs` / `replyThrottleSec`）都可以改，三个入口：
+   超时、等扫码秒数、是否先清空、二级回复限速（`replyLanes` / `replyGlobalGapMs` / `replyGapMs` / `replyThrottleSec`）与**二级回复预热**（`replyWarmupSec`，0.5.18 起默认 **10 秒**、以前写死 30 秒，0 = 不预热）都可以改，三个入口：
    **扩展面板标题栏右上角的设置齿轮 `⚙`**（0.2.5 起，优先级最高，用不用 DSH 都能改）→
    DSH「设置 → 插件 → dsh-douyin-comments」的设置表（0.5.0 起，改完立即生效，不用重启）→
-   AI 经 MCP（`douyin-mcp` 0.5.15）的 `ai_get_settings` / `ai_set_settings`，`ai_start_collect`
+   AI 经 MCP（`douyin-mcp` 0.5.29）的 `ai_get_settings` / `ai_set_settings`，`ai_start_collect`
    可带 `max` / `lanes` / `replyLanes` / `replyGlobalGapMs` / `replyGapMs` / `replyWarmupMs` / `replyThrottleMaxWaitMs`
    （优先级：面板齿轮 > AI 下发 > 内置默认）。0.5.12 + 扩展 0.2.14 起，回复接口被服务端暂时拒绝时
    **不再「十秒不行就收尾」**：单波最多撞 12 秒，波间停 15/30/60 秒自动再来一波，总窗口默认 120 秒
@@ -68,12 +70,13 @@ douyin-ai-collector/          ← 仓库根（可自行命名）
    含截图 / 页面 HTML / 状态 JSON / 日志副本，返回值 `snapshotDir`；正常采完不留，日志留 50 份、现场留 20 份）。
    装完**不用重启**：桌面端这类宿主默认开着 HMR（只监听 profile 配置，`@deepseek-ai/dsh-hmr` 的 `root: []`），
    新装插件会即时重新组合并挂载；只有**覆盖安装同一个包换版本**时才需要重启 DSH 才会加载新代码。
-   要把这套发给别人：下载 [v0.5.16 的单文件包](https://github.com/monagisa/douyin-ai-collector/releases/download/v0.5.16/dsh-douyin-comments-v0.5.16.zip)
-   （解压后是 `dsh-douyin-comments-0.5.16.tgz` 插件包 + `douyin-collector-extension-v0.5.16.zip`
+   要把这套发给别人：下载 [v0.5.29 的单文件包](https://github.com/monagisa/douyin-ai-collector/releases/download/v0.5.29/dsh-douyin-comments-v0.5.29.zip)
+
+   （解压后是 `dsh-douyin-comments-0.5.29.tgz` 插件包 + `douyin-collector-extension-v0.5.29.zip`
     单独扩展 + `使用说明.md` + `SHA256SUMS.txt`）。
    对方**不用 DSH、只要 MCP**：下载
-   [v0.5.16 里的 MCP 单文件包](https://github.com/monagisa/douyin-ai-collector/releases/download/v0.5.16/douyin-collector-mcp-v0.5.16.zip)
-   （解压后是 `douyin-collector/` 扩展源码（0.5.16）+ `douyin-mcp/` 本地 MCP server（0.5.16）+
+   [v0.5.29 里的 MCP 单文件包](https://github.com/monagisa/douyin-ai-collector/releases/download/v0.5.29/douyin-collector-mcp-v0.5.29.zip)
+   （解压后是 `douyin-collector/` 扩展源码（0.5.29）+ `douyin-mcp/` 本地 MCP server（0.5.29）+
     `使用说明.md`）。同页附件里还有 `SHA256SUMS.txt` 可校验，单独的中文说明是附件 `USAGE-zh-CN.md`。
    （**v0.5.15 起三件套同号**；v0.5.14 及更早是扩展 `0.2.x` / 插件 `0.5.x` / MCP `0.3.x` 各自编号。）
 
