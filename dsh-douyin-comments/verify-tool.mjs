@@ -859,13 +859,16 @@ if (fs.existsSync(path.join(devExtDir, 'manifest.json'))) {
   // v0.5.17：user_uid 是抖音内部数字 ID（搜不到人、拼不出主页），真正能用的是
   // unique_id/short_id（抖音号）和 sec_uid（主页 https://www.douyin.com/user/<sec_uid>）。
   // 两个 CSV 写入器（插件 collector.mjs / 扩展 background.js）必须同时追加这三列，否则同源契约 drift。
+  // 注意：background.js 里内联了词云页（VIEWER_ASSETS，v0.5.30），那段前端代码本来就带 user_short_id 字段，
+  // 校验前先把它剥掉，只看后台逻辑本体。
+  const bgLogicSrc = bgSrc.replace(/\/\* === BEGIN VIEWER ASSETS[\s\S]*?\/\* === END VIEWER ASSETS === \*\//, '');
   check('CSV 末尾追加 user_sec_uid / user_unique_id（插件与扩展两处一致，v0.5.28 已删 user_short_id）',
     /'user_sec_uid', 'user_unique_id'/.test(collectorSrc)
-    && /'user_sec_uid', 'user_unique_id'/.test(bgSrc)
+    && /'user_sec_uid', 'user_unique_id'/.test(bgLogicSrc)
     && /csvCell\(u\.sec_uid\), csvCell\(u\.unique_id \|\| u\.short_id\)/.test(collectorSrc)
-    && /csvCell\(u\.sec_uid\), csvCell\(u\.unique_id \|\| u\.short_id\)/.test(bgSrc)
-    && !/'user_short_id'/.test(collectorSrc) && !/'user_short_id'/.test(bgSrc)
-    && !/csvCell\(u\.short_id\)/.test(collectorSrc) && !/csvCell\(u\.short_id\)/.test(bgSrc));
+    && /csvCell\(u\.sec_uid\), csvCell\(u\.unique_id \|\| u\.short_id\)/.test(bgLogicSrc)
+    && !/'user_short_id'/.test(collectorSrc) && !/'user_short_id'/.test(bgLogicSrc)
+    && !/csvCell\(u\.short_id\)/.test(collectorSrc) && !/csvCell\(u\.short_id\)/.test(bgLogicSrc));
   check('导出文件名口径（all / selected<N> / 单条 videoId，避免混在一起分不清）',
     /const fileTag = wantAll \? 'all' : \(wantPick \? \(multi \? 'selected' \+ pickIds\.length : pickIds\[0\]\) : videoId\);/.test(bgSrc)
     && /douyin-comments-\$\{fileTag\}-\$\{stamp\}\.json/.test(bgSrc)
@@ -879,7 +882,16 @@ if (fs.existsSync(path.join(devExtDir, 'manifest.json'))) {
   const labelCount = (block) => (block.match(/\w+: '/g) || []).length;
   const cLabels = labelsOf(collectorSrc);
   const bLabels = labelsOf(bgSrc);
-  check('CSV 第 2 行是中文列名说明（两处都插到表头后，v0.5.27）',
+  check(
+  'JSON 导出带 text_clean（扩展 + 插件两处，v0.5.32）',
+  /comments: jsonComments/.test(bgSrc) &&
+    /const jsonComments = comments\.map\(\(c\) => Object\.assign\(\{\}, c, \{ text_clean: cleanText\(c && c\.text\) \}\)\)/.test(bgSrc) &&
+    /const jsonComments = fresh\.map\(\(c\) => Object\.assign\(\{\}, c, \{ text_clean: cleanText\(c && c\.text\) \}\)\)/.test(collectorSrc) &&
+    /freshOnly: true, comments: jsonComments/.test(collectorSrc),
+  '扩展 background.js 与插件 collector.mjs 的 JSON 都写 text_clean',
+);
+
+check('CSV 第 2 行是中文列名说明（两处都插到表头后，v0.5.27）',
     /const rows = \[cols\.join\(','\), csvLabelRow\(cols\)\];/.test(collectorSrc)
     && /const rows = \[cols\.join\(','\), csvLabelRow\(cols\)\];/.test(bgSrc)
     && /\(i === 0 \? '# ' : ''\)/.test(collectorSrc)
@@ -905,7 +917,7 @@ if (fs.existsSync(path.join(devExtDir, 'manifest.json'))) {
     && /return \{ ok: false, error: 'EMPTY_POOL', scope: 'all'/.test(bgSrc)
     && /return \{ ok: false, error: 'EMPTY_POOL', videoId/.test(bgSrc));
   check('面板有「本地已存」一行 + 导出范围只剩「导出范围 ▾」一个入口（v0.5.21 去掉本条/全部两个按钮）',
-    /refs\.local = row\(body, '本地已存'\);/.test(ctSrc)
+    /refs\.local = row\(secCollect, '本地已存'\);/.test(ctSrc)
     && /mkBtn\('本条视频 ▾', 'dts-btn-scope', function \(\) \{ openPicker\(\); \}, 'export-scope-pick'\)/.test(ctSrc)
     && /refs\.scopePick = pickBtn;/.test(ctSrc)
     && !/export-scope-video/.test(ctSrc)
@@ -924,7 +936,7 @@ if (fs.existsSync(path.join(devExtDir, 'manifest.json'))) {
     && /type: 'dts-export', videoId: vid, format: format, all: wantAll \}/.test(ctSrc)
     && /scope: wantAll \? 'all' : 'video',/.test(ctSrc));
   check('面板 CSS 有导出范围小按钮与选中态样式',
-    /\.dts-row\.dts-scope > \.dts-btn \{/.test(cssSrc) && /\.dts-btn-scope\.dts-on \{/.test(cssSrc));
+    /\.dts-scope-row \{/.test(cssSrc) && /\.dts-btn-scope \{/.test(cssSrc) && /\.dts-btn-scope\.dts-on \{/.test(cssSrc));
 
   // ---------- 3a-8b) v0.5.20：导出范围从「本条 / 全部」扩成「自选任意几条视频」 ----------
   // 用户原话：「这个导出要不改成选择导出哪几条视频？现在这个限制有点大」。
@@ -1012,6 +1024,33 @@ if (fs.existsSync(path.join(devExtDir, 'manifest.json'))) {
     /setPhase\('error', clearFailedText\('清空', err, detail\)/.test(ctSrc)
     && /setPhase\('error', clearFailedText\('全部清空', err, detail\)/.test(ctSrc)
     && !/errText = clearFailedText[\s\S]{0,120}?setPhase\('idle', '', ''\)/.test(ctSrc));
+  // ---------- 3a-10) v0.5.30：面板「导出风控日志」换成「导出词云」 ----------
+  // 用户原话：「把原来的插件的导出风控日志换成导出词云，将采集的数据一键导出到词云」。
+  // 契约：点一下就生成**一个自包含 HTML**（词云页 styles/app 内联 + 数据进 window.__CW_BOOT__），
+  //       双击即交互词云，发给别人不用装扩展；风控观测数据仍显示在面板，只是不再导日志。
+  check('面板「导出风控日志」已换成「导出词云」（旧按钮与旧实现都清掉）',
+    /mkBtn\('导出词云', '', exportCloud, 'export-cloud'\)/.test(ctSrc)
+    && !/export-risk-log/.test(ctSrc) && !/function exportRiskLog/.test(ctSrc)
+    && !/风控日志/.test(ctSrc.replace(/\/\/[^\n]*/g, ''))); // 注释里保留这段历史说明是允许的
+  check('导出词云走 dts-cloud 消息，后台 exportCloud 打包所有选中视频的评论',
+    /type: 'dts-cloud', videoIds: pick/.test(ctSrc)
+    && /case 'dts-cloud':/.test(bgSrc)
+    && /async function exportCloud\(opts\) \{/.test(bgSrc)
+    && /function buildCloudHtml\(docs, title\) \{/.test(bgSrc));
+  check('词云页源码已内联进 background.js（VIEWER_ASSETS 生成块，扩展仍是 8 个文件）',
+    /const VIEWER_ASSETS = \{/.test(bgSrc)
+    && /BEGIN VIEWER ASSETS/.test(bgSrc) && /END VIEWER ASSETS/.test(bgSrc)
+    && /VIEWER_ASSETS\.html/.test(bgSrc) && /VIEWER_ASSETS\.css/.test(bgSrc) && /VIEWER_ASSETS\.js/.test(bgSrc));
+  check('导出的 HTML 是自包含的（内联样式与脚本 + 数据进 __CW_BOOT__）',
+    /window\.__CW_BOOT__/.test(bgSrc)
+    && /douyin-wordcloud-/.test(bgSrc)
+    && /\.replace\('<link rel="stylesheet" href="styles\.css">', \(\) =>/.test(bgSrc) // 函数式 replace：$$ 会被当转义（词云页满屏 $$(...)）
+    && /\.replace\('<script src="app\.js"><\/script>', \(\) =>/.test(bgSrc));
+  const viewerApp = path.resolve(devExtDir, '..', 'comment-viewer', 'app.js');
+  check('词云页支持快照启动（bootFromSnapshot 读 __CW_BOOT__，仍兼容手动选文件）',
+    fs.existsSync(viewerApp)
+    && /function bootFromSnapshot\(\) \{/.test(fs.readFileSync(viewerApp, 'utf8'))
+    && /window\.__CW_BOOT__/.test(fs.readFileSync(viewerApp, 'utf8')));
 } else {
   console.log('ℹ️ 跳过扩展副本一致性校验（找不到开发目录 ' + devExtDir + '，非开发机上属正常）');
 }
@@ -1083,6 +1122,42 @@ if (fs.existsSync(mcpPath)) {
 }
 check('插件工具描述里的 lanes 不再写「已停用」', !/已停用/.test(String(def.description || '')),
   /已停用/.test(String(def.description || '')) ? '描述里仍有「已停用」' : 'ok');
+
+// ---------- 3z) v0.5.38：词云导出打通 AI/MCP/插件三处 ----------
+{
+  const extensionSrc = fs.readFileSync(path.join(devExtDir, 'background.js'), 'utf8');
+  const mcpPath = path.resolve(devExtDir, '..', 'douyin-mcp', 'mcp.js');
+  const mcpSrc = fs.existsSync(mcpPath) ? fs.readFileSync(mcpPath, 'utf8') : '';
+  const collectorSrc = fs.readFileSync(new URL('./collector.mjs', import.meta.url), 'utf8');
+  const indexSrc = fs.readFileSync(new URL('./index.js', import.meta.url), 'utf8');
+
+  check('扩展 hub 新增 cloud 命令（AI/MCP 也能导词云）',
+    /case 'cloud': \{/.test(extensionSrc) && /exportCloud\(\{ videoIds: ids \}\)/.test(extensionSrc),
+    'background.js hub');
+
+  check('扩展 hub cloud 支持 videoId / videoIds / all 三种选法',
+    /args\.all === true/.test(extensionSrc) && /args\.videoIds/.test(extensionSrc) && /args\.videoId/.test(extensionSrc),
+    'hub args');
+
+  check('MCP 新增 ai_export_wordcloud 工具（声明 + 分发）',
+    /name: 'ai_export_wordcloud'/.test(mcpSrc)
+    && /case 'ai_export_wordcloud':/.test(mcpSrc)
+    && /callExtension\('cloud'/.test(mcpSrc),
+    mcpSrc ? 'mcp.js' : '没找到 mcp.js');
+
+  check('插件工具新增 cloud 参数 + htmlPath 输出',
+    /cloud: \{ type: 'boolean'/.test(indexSrc)
+    && /htmlPath: \{ type: 'string', required: true/.test(indexSrc)
+    && /htmlPath: String\(res\.htmlPath/.test(indexSrc),
+    'index.js params/output');
+
+  check('插件采集器点面板「导出词云」并把下载搬到 outDir',
+    /wantCloud/.test(collectorSrc)
+    && /\[data-dts-act="export-cloud"\]/.test(collectorSrc)
+    && /waitForEvent\('download'/.test(collectorSrc)
+    && /dl\.saveAs\(dest\)/.test(collectorSrc),
+    'collector.mjs cloud');
+}
 
 // ---------- 4) 可选：真跑一次 ----------
 const liveIdx = process.argv.indexOf('--live');

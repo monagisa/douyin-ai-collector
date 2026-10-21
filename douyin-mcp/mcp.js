@@ -28,7 +28,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-const VERSION = '0.5.29';
+const VERSION = '0.5.38';
 const HUB_NAME = 'douyin-collector-mcp';
 
 const argv = process.argv.slice(2);
@@ -611,6 +611,26 @@ const TOOLS = [
     }
   },
   {
+    name: 'ai_export_wordcloud',
+    description: '把已采集的评论打包成一个**自包含交互词云 HTML**（词云页的 html/css/js 全部内联，双击即可打开、'
+      + '可发给别人、数据不出本机），写入浏览器下载目录，返回文件名/路径/字节数。'
+      + '传 videoId 导单条；传 videoIds:[...] 自选几条；传 all:true 导本地全部视频（合成一份）。'
+      + '本地没有数据时返回 EMPTY_POOL（不会生成空文件）。需要扩展 v0.5.38 或更新。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        videoId: { type: 'string', description: '要导出的视频 ID（all:true 时可不传，传了则并进合集）' },
+        videoIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '自选视频 ID 列表：只导这几条，优先级低于 all、高于 videoId'
+        },
+        all: { type: 'boolean', description: 'true = 把本地所有有数据的视频合成一份词云；默认 false' }
+      },
+      additionalProperties: false
+    }
+  },
+  {
     name: 'ai_get_settings',
     description: '读取采集设置：AI 下发的 dts_settings、面板齿轮里用户设的 dts_user_settings、'
       + '以及上一次「开始采集」真正生效的 dts_settings_effective（含来源 from=panel|plugin），外加各项硬上限。',
@@ -692,6 +712,21 @@ async function callTool(name, args) {
           r.hint = '扩展可能太旧（< v0.5.20）：「自选视频导出」是 v0.5.20 起才有的，请更新扩展后重试。';
         }
         // 成功时按 Hub 约定主体在 result 里（scope/videoCount/count/filename/bytes/path），拍平给模型
+        return toolResult(JSON.stringify(r && r.result ? r.result : r, null, 2));
+      }
+      case 'ai_export_wordcloud': {
+        const ids = Array.isArray(a.videoIds) ? a.videoIds.filter((x) => String(x || '').trim()) : [];
+        if (!a.videoId && a.all !== true && !ids.length) {
+          return toolResult(JSON.stringify({
+            ok: false,
+            error: 'videoId 必填',
+            hint: '导一条视频的词云请传 videoId；导本地全部视频请传 all:true；导指定几条请传 videoIds:[...]'
+          }), true);
+        }
+        const r = await callExtension('cloud', Object.assign({}, a, { videoIds: ids.length ? ids : undefined }));
+        if (r && r.ok === false && r.error === 'UNKNOWN_COMMAND' && /cloud/i.test(String(r.error))) {
+          r.hint = '扩展可能太旧（< v0.5.38）：词云导出命令是 v0.5.38 起才有的，请更新扩展后重试。';
+        }
         return toolResult(JSON.stringify(r && r.result ? r.result : r, null, 2));
       }
       case 'ai_get_settings':

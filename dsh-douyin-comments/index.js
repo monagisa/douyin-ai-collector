@@ -269,6 +269,7 @@ export function apply(ctx, config = {}) {
       outDir: { type: 'string', description: '输出目录（默认：当前会话工作区下的 douyin-comments/ 子目录；取不到工作区时退回 ~/.dsh/douyin-collector/out）。' },
       keepOpen: { type: 'boolean', description: '调试用：采完不关浏览器窗口（默认 false）。' },
       failSnapshot: { type: 'boolean', description: '本次失败/没采完时是否存现场快照（截图 + 页面 HTML + 状态 JSON + 日志副本，默认用插件设置 true）；日志文件每次运行都会写。' },
+      cloud: { type: 'boolean', description: '顺手再导一份**交互词云 HTML**（自包含：词云页 html/css/js 全内联，双击即可打开、可发给别人、数据不出本机）。默认 false；导出的路径见 htmlPath。需要扩展 v0.5.30+（v0.5.38 起插件这边也能唤起）。' },
     },
     output: {
       schema: {
@@ -282,6 +283,7 @@ export function apply(ctx, config = {}) {
           count: { type: 'integer', required: true, description: '本次新采的真实条数' },
           csvPath: { type: 'string', required: true },
           jsonPath: { type: 'string', required: true },
+          htmlPath: { type: 'string', required: true, description: '交互词云 HTML 路径（v0.5.38 起；没勾 cloud 或导出失败时为空串）' },
           phase: { type: 'string', required: true, description: '收工时的扩展状态' },
           lanes: { type: 'integer', required: true, description: '顶层列表实际用的路数（扩展写回的 dts_settings_effective；v0.5.13 起 = 设置值或检测到同页后自降的 1，读不到时为本次请求值）' },
           note: { type: 'string', required: true, description: '扩展面板的说明文字' },
@@ -316,6 +318,7 @@ export function apply(ctx, config = {}) {
           + ` — videoId=${value.videoId}，用时 ${value.durationSec}s，顶层列表 ${value.lanes} 路，扩展 v${value.extensionVersion}`
           + (value.extensionInstalled ? '（本次自动安装）' : '');
         const lines = [head, `CSV：${value.csvPath}`, `JSON：${value.jsonPath}`];
+        if (value.htmlPath) lines.push(`词云：${value.htmlPath}（双击打开；自包含 HTML，可发给别人）`);
         if (value.note) lines.push(`面板：${value.note}`);
         if (value.snapshotDir) lines.push(`⚠️ 本轮没采完（超时/无进展/被取消），现场快照：${value.snapshotDir}`);
         if (value.logPath) lines.push(`运行日志：${value.logPath}`);
@@ -390,11 +393,12 @@ export function apply(ctx, config = {}) {
           keepSnapshots: keepSnapshotsUsed,
           outDir,
           keep: args.keepOpen === true,
+          cloud: args.cloud === true,
           onLog,
           signal: exec ? exec.signal : undefined,
         });
       } catch (e) {
-        res = { ok: false, error: String((e && e.message) || e), videoId: '', title: '', count: 0, csvPath: '', jsonPath: '', phase: 'error', note: '' };
+        res = { ok: false, error: String((e && e.message) || e), videoId: '', title: '', count: 0, csvPath: '', jsonPath: '', htmlPath: '', phase: 'error', note: '' };
       }
 
       const ext = res.extension || {};
@@ -406,6 +410,7 @@ export function apply(ctx, config = {}) {
         count: Number.isFinite(res.count) ? Number(res.count) : 0,
         csvPath: String(res.csvPath || ''),
         jsonPath: String(res.jsonPath || ''),
+        htmlPath: String(res.htmlPath || ''),
         phase: String(res.phase || ''),
         lanes: Number(res.extLanes) > 0 ? Number(res.extLanes) : lanesUsed,
         note: String(res.note || ''),

@@ -1,6 +1,6 @@
 # 安装 · 使用 · 打包
 
-> 抖音评论采集器 **v0.5.29**（v0.5.15 起与 DSH 插件 / MCP 统一编号）— 无 npm 依赖、无构建步骤。  
+> 抖音评论采集器 **v0.5.31**（v0.5.15 起与 DSH 插件 / MCP 统一编号）— 无 npm 依赖、无构建步骤。  
 > **适用浏览器：Chrome 111+ / Edge（Chromium）**；**不支持** Firefox / Safari（详见 README「适用范围」）。  
 > **版本号对照（v0.5.15 起三件套同号）**：发布 v0.5.9~v0.5.12 = 扩展 0.2.11~0.2.14；v0.5.13 / v0.5.14 = 扩展 0.2.15（MCP 依次 0.3.2~0.3.6）；**v0.5.15 起三者同号**。下文 `v0.2.x` 指当年的扩展编号。  
 > v0.2.x：AI Bridge（本地 MCP，见 `../douyin-mcp/README.md`）；采集核心仍为「复用页面签名、只改 cursor」。  
@@ -103,6 +103,7 @@ content script 把裁剪后的字段交给 background，写入 `chrome.storage.l
 - **CSV 第 2 行是中文列名说明**（v0.5.27）：第 1 行英文键不变，第 2 行是同一列序的中文说明
   （首列 `# 评论ID`）。用脚本读 CSV 时跳过首列以 `#` 开头的行即可；用 Excel 打开时直接看第 2 行。
 - **CSV**：`douyin-comments-<videoId>-<时间戳>.csv`，UTF-8 BOM，19 列（前 15 列冻结 + `is_reply`/`parent_cid` + 末尾 `user_sec_uid`/`user_unique_id`；**v0.5.28 起删掉了 `user_short_id`**，v0.5.29 起 `user_unique_id` 为空时填数字短号）
+- **词云 HTML**（v0.5.30，替代原来的「导出风控日志」）：`douyin-wordcloud-<videoId|selectedN>-<时间戳>.html`，**双击就是交互词云**（词云页 + 数据全内联在一个文件里，不联网、不需要装扩展，可以直接发给别人）；文件大小≈每 1 万条评论 10~15 MB。风控观测数据仍显示在面板上，只是不再导出日志。
 - **JSON**：同名 `.json`，含 `count` / `topLevelCount` / `replyCount` / `comments[]`
 - 默认 `SAVE_AS = false`：不弹「另存为」，直接进下载目录
 - **成功判据** = 下载进入终态且文件写盘；中断会明确报错，不谎报成功

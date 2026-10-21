@@ -1386,28 +1386,8 @@
     return riskLog.length + ' 次（最近 ' + hh + ' ' + (last.kind === 'list' ? '列表' : '回复') + '）';
   }
 
-  /** 导出为 JSON 文件（面板按钮；数据就在本机，不上传任何地方） */
-  function exportRiskLog() {
-    try {
-      var payload = {
-        exportedAt: new Date().toISOString(),
-        videoId: videoId,
-        count: riskLog.length,
-        entries: riskLog,
-      };
-      var blob = new Blob([JSON.stringify(payload, null, 1)], { type: 'application/json' });
-      var url = URL.createObjectURL(blob);
-      var a = document.createElement('a');
-      a.href = url;
-      a.download = 'dts-risk-log-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json';
-      (document.body || document.documentElement).appendChild(a);
-      a.click();
-      setTimeout(function () { try { URL.revokeObjectURL(url); a.remove(); } catch (e) {} }, 5000);
-    } catch (e) {
-      errText = '导出风控日志失败：' + String(e);
-      render();
-    }
-  }
+  // v0.5.30：「导出风控日志」按钮已换成「导出词云」（见 exportCloud）。
+  // 风控观测数据本身仍在本机、仍显示在面板「风控观测」这一行，只是不再单独导出 JSON。
 
   // 多路共用同一次签名探测（requestReplay 按 cursor 去重，并发探同一 cursor 会互相踩）
   var probeInFlight = null;
@@ -2989,6 +2969,59 @@
     }
   }
 
+  /**
+   * 导出词云（v0.5.30）：让后台把选中的评论打包成一个自包含 HTML（词云页 + 数据内嵌），
+   * 下载下来双击就能看交互词云，发给别人也不用装扩展。数据不出本机。
+   */
+  function exportCloud() {
+    ensureExportPickDefault();
+    var pick = exportPick && exportPick.length ? exportPick.slice() : null;
+    if (!pick) {
+      errText = '还没选要导哪些视频：先在「导出范围」里勾几条（「全选」= 本地全部视频）';
+      render();
+      openPicker();
+      return;
+    }
+    if (extContextLost) {
+      onExtContextLost('');
+      return;
+    }
+    errText = '';
+    noteText = '正在打包词云（' + pick.length + ' 个视频）…（若弹出「另存为」对话框，请选择保存位置）';
+    render();
+    var pending = '正在打包词云…';
+    try {
+      chrome.runtime.sendMessage({ type: 'dts-cloud', videoIds: pick }, function (resp) {
+        if (chrome.runtime.lastError) {
+          var le = chrome.runtime.lastError.message || '';
+          if (isExtContextInvalid(le)) { onExtContextLost(le); return; }
+          noteText = '';
+          errText = '导出词云失败：' + le;
+          render();
+          return;
+        }
+        if (resp && resp.ok) {
+          errText = '';
+          noteText = '已导出词云 ' + resp.filename + '（' + resp.count + ' 条 · ' +
+            resp.videoCount + ' 个视频 · ' + Math.round((Number(resp.bytes) || 0) / 1024) + ' KB）；双击 HTML 打开';
+        } else if (resp && resp.cancelled) {
+          noteText = '';
+          errText = '已取消保存，词云文件没有导出（评论数据仍在本地，可随时重新导出）';
+        } else {
+          noteText = '';
+          errText = '导出词云失败：' + ((resp && resp.error) || '未知错误')
+            + (resp && resp.hint ? '（' + resp.hint + '）' : '');
+        }
+        render();
+      });
+    } catch (e) {
+      if (isExtContextInvalid(e)) { onExtContextLost(String(e && e.message || e)); return; }
+      noteText = '';
+      errText = '导出词云失败：' + String(e && e.message || e);
+      render();
+    }
+  }
+
   // ================== 面板（协议 §3.6） ==================
   // 只使用协议约定的 class；除进度条宽度（panel.css 通过 fill.style.width 消费）外不写任何内联 style
 
@@ -3005,6 +3038,18 @@
     r.appendChild(v);
     parent.appendChild(r);
     return v;
+  }
+
+  // v0.5.31：面板分三组（采集 / 导出 / 清理），每组一个 11px 灰字标题 + 组间 1px 线
+  function sec(parent, title) {
+    var box = document.createElement('div');
+    box.className = 'dts-sec';
+    var h = document.createElement('p');
+    h.className = 'dts-sec-h';
+    h.textContent = title;
+    box.appendChild(h);
+    parent.appendChild(box);
+    return box;
   }
 
   function mkBtn(text, extraClass, onClick, act) {
@@ -3443,83 +3488,119 @@
     body.className = 'dts-panel-body';
 
     var refs = {};
-    refs.phase = row(body, '阶段');
-    refs.count = row(body, '已采（去重）');
+
+    // ---- 采集 ----
+    var secCollect = sec(body, '采集');
+    refs.phase = row(secCollect, '阶段');
+    refs.count = row(secCollect, '已采（去重）');
     // v0.2.9：换视频后这一行仍然显示「本地已存 N 个视频 / M 条（本条 X 条）」，
     // 让用户一眼看到旧视频的评论还在本地（面板计数是按当前视频重置的，别误解成数据丢了）
-    refs.local = row(body, '本地已存');
-    refs.total = row(body, '服务端 total');
-    refs.cursor = row(body, 'cursor');
-    refs.ms = row(body, '每页耗时');
-    // 风控观测：服务端挑战过几次、最近一次是什么时候（明细见「导出风控日志」）
-    refs.risk = row(body, '风控观测');
+    refs.local = row(secCollect, '本地已存');
+    // v0.5.31：这四项原来各占一行、和主信息同权重，改成一行 11.5px 小字
+    // （total · cursor · 每页 · 风控），信息不丢、视觉降权
+    var meta = document.createElement('div');
+    meta.className = 'dts-meta-line';
+    function metaItem(label) {
+      var k = document.createElement('span');
+      k.className = 'dts-meta-k';
+      k.textContent = label;
+      meta.appendChild(k);
+      var v = document.createElement('span');
+      v.className = 'dts-meta-v';
+      meta.appendChild(v);
+      var sep = document.createElement('span');
+      sep.className = 'dts-meta-sep';
+      sep.textContent = '·';
+      meta.appendChild(sep);
+      return v;
+    }
+    refs.total = metaItem('total');
+    refs.cursor = metaItem('cursor');
+    refs.ms = metaItem('每页');
+    refs.risk = metaItem('风控');
+    if (meta.lastChild) meta.removeChild(meta.lastChild);   // 去掉末尾多余的「·」
+    secCollect.appendChild(meta);
 
     var bar = document.createElement('div');
     bar.className = 'dts-bar';
     var fill = document.createElement('div');
     fill.className = 'dts-bar-fill';
     bar.appendChild(fill);
-    body.appendChild(bar);
+    secCollect.appendChild(bar);
     refs.bar = bar;
     refs.fill = fill;
 
     var note = document.createElement('div');
     note.className = 'dts-row dts-muted';
-    body.appendChild(note);
+    secCollect.appendChild(note);
     var err = document.createElement('div');
     err.className = 'dts-row dts-err';
-    body.appendChild(err);
+    secCollect.appendChild(err);
     refs.note = note;
     refs.err = err;
 
     var r1 = document.createElement('div');
-    r1.className = 'dts-row';
+    r1.className = 'dts-btns';
     r1.appendChild(mkBtn('开始采集', 'dts-btn-primary', onStartClick));
     r1.appendChild(mkBtn('暂停', '', onPauseClick));
-    body.appendChild(r1);
+    secCollect.appendChild(r1);
 
+    // ---- 导出 ----
+    var secExport = sec(body, '导出');
     var r2 = document.createElement('div');
-    r2.className = 'dts-row';
+    r2.className = 'dts-btns';
     r2.appendChild(mkBtn('导出 CSV', '', function () { exportAs('csv'); }));
     r2.appendChild(mkBtn('导出 JSON', '', function () { exportAs('json'); }));
-    body.appendChild(r2);
+    secExport.appendChild(r2);
 
     // v0.5.21：导出范围只留「自选」一个入口（客户反馈「本条 / 全部」两个按钮多余）。
     // 默认值是当前视频，所以不选也能直接点「导出 CSV」；点开浮层可以勾任意几条、
     // 「全选」等于原来的「全部视频」（CSV 末尾多一列 video_id）。
     var rPick = document.createElement('div');
-    rPick.className = 'dts-row dts-actions';
-    var pickLabelEl = document.createElement('span');
-    pickLabelEl.className = 'dts-muted dts-scope-label';
-    pickLabelEl.textContent = '导出范围';
-    rPick.appendChild(pickLabelEl);
+    rPick.className = 'dts-scope-row';
+    // v0.5.31：按钮文案自身就是「导出范围：本条视频 ▾」，左侧不再重复一个 label
     var pickBtn = mkBtn('本条视频 ▾', 'dts-btn-scope', function () { openPicker(); }, 'export-scope-pick');
     pickBtn.title = '点开勾选要导出的视频：可多选，「全选」= 本地全部视频（导出 CSV / JSON 时用）';
     rPick.appendChild(pickBtn);
-    body.appendChild(rPick);
+    secExport.appendChild(rPick);
 
-    // 风控观测日志：本机数据，导出成 JSON 供自己分析（扩展不上传任何东西）
-    var rRisk = document.createElement('div');
-    rRisk.className = 'dts-row dts-actions';
-    rRisk.appendChild(mkBtn('导出风控日志', '', exportRiskLog, 'export-risk-log'));
-    body.appendChild(rRisk);
+    // v0.5.30：原来的「导出风控日志」换成「导出词云」——把选中的评论打包成自包含 HTML，
+    // 双击就是交互词云（词云页 + 数据都在这个文件里，数据不出本机）。
+    var rCloud = document.createElement('div');
+    rCloud.className = 'dts-btns dts-btns-wide';
+    var cloudBtn = mkBtn('导出词云', '', exportCloud, 'export-cloud');
+    cloudBtn.title = '把选中的视频评论导出成一个 HTML：双击打开就是词云，可发给别人看（不用装扩展）';
+    rCloud.appendChild(cloudBtn);
+    secExport.appendChild(rCloud);
 
     // 清空拆成两个按钮：范围完全不同，不能共用一个入口
     //   「清空」    —— 只清本条视频链接的评论（其它视频、面板设置都保留）
     //   「全部清空」—— 清掉所有视频的评论与本地去重表（不可恢复，两步确认）
+    // ---- 清理 ----
+    var secClear = sec(body, '清理');
     var r3 = document.createElement('div');
-    r3.className = 'dts-row dts-actions';
+    r3.className = 'dts-btns';
     var clearBtn = mkBtn('清空', '', onClearClick, 'clear-video');
     clearBtn.title = '只清空本条视频链接的评论与本地去重记录（其它视频的数据保留）';
     r3.appendChild(clearBtn);
     var clearAllBtn = mkBtn('全部清空', 'dts-btn-danger', onClearAllClick, 'clear-all');
     clearAllBtn.title = '清空所有视频的评论与本地去重表，不可恢复；需连点两次确认';
     r3.appendChild(clearAllBtn);
-    body.appendChild(r3);
+    secClear.appendChild(r3);
 
     // 设置入口在标题栏的齿轮里（buildPanel 顶部），这里不再占一行
+    var foot = document.createElement('div');
+    foot.className = 'dts-foot';
+    var footL = document.createElement('span');
+    footL.textContent = '数据只在本地处理';
+    var footR = document.createElement('span');
+    try { footR.textContent = 'v' + chrome.runtime.getManifest().version; } catch (e) { footR.textContent = ''; }
+    foot.appendChild(footL);
+    foot.appendChild(footR);
+
     root.appendChild(head);
     root.appendChild(body);
+    root.appendChild(foot);
     // 设置浮层 + 自选视频浮层：面板内的模态层（absolute 覆盖整个面板），默认隐藏
     var sbox = buildSettingsBox(root);
     var pbox = buildPickerBox(root);
@@ -3595,10 +3676,13 @@
       var pct = Math.max(0, Math.min(100, (seen.size / total) * 100));
       ui.fill.style.width = pct.toFixed(2) + '%';
       ui.bar.classList.remove('dts-bar-indeterminate');
-    } else {
-      // total 未知 → 不确定态，不显示虚假完成度
+    } else if (phase === 'collecting' || phase === 'replies' || phase === 'waiting-sign') {
+      // total 未知 + 正在跑 → 不确定态动画；空闲时不要动，否则像一直在干活（v0.5.31）
       ui.fill.style.width = '0%';
       ui.bar.classList.add('dts-bar-indeterminate');
+    } else {
+      ui.fill.style.width = '0%';
+      ui.bar.classList.remove('dts-bar-indeterminate');
     }
 
     // 导出范围（v0.5.21：面板只剩「导出范围 ▾」一个入口，默认 = 本条视频）

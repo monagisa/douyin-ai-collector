@@ -2,7 +2,7 @@
 
 > 所有实现必须严格按本文件。改协议要先改本文件并通知所有实现者。
 >
-> **版本号（v0.5.15 起）**：扩展 / DSH 插件 / MCP **统一编号**，当前均为 `0.5.29`。正文里的 `v0.2.x` 是**扩展侧历史编号**：0.2.11↔发布 v0.5.9、0.2.12↔v0.5.10、0.2.13↔v0.5.11、0.2.14↔v0.5.12、0.2.15↔v0.5.13/v0.5.14。
+> **版本号（v0.5.15 起）**：扩展 / DSH 插件 / MCP **统一编号**，当前均为 `0.5.38`。正文里的 `v0.2.x` 是**扩展侧历史编号**：0.2.11↔发布 v0.5.9、0.2.12↔v0.5.10、0.2.13↔v0.5.11、0.2.14↔v0.5.12、0.2.15↔v0.5.13/v0.5.14。
 
 ## 0. 文件边界（禁止跨界写入）
 
@@ -378,7 +378,7 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
   `dts_panel_size`（老用户存过的 `'normal'` 被忽略，见判据 D17）。实现只写内联 `left/top` 做定位，
   尺寸完全归 CSS，两者解耦。
 - 显示：阶段、已采条数、服务端 total、当前 cursor、进度条（`count/total`，`total` 为 0 时用不确定态）、每页耗时、错误信息。
-- 按钮：`开始采集` / `暂停` / `导出 CSV` / `导出 JSON` / **`导出范围 ▾`** / `清空` / `全部清空` / `—`（收起）。
+- 按钮：`开始采集` / `暂停` / `导出 CSV` / `导出 JSON` / **`导出范围 ▾`** / **`导出词云`**（v0.5.30，替代原 `导出风控日志`）/ `清空` / `全部清空` / `—`（收起）。
   **v0.5.21：导出范围只剩「导出范围 ▾」一个入口**（用户「那本条和全部那个就可以不要了」）。
   行结构不变（`.dts-row.dts-actions`，行首标签 `.dts-muted.dts-scope-label` 文案 `导出范围`），
   但只有一个按钮 `data-dts-act="export-scope-pick"`，文案由 `exportScopeText()` 生成：
@@ -392,7 +392,7 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
     `导出范围：本条视频 ▾`。两条清空路径都**必须先改 `exportPick` 再 `setPhase()`**（`setPhase` 内部会 `render()`，
     顺序反了会画出旧文案，要等下一次刷新才更新——v0.5.21 的真机 bug，判据见 `_probe_clearall_0522.mjs`）；
   · **v0.5.23**：选中反馈（用户「导出视频那里，选中没有提示」）——`.dts-picker-item:has(.dts-picker-box:checked)`
-    整行 `background: rgba(63,142,224,0.16)` + `box-shadow: inset 3px 0 0 #3f8ee0`，选中项标题 `font-weight: 600`；
+    整行 `background: rgba(224,169,74,0.14)` + `box-shadow: inset 3px 0 0 #e0a94a`（v0.5.31 起琥珀色；v0.5.23~v0.5.30 是蓝 `rgba(63,142,224,0.16)`），选中项标题 `font-weight: 600`；
     `.dts-picker-box` 由 15px 放大到 17px；`updatePickerInfo()` 给 `.dts-picker-info` 加 / 去 `.dts-has-sel`
     （蓝字加粗）。判据见 `_probe_picksel_0523.mjs`（13 项）。
   · **v0.5.24**：列表每行标题取 `dts_videos[id].title`，但网格页采集时会存成通用页名
@@ -430,6 +430,44 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
   实现入口：`buildPickerBox(root)` / `openPicker()` / `closePicker()` / `loadPickerList()` /
   `renderPickerList()` / `pickSelectAll(on)` / `confirmPicker()` / `ensureExportPickDefault()` / `exportScopeText()`。
   `dts-stats` 回包不改（直接复用 `videos`）。
+
+  · **v0.5.30：`导出风控日志` 换成 `导出词云`**（用户「把原来的插件的导出风控日志换成导出词云，将采集的数据一键导出到词云」）。
+  · **v0.5.31：面板视觉 v3**（客户看完预览图后「采集中是绿的，就按这个改」）——**交互契约零变化**：
+    按钮的 `data-dts-act` 一个没改（`export-scope-pick` / `export-cloud` / `clear-video` / `clear-all` / `picker-*`），
+    面板宽度 310px、基础字号 14px、`line-height: 1.5`、设置浮层 `min-height: 430px` 全部保持；
+    变化只在视觉：三组分栏（`.dts-sec` / `.dts-sec-h`）、单一强调色 `#e0a94a`、主按钮反白、
+    状态点 `.dts-dot-busy` 用绿色 `#6cc59a` + `0 0 0 3px rgba(108,197,154,.16)` 淡环、
+    次要信息 `.dts-meta-line`（total / cursor / 每页 / 风控 一行 11.5px、整行省略号）、
+    底部 `.dts-foot`（「数据只在本地处理」+ `v` + manifest 版本号）、
+    自选浮层选中态改琥珀（`rgba(224,169,74,.14)` + `inset 3px 0 0 #e0a94a`）。
+    空闲时进度条不再跑不确定态动画（只在 `collecting` / `replies` / `waiting-sign` 三个阶段跑）。
+  · **v0.5.35：词云页清空持久化** —— DSH 内嵌词云页把「已清空的导出文件路径」存进 localStorage["cw.embed.v1"]（`{cleared:[], lastPath}`）：`reload()` 先过滤掉 `cleared` 里的文件，再按 `lastPath` 恢复上次看的那份，只有 `auto && cleared.size===0` 时才自动载入最新；点「清空」把当前文件写进 `cleared` 并清 `lastPath`；「找回已清空的 N」清空该集合。所以切会话/刷新页面后不会再把清空的数据装回来。
+· **v0.5.34：词云页空状态居中 + 清空移除下拉条** —— 导出/内嵌词云页的 `.cloud-panel` 加 `position: relative`，空状态 `#cloudEmpty` 只在面板内居中（不再铺满整页、不再挡右侧栏）；DSH 内嵌页点「清空」时把当前载入的导出文件从 `#embedSelect` 列表里移除一条（其余保留，选择退回占位；磁盘文件不删，`刷新列表` 可重新扫到）。
+· **v0.5.33：导出词云页布局稳定 + 加载骨架屏** —— 空状态不再隐藏右栏/评论表（只把内容降透明度），关键词列表固定 322px、评论表固定 620px；加载中给 body 加 `is-loading`，显示 `#skCloud` / `#skTable` / 关键词骨架行，KPI 值用灰色条占位；数据就绪后移除。
+· **v0.5.33：导出词云页布局稳定 + 加载骨架屏** —— 空状态不再隐藏右栏/评论表（只把内容降透明度），关键词列表固定 322px、评论表固定 620px；加载中给 body 加 `is-loading`，显示 `#skCloud` / `#skTable` / 关键词骨架行，KPI 值用灰色条占位；数据就绪后移除。
+· **v0.5.33：导出词云页布局稳定 + 加载骨架屏** —— 空状态不再隐藏右栏/评论表（只把内容降透明度），关键词列表固定 322px、评论表固定 620px；加载中给 body 加 `is-loading`，显示 `#skCloud` / `#skTable` / 关键词骨架行，KPI 值用灰色条占位；数据就绪后移除。
+· **v0.5.33：导出词云页布局稳定 + 加载骨架屏** —— 空状态不再隐藏右栏/评论表（只把内容降透明度），关键词列表固定 322px、评论表固定 620px；加载中给 body 加 `is-loading`，显示 `#skCloud` / `#skTable` / 关键词骨架行，KPI 值用灰色条占位；数据就绪后移除。
+· **v0.5.32：词云分词剥离表情标签** —— 抖音表情是 `[憨笑]` `[流泪]` `[悲伤]` 这种方括号文本，
+    `tokensOf()` 在 `Intl.Segmenter` 前先 `.replace(/\[[^\[\]]{1,12}\]/g, ' ')`，
+    纯表情评论不产生关键词（原实现会把标签里的字当词，点进「悲伤」只看到一条 `[悲伤]`）。
+    导出词云 HTML 内联的分析台（`VIEWER_ASSETS.js`）与 `dsh-comment-viewer` 插件 `app/` 同源，
+    两者都要重新生成/复制；回归断言见 `_test_wordcloud_plugin.mjs` 与 `_test_comment_viewer.mjs`。
+  · **v0.5.32 起 JSON 导出也带 `text_clean`**：`exportComments` 里 `jsonComments = comments.map(c => ({...c, text_clean: cleanText(c.text)}))`，
+    `payload.comments` 用它；插件侧 `collector.mjs` 的 JSON 落盘同样补 `text_clean`。
+    分析台分词优先用 `text_clean`，老文件没有该字段时才现场剥 `[表情]` 兜底。
+  按钮 `data-dts-act="export-cloud"`，文案 `导出词云`，位置在「导出范围 ▾」下一行（原「导出风控日志」的位置）。
+  点击 → `exportCloud()`：先 `ensureExportPickDefault()` 取 `exportPick`（与 CSV/JSON 完全同一个范围口径，空则报错并自动开浮层）
+  → `chrome.runtime.sendMessage({ type: 'dts-cloud', videoIds: pick })`。
+  后台 `case 'dts-cloud'` → `async function exportCloud({ videoIds, videoId })`：
+  逐个视频 `Object.values(await getComments(v))`，非空则收进 `docs[]`（`__name` = `douyin-comments-<id>.json`、
+  `videoId/title/url/collectedAt/count/comments`，形状与插件导出的 JSON 一致）；全空回
+  `{ok:false, error:'EMPTY_POOL', hint:'选中的视频本地都没有评论数据：先采集，再点「导出词云」'}`；
+  成功则 `buildCloudHtml(docs, title)` 生成**自包含 HTML** 并用 `download(html, 'douyin-wordcloud-<tag>-<stamp>.html', 'text/html;charset=utf-8')`
+  落盘（`tag`：多条 `selected<N>`、单条 videoId；与 CSV/JSON 的 `<tag>` 规则相同）。
+  回包 `{ok:true, count, total, videoCount, videoIds, videos, filename, bytes, downloadId, path}`；
+  面板成功提示「已导出词云 <文件名>（N 条 · M 个视频 · K KB）；双击 HTML 打开」。
+  **风控日志**（`exportRiskLog()`、`data-dts-act="export-risk-log"`）连同其 Blob 下载实现一并删除；
+  风控观测（请求次数 / 最近放行时间）仍然显示在面板，只是不再导出。
   **状态镜像（v0.2.9 补充）**：`down('status', {...})` 新增 `localStats`（`{videos,total,current}`）与
   `exportAll`；`localStats` 由 `refreshLocalStats()` 读 `dts-stats` 后填充（面板构建时一次 + 每 20 秒
   一次 + 落库后 + 点「清空」后）。**v0.2.10 起** `refreshLocalStats()` 带请求序号 `localStatsSeq`，
@@ -744,6 +782,30 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
   `video_id` 推进列头、并给每行追加一列；不带该选项时列数、列序完全不变（`multi` = 全部视频，
   或自选 ≥2 条；自选 1 条与单选视频同列数）。
 - 导出是**只读**操作：不删、不改任何存储键（面板「清空」按钮才走 `dts-clear`，见 §3.6）。
+- **v0.5.30 词云快照（`dts-cloud`）**：产物是**一个 HTML 文件**，必须满足
+  ① 样式与脚本全内联（不引用 `styles.css` / `app.js`，不联网）；② 数据写在
+  `window.__CW_BOOT__ = { exportedAt, title, docs: [<与导出 JSON 同形状的对象>] }`；
+  ③ 打开即渲染（`comment-viewer/app.js` 的 `bootFromSnapshot()` 读它，仍兼容手动选文件与 `?data=`）；
+  ④ 文件名 `douyin-wordcloud-<videoId|selectedN>-<stamp>.html`。
+  实现要点：词云页三文件由 `devkit/_gen_viewer_assets.mjs` 灌进 `background.js` 的
+  `/* === BEGIN VIEWER ASSETS === */ … /* === END VIEWER ASSETS === */` 生成块（**扩展仍是 8 个文件**，
+  勿手改该块；改 `comment-viewer/` 后重跑生成脚本 + `sync-extension.mjs`）；
+  模板替换必须用**函数式** `String.prototype.replace(needle, () => replacement)`，
+  否则词云页里的 `$$(sel)` 会被替换串转义成 `$`（实测报 `Identifier '$' has already been declared`）。
+  判据：`_probe_cloud_0530.mjs`（16 项：按钮存在/旧按钮消失/下载完成/文件名/面板提示/
+  快照内嵌 `__CW_BOOT__`/内联无外链/`$$` 未被吞/`file://` 打开后词云与行数正确/无 JS 报错/
+  自选 2 条时快照里两个视频的数据）。
+- **v0.5.38 词云也能被 AI / MCP 触发（Hub `cloud` 命令）**：入参
+  `{ type: "cloud", args: { videoId?, videoIds?: string[], all?: boolean } }`，优先级
+  `all > videoIds > videoId`（与 `export` 一致）；内部调 `exportCloud({ videoIds })`
+  （与面板「导出词云」同一份实现）。回包：成功主体放 `result`——
+  `{ok:true, result:{ok, count, videoCount, videoIds, videos:[{videoId,title,count}], filename, bytes, downloadId, path}}`；
+  失败保持顶层 `{ok:false, error, hint}`，口径与导出一致：既没 `videoId`/`videoIds`/`all:true` →
+  `MISSING_VIDEO_ID`；选中的视频本地都没数据 → `EMPTY_POOL`（不落空文件）。
+  MCP 对应第 11 个工具 `ai_export_wordcloud`；DSH 插件对应参数 `cloud:true` 与返回值 `htmlPath`
+  （`collector.mjs` 采完点面板 `[data-dts-act="export-cloud"]` 并用 `waitForEvent('download')` + `dl.saveAs` 落盘）。
+  判据：`dsh-douyin-comments/_probe_hub_cloud_0538.mjs` **9/9**（独立端口 18766 避免用户自己的浏览器抢
+  hub 命令；正向导出 163 条 / 237 KB 自包含 HTML / `file://` 打开后 `state.comments=163`；负向 `EMPTY_POOL`）。
 - **v0.2.11 起导出只有一份实现**：面板「导出 CSV/JSON」（`dts-export`）与 Hub(AI/MCP) 的 `export`
   命令**共用** `background.js` 的 `async function exportComments(opts)`（`case 'export':` 与面板按钮
   路径都走它），行为完全一致；Hub `export` 也支持 `all:true`（不传 `videoId` 时把本地所有视频合成
@@ -779,6 +841,9 @@ SW 里 `exportComments.toString()` 却是旧的。正式路径已按扩展 hash 
 6. 去重有效：唯一数 ≤ 返回总条数，且无重复 cid
 7. 面板存在、进度条随采集更新、按钮可点
 8. 存储里 `dts_videos[videoId].count` 与实际一致；导出 CSV 能被产生。
+   **v0.5.30 追加**：面板有「导出词云」、没有「导出风控日志」；点它产生一个 `douyin-wordcloud-*.html`，
+   该文件 `file://` 打开后词云有词、评论数与导出的一致、无 JS 报错（见 §3.10「词云快照」与 `_probe_cloud_0530.mjs`）。
+
    **导出要验三条**（只验「`downloads.download` 被调用」不够，旧代码会在文件没写盘时就报成功）：
    - 正常完成：文件真的落盘（默认下载目录，文件名 `douyin-comments-<videoId>-<时间戳>.csv`），
      `chrome.downloads.search` 里 `state==='complete'`、`exists===true`、`filename` 非空，面板说「已导出」

@@ -1,9 +1,53 @@
 # dsh-douyin-comments
 
 DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**，注册一个工具 `douyin_comments`。
-（插件版本 0.5.29；**v0.5.15 起插件 / 内置扩展「抖音评论采集器」/ MCP `douyin-collector-mcp` 三件套统一编号**，同为 `0.5.29`。）
+（插件版本 0.5.38；**v0.5.15 起插件 / 内置扩展「抖音评论采集器」/ MCP `douyin-collector-mcp` 三件套统一编号**，同为 `0.5.38`。）
 
-**0.5.29 变更**（2026-10-20 客户「那加这个兜底」）：CSV 的 `user_unique_id`（抖音号）为空时
+**0.5.38 变更**（2026-10-21）：新增 `cloud` 参数与 `htmlPath` 返回值 —— 采完顺手导出一份**自包含词云 HTML**（内联数据 + 内联样式脚本，双击即看、可发给别人、数据不出本机）；同时 Hub 增加 `cloud` 命令、MCP 增加 `ai_export_wordcloud`，三条路产出一致。自测：verify-tool 228/228；hub 真机探针 9/9；词云页 26/26；独立分析台 44/44。
+
+**0.5.37 变更**（2026-10-21）：词云页两栏等高；内嵌页「管理记录」支持勾选多条导出批量删除（`POST /api/delete`，真删磁盘文件）；移除「找回已清空的」。自测：嵌入页 25/25。
+
+**0.5.36 变更**：词云骨架屏改成 8 块大块（替代 18 条细碎小条）。
+
+**0.5.35 修正**（2026-10-21）：词云页「清空」改成持久记忆——已清空的导出文件记在 `localStorage['cw.embed.v1']`，刷新页面/切会话后不会再被自动装回来；右上角多一个「找回已清空的 N」入口。自测：嵌入页 23/23。
+
+**0.5.34 修正**（2026-10-21）：① 词云页空状态不再铺满整页、限制在词云面板内居中（`.cloud-panel{position:relative}`）；② 内嵌词云页点「清空」时把刚清空那条从右上角文件下拉里移除（其余保留、选择退回占位，磁盘文件不删）。自测：嵌入页 21/21、独立分析台 44/44。
+
+**0.5.33 变更**（2026-10-21）：导出词云页（`app/`，随扩展内联）与 DSH 内嵌词云页同步改版——① 空/有数据布局恒定（右栏与评论表不再消失，切数据不重排）；② 加载时显示骨架屏（KPI / 词云 / 关键词 / 表格），解析完成后替换；③ 「清空」只清已载入数据，右上角文件下拉保留磁盘文件列表、选择退回「请选择要查看的导出文件…」。自测：嵌入页 21/21、独立分析台 44/44。
+
+**0.5.33 变更**（2026-10-21）：导出词云页（`app/`，随扩展内联）与 DSH 内嵌词云页同步改版——① 空/有数据布局恒定（右栏与评论表不再消失，切数据不重排）；② 加载时显示骨架屏（KPI / 词云 / 关键词 / 表格），解析完成后替换；③ 「清空」只清已载入数据，右上角文件下拉保留磁盘文件列表、选择退回「请选择要查看的导出文件…」。自测：嵌入页 21/21、独立分析台 44/44。
+
+**0.5.33 变更**（2026-10-21）：导出词云页（`app/`，随扩展内联）与 DSH 内嵌词云页同步改版——① 空/有数据布局恒定（右栏与评论表不再消失，切数据不重排）；② 加载时显示骨架屏（KPI / 词云 / 关键词 / 表格），解析完成后替换；③ 「清空」只清已载入数据，右上角文件下拉保留磁盘文件列表、选择退回「请选择要查看的导出文件…」。自测：嵌入页 21/21、独立分析台 44/44。
+
+**0.5.33 变更**（2026-10-21）：导出词云页（`app/`，随扩展内联）与 DSH 内嵌词云页同步改版——① 空/有数据布局恒定（右栏与评论表不再消失，切数据不重排）；② 加载时显示骨架屏（KPI / 词云 / 关键词 / 表格），解析完成后替换；③ 「清空」只清已载入数据，右上角文件下拉保留磁盘文件列表、选择退回「请选择要查看的导出文件…」。自测：嵌入页 21/21、独立分析台 44/44。
+
+**0.5.32 变更**（2026-10-21 客户「能看到有个词是悲伤，点进去就是[悲伤]」）：
+
+- 词云分词前剥离抖音表情标签 `[憨笑]` / `[流泪]` / `[悲伤]`（`tokensOf()` 里 `/\[[^\[\]]{1,12}\]/g`），
+  **纯表情评论不再贡献关键词**；扩展「导出词云」内联的分析台与 DSH 嵌入插件 `dsh-comment-viewer` 同步修复。
+- **JSON 导出补上 `text_clean`**（与 CSV 的「文本(去表情话题)」同口径）：扩展 `background.js` 与插件 `collector.mjs` 两处 JSON 都写，
+  分析台 / 词云直接用它分词，老文件缺字段时才现剥 `[表情]`。
+- 回归：`node verify-tool.mjs` 223/223、`_test_wordcloud_plugin.mjs` 15/15、`_test_comment_viewer.mjs` 44/44。
+
+**0.5.31 变更**（2026-10-21 客户「插件 UI 还能再美化吗」→ 看完预览图「采集中是绿的，就按这个改」）：
+
+- 面板视觉改版 v3：**三组分栏**（采集 / 导出 / 清理）、**只留一个琥珀强调色**（`#e0a94a`）、
+  **「开始采集」白底黑字反白**、状态点语义色（**采集中 = 绿** + 淡环）、次要信息压成一行小字、
+  数字等宽、底部「数据只在本地处理 + 版本号」。
+- 去掉 5 处渐变与 16 处发光阴影；字号收敛到 14 / 12.5 / 11 三档；圆角 6 / 10 两档。
+- **交互与契约零变化**：按钮 `data-dts-act` 一个没改、面板仍 310px / 14px、设置浮层仍撑高 430px、自选浮层逻辑不变。
+- 自选浮层选中态从蓝改成琥珀（`rgba(224,169,74,.14)` + 左侧 3px 实条），更贴合新的单一强调色。
+- 自测 `verify-tool.mjs` 222/222；真机探针 6 组全绿（设置浮层 / 自选选中态 13/13 / 自选导出 20/20 / 全部清空 19/19 / 标题 8/8 / 词云导出 16/16）。
+- 生效方式：重装扩展 zip 或重启 `dsh web`（Chrome 会缓存扩展背景脚本，装完要刷新抖音页）。
+
+上一条 **0.5.30 变更**（2026-10-21 用户「把原来的插件的导出风控日志换成导出词云，将采集的数据一键导出到词云」）：
+面板原来的「导出风控日志」按钮换成「**导出词云**」——点一下就把「导出范围 ▾」选中的视频评论打包成**一个自包含 HTML**
+（词云页的 html/css/js 全内联、数据进 `window.__CW_BOOT__`）。下载后**双击即交互词云**：悬停看词的评论、点词看全部、
+点评论跳用户主页、按视频/一级评论/有主页筛选、导出筛选结果；文件可以直接微信/邮件发给别人，对方不用装扩展、不用起服务、数据不出本机。
+风控观测（请求次数 / 最近放行时间）仍在面板显示，只是不再导出日志。实测：`162 条 · 1 个视频 · 237 KB`，
+`file://` 打开后词云 73 词、评论 162 条、无 JS 报错（`_probe_cloud_0530.mjs` 16/16）。扩展文件数仍是 8 个
+（词云页源码以生成块内联进 `background.js`：`devkit/_gen_viewer_assets.mjs` 灌入，改完词云页要重跑生成脚本 + `sync-extension.mjs`）。
+上一条 **0.5.29 变更**（2026-10-20 客户「那加这个兜底」）：CSV 的 `user_unique_id`（抖音号）为空时
 **改填数字短号**（`u.unique_id || u.short_id`），不新增列（单视频仍 19 列 / 多条 20 列），
 中文说明行标签改为 `抖音号(空则填数字短号)`。JSON / AI 返回里的原始字段不动。自测 **217/217**。
 
@@ -667,12 +711,14 @@ dsh plugin --profile web add file:D:\dycopy\dsh-douyin-comments
 | `outDir` | string | **当前会话工作区**/`douyin-comments` | 输出目录。默认写进调用者自己的工作区，CSV/JSON 就在他的项目目录里；取不到会话工作区（非 agent 调用）时退回 `~/.dsh/douyin-collector/out` |
 | `keepOpen` | boolean | false | 调试：采完不关窗口 |
 | `failSnapshot` | boolean | 设置里的值（出厂 true） | **0.5.14 新增**：本次失败/没采完时是否存现场快照；**运行日志每次调用都会写**（不受它影响） |
+| `cloud` | boolean | false | **0.5.38 新增**：采完顺手导出一份**自包含词云 HTML**（词云页 + 内联数据，双击即看、可发给别人）；路径见返回值 `htmlPath`。导出失败只写日志，不影响采集结果 |
 
 ## 返回值
 
 `ok`、`error`、`videoId`、`title`、`count`、`csvPath`、`jsonPath`、`phase`、`lanes`、`note`、
 `durationSec`、`extensionVersion`、`extensionInstalled`、`sample`（前 5 条预览）、
-`logPath`（0.5.14 新增：本次运行日志文件）、`snapshotDir`（0.5.14 新增：失败现场目录，正常采完是空串）。
+`logPath`（0.5.14 新增：本次运行日志文件）、`snapshotDir`（0.5.14 新增：失败现场目录，正常采完是空串）、
+`htmlPath`（0.5.38 新增：`cloud:true` 时导出的词云 HTML 路径，没开或导出失败是空串）。
 
 `csvPath` / `jsonPath` 默认指向**调用方自己会话的工作区**：`<workspace>\douyin-comments\douyin-comments-<videoId>-<时间>.{csv,json}`
 （会话工作区取自 `exec.agent.session.header.cwd`；取不到才退回 `~/.dsh/douyin-collector/out`）。
@@ -895,23 +941,23 @@ node sync-extension.mjs D:\path\to\ext
 ## 打包 / 发布
 
 **正式分发走 GitHub Releases**（仓库里不放二进制包，`release/` 只在本地做打包输出）：
-<https://github.com/monagisa/douyin-ai-collector/releases> —— 当前版本 [v0.5.29](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.29)，
-附件有 `dsh-douyin-comments-v0.5.29.zip`（整目录单文件）、`dsh-douyin-comments-0.5.29.tgz`、
-`douyin-collector-extension-v0.5.29.zip`、`douyin-collector-mcp-v0.5.29.zip`、`USAGE-zh-CN.md`（中文说明，zip 里叫 `使用说明.md`）、`SHA256SUMS.txt`。
-**v0.5.15 起三件套同号**（插件 = 扩展 = MCP = `0.5.29`）。
+<https://github.com/monagisa/douyin-ai-collector/releases> —— 当前版本 [v0.5.31](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.31)，
+附件有 `dsh-douyin-comments-v0.5.31.zip`（整目录单文件）、`dsh-douyin-comments-0.5.31.tgz`、
+`douyin-collector-extension-v0.5.31.zip`、`douyin-collector-mcp-v0.5.31.zip`、`USAGE-zh-CN.md`（中文说明，zip 里叫 `使用说明.md`）、`SHA256SUMS.txt`。
+**v0.5.15 起三件套同号**（插件 = 扩展 = MCP = `0.5.31`）。
 更早一版 [v0.5.17](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.17)（CSV 末尾加 3 列用户标识）、
 [v0.5.16](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.16)（修 8 处数据正确性缺陷）。
 
-本地发布物在 `D:\dycopy\release\dsh-douyin-comments-v0.5.29\`：
+本地发布物在 `D:\dycopy\release\dsh-douyin-comments-v0.5.31\`：
 
 | 文件 | 说明 |
 | --- | --- |
-| `dsh-douyin-comments-0.5.29.tgz` | 插件本体，14 个文件（`index.js`/`collector.mjs`/`cordis.patch.yml`/`README.md`/`package.json` + `client/client.js` + `extension/` 8 个） |
-| `douyin-collector-extension-v0.5.29.zip` | 单独的扩展 zip，顶层目录 `douyin-collector/`（8 个文件），供 `chrome://extensions` 手动「加载已解压的扩展程序」（**本版扩展代码与 manifest 版本号都变了 ⇒ 必须重新打包**，不能沿用旧 zip） |
+| `dsh-douyin-comments-0.5.31.tgz` | 插件本体，14 个文件（`index.js`/`collector.mjs`/`cordis.patch.yml`/`README.md`/`package.json` + `client/client.js` + `extension/` 8 个） |
+| `douyin-collector-extension-v0.5.31.zip` | 单独的扩展 zip，顶层目录 `douyin-collector/`（8 个文件），供 `chrome://extensions` 手动「加载已解压的扩展程序」（**本版扩展代码与 manifest 版本号都变了 ⇒ 必须重新打包**，不能沿用旧 zip） |
 | `使用说明.md` | 给收件人看的中文说明（安装/扫码/两处设置/参数/FAQ/macOS） |
 | `SHA256SUMS.txt` | 三个文件的 SHA256 |
 
-整包单文件 `dsh-douyin-comments-v0.5.29.zip`（把上面整目录打成一个单文件，方便直接发给人）**也放在同一个 `release\dsh-douyin-comments-v0.5.29\` 目录里**（v0.5.12 起改为随版本目录存放，不再放在 `release\` 根下）。
+整包单文件 `dsh-douyin-comments-v0.5.31.zip`（把上面整目录打成一个单文件，方便直接发给人）**也放在同一个 `release\dsh-douyin-comments-v0.5.31\` 目录里**（v0.5.12 起改为随版本目录存放，不再放在 `release\` 根下）。
 
 更早的草稿目录（`D:\dycopy\release\dsh-douyin-comments-v0.5.7\` 及以前）都保留作对照，不删。
 
@@ -919,14 +965,14 @@ node sync-extension.mjs D:\path\to\ext
 
 ```powershell
 cd D:\dycopy\dsh-douyin-comments
-npm pack --pack-destination D:\dycopy\release\dsh-douyin-comments-v0.5.29
+npm pack --pack-destination D:\dycopy\release\dsh-douyin-comments-v0.5.31
 
 # 扩展开 zip（顶层目录名必须是 douyin-collector；只装 8 个运行文件，别把 md 打进去）。
 # 用 .NET ZipFile 逐个 CreateEntry 造，避免 Compress-Archive 多套一层目录：
-# 本版扩展的**代码和 manifest 版本号都变了**（0.5.17 → 0.5.29），**必须重新打**，不能沿用旧 zip。
-$rel = 'D:\dycopy\release\dsh-douyin-comments-v0.5.29'
+# 本版扩展的**代码和 manifest 版本号都变了**（0.5.17 → 0.5.31），**必须重新打**，不能沿用旧 zip。
+$rel = 'D:\dycopy\release\dsh-douyin-comments-v0.5.31'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-$zip = [IO.Compression.ZipFile]::Open("$rel\douyin-collector-extension-v0.5.29.zip", 'Create')
+$zip = [IO.Compression.ZipFile]::Open("$rel\douyin-collector-extension-v0.5.31.zip", 'Create')
 Get-ChildItem D:\dycopy\douyin-collector -File |
   Where-Object { $_.Extension -in '.js','.json','.css','.html' } |
   ForEach-Object { [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $_.FullName, "douyin-collector/$($_.Name)") | Out-Null }

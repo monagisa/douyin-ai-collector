@@ -866,6 +866,8 @@ export async function collectDouyinComments(o = {}) {
     ? Math.max(0, Number(DEFAULTS.waitLoginSec) || 0)
     : Math.max(0, Number(o.waitLoginSec) || 0);
   const outDir = o.outDir || DEFAULTS.outDir;
+  // v0.5.38：可选「顺手导一份交互词云 HTML」（点面板「导出词云」按钮，把下载文件搬到 outDir）
+  const wantCloud = o.cloud === true || o.cloud === 'true' || o.cloud === 1 || o.cloud === '1';
   // 失败现场快照：默认开（插件设置 failSnapshot / 工具参数可关；关掉就没有截图和整页 HTML）
   const failSnapshot = o.failSnapshot === undefined || o.failSnapshot === null || o.failSnapshot === ''
     ? DEFAULTS.failSnapshot !== false
@@ -1600,18 +1602,45 @@ export async function collectDouyinComments(o = {}) {
     const csvPath = base + '.csv';
     const jsonPath = base + '.json';
     fs.writeFileSync(csvPath, '\uFEFF' + toCsv(fresh), 'utf8');   // BOM：Excel 直接开中文
+    // v0.5.32：JSON 也带 text_clean（与 CSV 同口径），词云/分析台直接用它分词
+    const jsonComments = fresh.map((c) => Object.assign({}, c, { text_clean: cleanText(c && c.text) }));
     fs.writeFileSync(jsonPath, JSON.stringify({
       videoId, title, url: target, collectedAt: new Date().toISOString(),
       count: fresh.length, phase: finalStatus.phase, note: finalStatus.note || '',
       extension: { dir: ext.dir, version: ext.version, source: ext.sourceWhy },
-      freshOnly: true, comments: fresh,
+      freshOnly: true, comments: jsonComments,
     }, null, 2), 'utf8');
 
     const dur = ((Date.now() - started) / 1000).toFixed(1);
     log(`写盘完成：${fresh.length} 条（本轮新采）→ ${csvPath}`);
 
+    // ⑨b 可选：交互词云 HTML（v0.5.38）。走面板按钮 → 扩展 background 生成自包含 HTML → 浏览器下载，
+    // 这里把下载文件另存到 outDir。失败不影响评论数据（只在 note/日志里写一句）。
+    let htmlPath = '';
+    if (wantCloud) {
+      try {
+        const btn = page.locator('#dts-collector-panel [data-dts-act="export-cloud"]').first();
+        if (!(await btn.count())) {
+          log('词云导出跳过：面板上没有「导出词云」按钮（扩展可能太旧，需要 v0.5.30+）');
+        } else {
+          const [dl] = await Promise.all([
+            page.waitForEvent('download', { timeout: 90000 }),
+            btn.click({ timeout: 15000 }),
+          ]);
+          const name = String(dl.suggestedFilename() || `douyin-wordcloud-${videoId || 'unknown'}-${stamp}.html`)
+            .replace(/[\\/:*?"<>|\s]+/g, '_');
+          const dest = path.join(outDir, name.endsWith('.html') ? name : name + '.html');
+          await dl.saveAs(dest);
+          htmlPath = dest;
+          log('词云 HTML：' + htmlPath);
+        }
+      } catch (e) {
+        log('词云导出失败（不影响评论数据）：' + String((e && e.message) || e));
+      }
+    }
+
     return {
-      ok: true, error: '', videoId, title, count: fresh.length, csvPath, jsonPath,
+      ok: true, error: '', videoId, title, count: fresh.length, csvPath, jsonPath, htmlPath,
       phase: finalStatus.phase, paused, note: finalStatus.note || '',
       panel: finalStatus.panel, durationSec: Number(dur), outDir, url: target,
       extLanes: effLanes ? Number(effLanes.lanes) || 0 : 0,
