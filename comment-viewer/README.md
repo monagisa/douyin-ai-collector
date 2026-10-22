@@ -74,10 +74,10 @@ node <taste-skill>/skills/taste-skill/scripts/inspect.mjs "http://127.0.0.1:8791
 
 ```powershell
 # 方式 A：Python
-python -m http.server 8791 --directory D:\dycopy\comment-viewer
+python -m http.server 8791 --directory comment-viewer
 
 # 方式 B：Node
-npx --yes serve -l 8791 D:\dycopy\comment-viewer
+npx --yes serve -l 8791 comment-viewer
 ```
 
 然后浏览器打开 <http://127.0.0.1:8791/>。
@@ -190,7 +190,7 @@ comment-viewer/
 
 ## 自动化测试
 
-真机验证脚本在 `D:\dycopy\devkit\_test_comment_viewer.mjs`（Playwright 载入真实导出 JSON/CSV，
+真机验证脚本在 `devkit/_test_comment_viewer.mjs`（Playwright 载入真实导出 JSON/CSV，
 断言词云词数、悬停放大与悬浮框、点击评论弹出用户主页、表格分页、CSV 说明行跳过等）。
 
 ## 关键词算法（v2.7）

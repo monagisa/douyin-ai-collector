@@ -13,7 +13,7 @@
 | 实现者 B | `douyin-collector/panel.css`、`douyin-collector-test/*` | 只这些 |
 | AI Hub / MCP | `douyin-mcp/*` | 只这些（独立包，不写入扩展目录） |
 
-**实现者 B 的测试脚本绝不可写入 `douyin-collector/`**；测试 profile 仅本地使用，**禁止提交 Git**（见仓库 `.gitignore`）。旧说明中的绝对路径 `D:\dycopy\...` 仅作者本机有效，文档一律改用相对路径。
+**实现者 B 的测试脚本绝不可写入 `douyin-collector/`**；测试 profile 仅本地使用，**禁止提交 Git**（见仓库 `.gitignore`）。旧说明中的绝对路径 `...` 仅作者本机有效，文档一律改用相对路径。
 
 ## 1. 主世界 ↔ 隔离世界 桥（`window.postMessage`）
 

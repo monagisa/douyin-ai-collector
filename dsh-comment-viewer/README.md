@@ -10,7 +10,7 @@
 ## 安装
 
 ```powershell
-dsh plugin --profile desktop add D:\dycopy\dsh-comment-viewer
+dsh plugin --profile desktop add dsh-comment-viewer
 ```
 
 装完**重启 DSH**（关闭再打开，或重启 `dsh` 进程）即可在左侧栏看到「评论词云」。
@@ -91,17 +91,17 @@ dsh-comment-viewer/
 └─ app/                  # 评论分析台本体（index.html / styles.css / app.js）
 ```
 
-`app/` 是 `D:\dycopy\comment-viewer\` 的嵌入式副本，改那边之后把三个文件复制过来即可。
+`app/` 是 `comment-viewer\` 的嵌入式副本，改那边之后把三个文件复制过来即可。
 
 ## 验证
 
 ```powershell
 # 服务端 + 嵌入页面（不需要 DSH）
-node D:\dycopy\devkit\_test_wordcloud_plugin.mjs   # 12/12
+node devkit/_test_wordcloud_plugin.mjs   # 12/12
 
 # 真的嵌进 DSH UI（先用 wvtest profile 起一个测试实例）
 dsh --profile wvtest --port 3099 --no-open
-node D:\dycopy\devkit\_probe_wordcloud_in_dsh.mjs <token>   # 8/8
+node devkit/_probe_wordcloud_in_dsh.mjs <token>   # 8/8
 ```
 
 ## 限制

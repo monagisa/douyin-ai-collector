@@ -90,7 +90,7 @@ DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**
 
 1. 去掉自选导出浮层里的「读取真实标题」按钮（v0.5.24 加的手动补标题入口）及其 `.dts-btn-wide` 样式。
 2. 自动补全保留：打开浮层发现通用页名（「抖音精选电脑版」等）时仍会自动开隐藏标签页读详情页标题并写回。
-   自测 **215/215**、真机 **6/6**（日志 `D:\dycopy\devkit\_probe-titles-0525.txt`）。
+   自测 **215/215**、真机 **6/6**（日志 `devkit/_probe-titles-0525.txt`）。
    （**v0.5.26 起连自动补也删掉了**，见上方 0.5.26 变更。）
 
 **0.5.24 新增**（2026-10-20 用户「很难区分啊，能不能把这个变成视频的标题」）：
@@ -100,14 +100,14 @@ DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**
    `https://www.douyin.com/video/<id>` 读详情页标题补全（只改 `dts_videos[id].title`，不动评论数据）。
 2. 每行标题下加小字 `ID <末 8 位> · 采集 <MM-DD HH:mm>`；标题仍是通用页名的先显示 `视频 <末 8 位>`；
    浮层打开时自动补一次（v0.5.25 起没有手动按钮；v0.5.26 起不再自动补）。自测 **214/214**、真机 **7/7**
-   （日志 `D:\dycopy\devkit\_probe-titles-0524.txt`，截图 `D:\dycopy\devkit\_panel-0524-titles@2x.png`）。
+   （日志 `devkit/_probe-titles-0524.txt`，截图 `devkit/_panel-0524-titles@2x.png`）。
 
 **0.5.23 新增**（2026-10-20 用户「导出视频那里，选中没有提示」）：
 
 1. 自选导出浮层的选中反馈加强：选中行**整行淡蓝底 + 左侧 3px 亮条**、标题加粗提亮、复选框 15→**17px**；
    顶部「已选 K 个（约 M 条）」变蓝加粗，确认按钮变成「导出选中的 K 个…」；点整行任意位置（含标题）都能勾选。
 2. 纯 CSS + 一行 `classList.toggle('dts-has-sel', …)`，导出协议不变；自测 **212/212**、真机 **13/13**
-   （日志 `D:\dycopy\devkit\_probe-picksel-0523.txt`，截图 `D:\dycopy\devkit\_panel-0523-picker-selected@2x.png`）。
+   （日志 `devkit/_probe-picksel-0523.txt`，截图 `devkit/_panel-0523-picker-selected@2x.png`）。
 
 **0.5.22 修复**（2026-10-20 用户「全部清空后，选择的导出的视频不会变，我要点进去才会变回来」）：
 
@@ -115,7 +115,7 @@ DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**
    面板按钮立刻回到「导出范围：本条视频 ▾」；单条「清空」也会把该视频从选择里剔掉、空了回默认。
 2. 根因是两条清空路径都先 `setPhase()`（内部 `render()`）再改 `exportPick`，所以画的是旧选择，
    要等下一次刷新才更新；现在改成**先改选择再 `setPhase()`**。
-3. 自测 211/211、真机 19/19（临时 profile + 种数据，不碰真实采集数据；日志 `D:\dycopy\devkit\_probe-clearall-0522.txt`）。
+3. 自测 211/211、真机 19/19（临时 profile + 种数据，不碰真实采集数据；日志 `devkit/_probe-clearall-0522.txt`）。
 
 **0.5.21 新增**（2026-10-20 用户「那本条和全部那个就可以不要了」）：
 
@@ -125,7 +125,7 @@ DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**
 2. 用户亲手改过选择后**不再自动跟随当前视频**；没选就点导出会自动打开浮层。
 3. 工具参数与后台协议**不变**（`all` / `videoId` / `videoIds` 仍可用，只是面板不再发 `all:true`）；
    纯前端改动 + `sync-extension.mjs`，自测 210/210、真机探针 18/18
-   （日志 `D:\dycopy\devkit\_probe-pick-0521.txt`）。
+   （日志 `devkit/_probe-pick-0521.txt`）。
 
 **0.5.20 新增**（2026-10-20 用户反馈「导出只能本条 / 全部，限制有点大」）：
 
@@ -136,7 +136,7 @@ DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**
 2. MCP `ai_export` 新增 **`videoIds: [...]`** 参数（优先级 `all` > `videoIds` > `videoId`）；
    旧扩展会把这种请求当缺 `videoId` 并提示升级到 v0.5.20。
    三件套版本同步 `0.5.20`，自测 **209/209** 全绿（新增 7 条自选导出断言）。真机验证
-   `_probe_pick_0520.mjs` **13/13 PASS**（日志 `D:\dycopy\devkit\_probe-pick-0520.txt`）：
+   `_probe_pick_0520.mjs` **13/13 PASS**（日志 `devkit/_probe-pick-0520.txt`）：
    浮层列出本地 5 个视频 → 勾 2 个（109 + 1365 条）导出 `douyin-comments-selected2-<ts>.csv`
    **421676 B / 21 列 / 末列 `video_id` / 行数 1474 = 109+1365**，视频 id 正好那两个；改选 1 个
    导出 `douyin-comments-7600000000000000010-<ts>.csv` **20 列**。
@@ -607,7 +607,7 @@ DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**
 方式一：目录安装（本机开发/自己用）
 
 ```powershell
-dsh plugin --profile web add file:D:\dycopy\dsh-douyin-comments
+dsh plugin --profile web add file:dsh-douyin-comments
 ```
 
 方式二：tarball 安装（把包发给别人时用）
@@ -630,8 +630,8 @@ dsh plugin --profile web add file:C:\path\to\dsh-douyin-comments-0.5.12.tgz
 更新插件代码后：
 
 ```powershell
-Remove-Item C:\Users\mo\.dsh\profiles\web\node_modules\dsh-douyin-comments -Recurse -Force
-dsh plugin --profile web add file:D:\dycopy\dsh-douyin-comments
+Remove-Item ~/.dsh/profiles\web\node_modules\dsh-douyin-comments -Recurse -Force
+dsh plugin --profile web add file:dsh-douyin-comments
 # 覆盖安装同名包：重启 DSH 才会加载新版本代码
 ```
 
@@ -800,7 +800,7 @@ dsh plugin --profile web add file:D:\dycopy\dsh-douyin-comments
 ## 自测
 
 ```powershell
-cd D:\dycopy\dsh-douyin-comments
+cd dsh-douyin-comments
 node verify-tool.mjs                                     # 离线：工具定义 + 自动装扩展（不开浏览器）
 $env:DTS_MAX='60'; node verify-tool.mjs --live https://www.douyin.com/video/7600000000000000011
 node _test_freshness.mjs https://www.douyin.com/video/7600000000000000010 60 300   # 两轮 + 文件自洽
@@ -814,7 +814,7 @@ node _probe_pick_0520.mjs https://www.douyin.com/video/7600000000000000010      
 | 用例 | 结果 |
 | --- | --- |
 | 离线自检 `node verify-tool.mjs` | **209/209 全绿**（0.5.19 为 202；新增 7 条：background 的 `videoIds`/`multi`/`fileTag`/`scopeTag`/`EMPTY_POOL scope:'selected'`、content 的自选浮层与 `exportPick`、MCP `ai_export.videoIds`） |
-| 真机浮层 + 多选/单选导出（`_probe_pick_0520.mjs`，日志 `D:\dycopy\devkit\_probe-pick-0520.txt`） | **13/13 PASS**：浮层列出本地 5 个视频；勾 2 个（109 + 1365 条）→ info「已选 2 个（约 1474 条）」、按钮「自选视频（2 条）」→ 导出 `douyin-comments-selected2-<ts>.csv` **421676 B、21 列、末列 `video_id`、行数 1474 = 109+1365、视频 id 正好是勾的那两个**；改选 1 个 → `douyin-comments-7600000000000000010-<ts>.csv` **20 列**（不加 `video_id`） |
+| 真机浮层 + 多选/单选导出（`_probe_pick_0520.mjs`，日志 `devkit/_probe-pick-0520.txt`） | **13/13 PASS**：浮层列出本地 5 个视频；勾 2 个（109 + 1365 条）→ info「已选 2 个（约 1474 条）」、按钮「自选视频（2 条）」→ 导出 `douyin-comments-selected2-<ts>.csv` **421676 B、21 列、末列 `video_id`、行数 1474 = 109+1365、视频 id 正好是勾的那两个**；改选 1 个 → `douyin-comments-7600000000000000010-<ts>.csv` **20 列**（不加 `video_id`） |
 | 探针注意（踩坑记录） | 探针直接 `launchPersistentContext` 时必须先调 `clearStaleScriptCaches(profile)`：Chrome 会缓存扩展 background（MV3 SW）的编译脚本，**扩展文件变了、manifest 版本号变了，浏览器里仍跑旧 background.js**（本次排查「导出没生效」就是它，正式路径 `collectDouyinComments` 已按扩展 hash 自动清理） |
 
 实测记录（2026-10-07，v0.5.15 + 扩展 0.5.15，**纯版本号统一**）：
@@ -823,7 +823,7 @@ node _probe_pick_0520.mjs https://www.douyin.com/video/7600000000000000010      
 | --- | --- |
 | 离线自检 `node verify-tool.mjs` | **193/193 全绿**（与 0.5.14 同为 193；其中版本相关断言已改：`三件套版本统一：插件 package.json / 扩展 manifest / MCP package.json 都是 0.5.15`、`MCP VERSION = 0.5.15（与 package.json 对齐；三件套统一编号）`，两条扩展版本下限断言改成 `verAtLeast()` 语义比较，不再写死数字） |
 | 版本号一致性 | `douyin-collector/manifest.json` / `dsh-douyin-comments/extension/manifest.json` / `dsh-douyin-comments/package.json` / `douyin-mcp/package.json` / `douyin-mcp/mcp.js` 的 `VERSION` **全部 0.5.15**；打包物名同步为 `dsh-douyin-comments-0.5.15.tgz`、`douyin-collector-extension-v0.5.15.zip`、`douyin-collector-mcp-v0.5.15.zip`、`dsh-douyin-comments-v0.5.15.zip` |
-| **打包验收（`pkgtest` profile 装 `dsh-douyin-comments-0.5.15.tgz` 后 headless 真采）** | **PASS**（2026-10-07）：`dsh plugin --profile pkgtest add file:D:\dycopy\release\dsh-douyin-comments-v0.5.15\dsh-douyin-comments-0.5.15.tgz` → pkgtest **0.5.14 → 0.5.15**、`--dump-config` 认到 `dsh-douyin-comments`；headless 真采视频 `7600000000000000010`（`max=30`、先清空）→ **`count=214` = 一级 104 + 二级 110（19/38 个线程、50 次回复请求）**、`phase=done`、**33.4s**、顶层列表 **3 路（错峰）**、**扩展自报 `0.5.15`**（`source:'插件自带（随包分发）'`）；运行日志 `C:\Users\mo\.dsh\douyin-collector\logs\collect-2026-10-07T06-50-34-21460.log`（末行 `[+33.4s] 收工原因：done（phase=done，页面侧 214 条）`、`[+33.4s] 顶层列表实际路数：3（本次请求 3 路；错峰多路）`）、`snapshotDir=""`（本轮采完，不留现场）；CSV/JSON `D:\dycopy\douyin-comments\douyin-comments-7600000000000000010-2026-10-07T06-51-07.{csv,json}`（CSV 219 行）。note 摘要：「一级评论已到目标 30 条（去重后 104 条）…已采 214/1971 条；二级回复已补采 110 条（19/38 个线程，请求 50 次）。服务端始终没放行回复接口（列表接口正常：它回的是 HTTP 200 + 0 字节 body）…还剩 19 个线程没拉到」 |
+| **打包验收（`pkgtest` profile 装 `dsh-douyin-comments-0.5.15.tgz` 后 headless 真采）** | **PASS**（2026-10-07）：`dsh plugin --profile pkgtest add file:release\dsh-douyin-comments-v0.5.15\dsh-douyin-comments-0.5.15.tgz` → pkgtest **0.5.14 → 0.5.15**、`--dump-config` 认到 `dsh-douyin-comments`；headless 真采视频 `7600000000000000010`（`max=30`、先清空）→ **`count=214` = 一级 104 + 二级 110（19/38 个线程、50 次回复请求）**、`phase=done`、**33.4s**、顶层列表 **3 路（错峰）**、**扩展自报 `0.5.15`**（`source:'插件自带（随包分发）'`）；运行日志 `~/.dsh/douyin-collector\logs\collect-2026-10-07T06-50-34-21460.log`（末行 `[+33.4s] 收工原因：done（phase=done，页面侧 214 条）`、`[+33.4s] 顶层列表实际路数：3（本次请求 3 路；错峰多路）`）、`snapshotDir=""`（本轮采完，不留现场）；CSV/JSON `douyin-comments\douyin-comments-7600000000000000010-2026-10-07T06-51-07.{csv,json}`（CSV 219 行）。note 摘要：「一级评论已到目标 30 条（去重后 104 条）…已采 214/1971 条；二级回复已补采 110 条（19/38 个线程，请求 50 次）。服务端始终没放行回复接口（列表接口正常：它回的是 HTTP 200 + 0 字节 body）…还剩 19 个线程没拉到」 |
 | 与 v0.5.14 行为对照 | 功能无差异：一级到 30 条停顶层、二级续补、`logPath`/`snapshotDir` 字段、失败现场四件套、`logPath` 每次必写、`keepSnapshots` 封顶都在；本版只把三件套版本号统一成 `0.5.15` |
 
 实测记录（2026-10-07，v0.5.14 + 扩展 0.2.15，扩展/MCP 本版未改动）：
@@ -836,7 +836,7 @@ node _probe_pick_0520.mjs https://www.douyin.com/video/7600000000000000010      
 | 开关对照（同视频 `timeoutMs=22000` + `failSnapshot=false`） | **PASS**：同样「收工原因：timeout（phase=replies，页面侧 919 条）」但 `snapshotDir=""`，快照目录数不变 ⇒ 开关有效 |
 | 抛错路径（无效 id `1111111111111111111`，`timeoutMs=45000`） | **PASS**：错误文案 `page.evaluate: Execution context was destroyed, most likely because of a navigation（运行日志：…\logs\collect-2026-10-07T06-29-34-31532.log；失败现场：…\failures\2026-10-07T06-29-44-1111111111111111111）`，现场四件套齐全 ⇒ `catch` 分支也有现场 |
 | 现场体积（超时那轮实测） | `page.html 1208843 B` / `screenshot.png 973074 B` / `status.json 2986 B` / `run.log 1469 B`（≈2.1 MB/份；`keepSnapshots` 默认 20 份上限约 40 MB，可自行调小） |
-| **打包验收（`pkgtest` profile 装 `dsh-douyin-comments-0.5.14.tgz` 后 headless 双跑）** | **PASS**（2026-10-07）：`dsh plugin --profile pkgtest add file:D:\dycopy\release\dsh-douyin-comments-v0.5.14\dsh-douyin-comments-0.5.14.tgz` → pkgtest **0.5.13 → 0.5.14**、`--dump-config` 认到 `dsh-douyin-comments`。① 正常 `max=30`（视频 `7600000000000000010`）→ **338 条 / 23s**、顶层 3 路、扩展 0.2.15、日志 `[+22.9s] 收工原因：done（phase=done，页面侧 338 条）`；② `timeoutMs=15000` → **207 条 / 15.7s**，工具文本给出「⚠️ 本轮没采完（超时/无进展/被取消），现场快照：`C:\Users\mo\.dsh\douyin-collector\failures\2026-10-07T06-32-44-7600000000000000010`」+「运行日志：`…\logs\collect-2026-10-07T06-32-29-31532.log`」，该现场四件套 `page.html 1208843 B / run.log 1469 B / screenshot.png 973074 B / status.json 2986 B`（`status.json` 里 `phase:"replies"`、`unique:218`、`savedCount:207`、`total:1971`、note「补采二级回复 20/38 个线程，已得 114 条（请求 23 次）」） |
+| **打包验收（`pkgtest` profile 装 `dsh-douyin-comments-0.5.14.tgz` 后 headless 双跑）** | **PASS**（2026-10-07）：`dsh plugin --profile pkgtest add file:release\dsh-douyin-comments-v0.5.14\dsh-douyin-comments-0.5.14.tgz` → pkgtest **0.5.13 → 0.5.14**、`--dump-config` 认到 `dsh-douyin-comments`。① 正常 `max=30`（视频 `7600000000000000010`）→ **338 条 / 23s**、顶层 3 路、扩展 0.2.15、日志 `[+22.9s] 收工原因：done（phase=done，页面侧 338 条）`；② `timeoutMs=15000` → **207 条 / 15.7s**，工具文本给出「⚠️ 本轮没采完（超时/无进展/被取消），现场快照：`~/.dsh/douyin-collector\failures\2026-10-07T06-32-44-7600000000000000010`」+「运行日志：`…\logs\collect-2026-10-07T06-32-29-31532.log`」，该现场四件套 `page.html 1208843 B / run.log 1469 B / screenshot.png 973074 B / status.json 2986 B`（`status.json` 里 `phase:"replies"`、`unique:218`、`savedCount:207`、`total:1971`、note「补采二级回复 20/38 个线程，已得 114 条（请求 23 次）」） |
 
 实测记录（2026-10-07，v0.5.13 + 扩展 0.2.15）：
 
@@ -850,7 +850,7 @@ node _probe_pick_0520.mjs https://www.douyin.com/video/7600000000000000010      
 | **端到端：错峰 3 路 + 二级（`lanes=3, replies=true, max=30`）** | **PASS**：`ok=true`、`count=421` = **一级 105 + 二级 316（38/38 个线程、47 次回复请求）**、**24.3s**、`phase=done`；面板：「一级评论已到目标 30 条（去重后 105 条），已停止顶层扫描；has_more=0 结束，已采 421/2062 条；二级回复已补采 316 条（38/38 个线程，请求 47 次）」 |
 | 生效值核对（`dts_settings_effective`，3 路运行中 CDP 读取） | `at / from:'plugin' / lanes:3 / lanesWanted:3 / lanesNote:'' / maxCount:80000 / replyGapMs:600 / replyGlobalGapMs:250 / replyLanes:4 / replyThrottleMaxWaitMs:120000 / replyWaveBudgetMs:12000 / replyParkPlanMs:'15000/30000/60000'` ⇒ 新路数与全部新键真的下发生效 |
 | 已知抖动（不是本版问题） | 同参数一轮单路只交付 **55 条**、`phase=paused`，`note`「还没拿到签名：没能自动找到评论入口…」、日志「60s 没动静（phase=paused），收工」⇒ 页面没自动打开评论区导致签名抖动，重跑即正常（该轮不算基线） |
-| **打包验收（`pkgtest` profile 装 `dsh-douyin-comments-0.5.13.tgz` 后 headless 实采）** | **PASS**（2026-10-07）：`dsh plugin --profile pkgtest add file:D:\dycopy\release\dsh-douyin-comments-v0.5.13\dsh-douyin-comments-0.5.13.tgz` → pkgtest **0.5.12 → 0.5.13**、`--dump-config` 认到 `dsh-douyin-comments`（id `douyin-comments`）；headless 真采视频 `7600000000000000010`（`max=30`、先清空）→ **`count=336` = 一级 104 + 二级 232（37/37 个线程、44 次回复请求）**、`phase=done`、**20.4s**、顶层列表 **3 路**、扩展自报 **0.2.15**（`source:'插件自带（随包分发）'`）。面板原文：「一级评论已到目标 30 条（去重后 104 条），已停止顶层扫描；has_more=0 结束，已采 336/1971 条；二级回复已补采 232 条（37/37 个线程，请求 44 次）。再点「开始采集」会从断点继续」。CSV/JSON：`D:\dycopy\douyin-comments\douyin-comments-7600000000000000010-2026-10-07T05-13-18.{csv,json}` |
+| **打包验收（`pkgtest` profile 装 `dsh-douyin-comments-0.5.13.tgz` 后 headless 实采）** | **PASS**（2026-10-07）：`dsh plugin --profile pkgtest add file:release\dsh-douyin-comments-v0.5.13\dsh-douyin-comments-0.5.13.tgz` → pkgtest **0.5.12 → 0.5.13**、`--dump-config` 认到 `dsh-douyin-comments`（id `douyin-comments`）；headless 真采视频 `7600000000000000010`（`max=30`、先清空）→ **`count=336` = 一级 104 + 二级 232（37/37 个线程、44 次回复请求）**、`phase=done`、**20.4s**、顶层列表 **3 路**、扩展自报 **0.2.15**（`source:'插件自带（随包分发）'`）。面板原文：「一级评论已到目标 30 条（去重后 104 条），已停止顶层扫描；has_more=0 结束，已采 336/1971 条；二级回复已补采 232 条（37/37 个线程，请求 44 次）。再点「开始采集」会从断点继续」。CSV/JSON：`douyin-comments\douyin-comments-7600000000000000010-2026-10-07T05-13-18.{csv,json}` |
 
 实测记录（2026-10-07，v0.5.12 + 扩展 0.2.14）：
 
@@ -860,7 +860,7 @@ node _probe_pick_0520.mjs https://www.douyin.com/video/7600000000000000010      
 | 真机五轮（A/B/C/D/x1，视频 `7600000000000000004`，扩展 0.2.13 作对照） | 会话内重试**从不恢复**（A 108 秒 / C 125 秒 / D 跨 8.5 分钟 4 波，全是 `EMPTY_BODY`），而新会话或十几秒后的窗口 **23/23、28/28 全成**；主世界手动重放改写后的回复 URL 始终 `HTTP 200 / status_code:0 / 58276 字节 / 366~1666ms`；五轮里 `REPLAY_TIMEOUT` **一次都没出现** ⇒ 不是本地抢跑、也不是「一波就该放弃」 |
 | **真机 z1（v0.5.12 + 扩展 0.2.14，`clearBefore=true`、`max=20`）** | **PASS**：`ok=true`、`count=334` = **一级 50 + 二级 284**、`phase=done`、**25 秒跑完**（对照 y1 轮同参数：`phase=waiting-sign`、白等 120 秒、整轮 8.5 分钟）。面板文案：「一级评论已到目标 20 条（去重后 50 条），已停止顶层扫描；has_more=0 结束，已采 334/2034 条；二级回复已补采 284 条（28/28 个线程，请求 37 次）。再点「开始采集」会从断点继续」。同轮对照实验：`reply-rewritten → 200 / 58276 字节 / 436ms`（列表重放 `200 / 21717 字节 / 1256ms`） |
 | 生效值核对（`dts_settings_effective`） | `at / from:'plugin' / lanes:1 / lanesWanted:1 / maxCount:20 / replyGapMs:600 / replyGlobalGapMs:250 / replyLanes:4 / replyThrottleMaxWaitMs:120000 / replyWaveBudgetMs:12000 / replyParkPlanMs:'15000/30000/60000'` ⇒ 新常量与新键真的下发到扩展 |
-| **打包验收（`pkgtest` profile 装 `dsh-douyin-comments-0.5.12.tgz` 后 headless 实采）** | **PASS**：`ok=true`、`count=264` = 一级 **50** + 二级 **214**（25/25 个线程、32 次回复请求）、`phase=done`、扩展自报 **0.2.14**（`extension.dir` = profile 里的 `node_modules\dsh-douyin-comments\extension`，`source:'插件自带（随包分发）'`）；对照 v0.5.11 同命令 `count=266` = 一级 50 + 二级 216（27/27）。CSV：`D:\dycopy\douyin-comments\douyin-comments-7600000000000000010-2026-10-07T03-57-39.csv` |
+| **打包验收（`pkgtest` profile 装 `dsh-douyin-comments-0.5.12.tgz` 后 headless 实采）** | **PASS**：`ok=true`、`count=264` = 一级 **50** + 二级 **214**（25/25 个线程、32 次回复请求）、`phase=done`、扩展自报 **0.2.14**（`extension.dir` = profile 里的 `node_modules\dsh-douyin-comments\extension`，`source:'插件自带（随包分发）'`）；对照 v0.5.11 同命令 `count=266` = 一级 50 + 二级 216（27/27）。CSV：`douyin-comments\douyin-comments-7600000000000000010-2026-10-07T03-57-39.csv` |
 
 实测记录（2026-10-07，v0.5.11 + 扩展 0.2.13）：
 
@@ -868,7 +868,7 @@ node _probe_pick_0520.mjs https://www.douyin.com/video/7600000000000000010      
 | --- | --- |
 | 离线自检 `node verify-tool.mjs` | **153/153 全绿**（0.5.10 为 141；本次 +6 条：`max` 口径改用 `topSeenCount`（一级去重）、到量只停顶层扫描、二级补采挪到循环外第二阶段、回复全局限速闸门 `replyGate()`、撞限流翻倍 + 降 1 路、`replyGlobalGapMs` 三端下发） |
 | **真机 `max=100` 验收**（视频 `7600000000000000004`，`clearBefore=true`，扩展 0.2.13） | **PASS**：`count=403` = **一级 103 + 二级 300**、`phase=done`、**345.4s**（单路顶层扫描 + 38 个线程回复补采、86 次回复请求）。面板文案：「一级评论已到目标 100 条（去重后 103 条），已停止顶层扫描；二级回复已补采 300 条（38/38 个线程，请求 86 次）。再点「开始采集」会从断点继续」。对照旧行为（0.5.10 + 0.2.12，同样 `max=100`）：**896 条、二级回复 0 条**、面板「已手动暂停」 |
-| **打包验收（全新 profile 从 tgz 装）** | **PASS**（2026-10-07）：`dsh plugin --profile pkgtest add file:D:\dycopy\release\dsh-douyin-comments-v0.5.11\dsh-douyin-comments-0.5.11.tgz` → pkgtest 0.5.5 → **0.5.11**、`--dump-config` 认到 `dsh-douyin-comments`（id `douyin-comments`）；headless 真采视频 `7600000000000000010`（`max=30`、先清空）→ `ok=true`、`count=266` = **一级 50 + 二级 216**、`phase=done`、扩展 `0.2.13`（`source: 插件自带（随包分发）`）。面板文案：「一级评论已到目标 30 条（去重后 50 条），已停止顶层扫描；has_more=0 结束，已采 266/1970 条；二级回复已补采 216 条（27/27 个线程，请求 46 次）。再点「开始采集」会从断点继续」——回复摘要只出现一次，`；；` 重复问题在打包前已修掉 |
+| **打包验收（全新 profile 从 tgz 装）** | **PASS**（2026-10-07）：`dsh plugin --profile pkgtest add file:release\dsh-douyin-comments-v0.5.11\dsh-douyin-comments-0.5.11.tgz` → pkgtest 0.5.5 → **0.5.11**、`--dump-config` 认到 `dsh-douyin-comments`（id `douyin-comments`）；headless 真采视频 `7600000000000000010`（`max=30`、先清空）→ `ok=true`、`count=266` = **一级 50 + 二级 216**、`phase=done`、扩展 `0.2.13`（`source: 插件自带（随包分发）`）。面板文案：「一级评论已到目标 30 条（去重后 50 条），已停止顶层扫描；has_more=0 结束，已采 266/1970 条；二级回复已补采 216 条（27/27 个线程，请求 46 次）。再点「开始采集」会从断点继续」——回复摘要只出现一次，`；；` 重复问题在打包前已修掉 |
 | 同轮冒烟（MCP 侧） | `node test-settings.js` **15/15**（参数清单已含 `replyGlobalGapMs`）、`node test-hub.js` **exit 0**（version `0.3.4`）、`node test-mcp-handshake.js` **`ALL MCP HANDSHAKE: PASS`**（`hasMaxParam=true`、`hasExportAll=true`） |
 | 排障记录（两次失败都不是本版缺陷） | ① 第一次真机 run 撞签名抖动：`phase=paused`、`note=还没拿到签名：没能自动找到评论入口…`、`count=2`（重跑即正常）；② 第二次没带 `clearBefore`：顶层那批 cid 还在上一轮的桶里，被新鲜度差集剔掉，只剩 292 条新二级回复，且顶层列表侧长退避使 unique 120s 无增长 → 采集器按 `phase=collecting` 的 stall 上限收工。带 `clearBefore=true` 重跑即得上表结果 |
 
@@ -880,7 +880,7 @@ node _probe_pick_0520.mjs https://www.douyin.com/video/7600000000000000010      
 | 真机清空验收（正常路径） | **9/9 通过**：两个视频的桶 → 「清空」只清当前视频（其它保留）→「全部清空」两步确认 → 桶与 `dts_videos` 清空，面板「本地已存」立刻「暂无」 |
 | 真机清空验收（失败路径） | **8/8 通过**：扩展副本里 `dts-clear` 只回 `{ok:true}` 却不执行 → 面板不谎报「已清空」，显示「「清空」没有生效（…）」+ `edge://extensions` 重新加载 + F5 指引，存储一条没动 |
 | 真机清空自检验收（临时脚本 + 临时 profile，跑完已删） | **通过**：种两个视频的桶 → 面板先显示「本地已存 2 个视频 / 7 条」→ 点「全部清空」（两步确认）→ 存储里 `dts_c_*` 与 `dts_videos` 全没了，且面板「本地已存」**立刻**变成「暂无」；修复前同一脚本 FAIL（存储清了但面板仍显示 2 个视频 / 7 条） |
-| **MCP 端到端导出验收**（真 Chromium 加载 `D:\dycopy\douyin-collector` 扩展 + 隔离桥端口 18777 + 真 MCP stdio 调用） | **14/14 PASS**：`initialize` 报 `serverInfo={name:'douyin-collector-mcp', version:'0.3.2'}`、`tools/list` 里 `ai_export` 有 `all` 且 `videoId` 不再 required；`ai_export{all:true,format:'csv'}` → `scope=all, videoCount=2, count=5, topLevelCount=4, replyCount=1`（文件名 `douyin-comments-all-2026-10-06T06-17-50.csv`，785 字节，表头末列 `video_id`，内容 v1=3 行 / v2=2 行）；`ai_export{videoId:'v1',format:'json'}` → `scope=video, count=3, videoCount=1, replyCount=1`（1893 字节，无 `videos` 数组）；`ai_export{}` 在 MCP 层直接拒（没发桥命令）、`ai_export{videoId:'no-such-video'}` 回 `EMPTY_POOL` |
+| **MCP 端到端导出验收**（真 Chromium 加载 `douyin-collector` 扩展 + 隔离桥端口 18777 + 真 MCP stdio 调用） | **14/14 PASS**：`initialize` 报 `serverInfo={name:'douyin-collector-mcp', version:'0.3.2'}`、`tools/list` 里 `ai_export` 有 `all` 且 `videoId` 不再 required；`ai_export{all:true,format:'csv'}` → `scope=all, videoCount=2, count=5, topLevelCount=4, replyCount=1`（文件名 `douyin-comments-all-2026-10-06T06-17-50.csv`，785 字节，表头末列 `video_id`，内容 v1=3 行 / v2=2 行）；`ai_export{videoId:'v1',format:'json'}` → `scope=video, count=3, videoCount=1, replyCount=1`（1893 字节，无 `videos` 数组）；`ai_export{}` 在 MCP 层直接拒（没发桥命令）、`ai_export{videoId:'no-such-video'}` 回 `EMPTY_POOL` |
 | 冒烟 / 回归（同一轮） | `node test-hub.js` **exit 0**；`node test-settings.js` **15/15 exit 0**；`node test-mcp-handshake.js` **`ALL MCP HANDSHAKE: PASS` exit 0**（新增 `hasExportAll` 断言为 true） |
 | **顶层列表固定单路实测**（0.5.10 / 扩展 0.2.12，同一视频 `7600000000000000004`） | **768 → 945**：修复前（0.2.11 / 4 路）**768 条**（一级 586 / 二级 182）**20.1s** → 修复后（0.2.12 / 单路）**945 条**（一级 753 / 二级 192）**70.4s**——一级 **+28%**、总条数 **+23%**，代价 20s → 70s。依据：4 路并发 5 轮只 **492 条**且 **0 个失败请求**（同签名同刻多路被服务端**合并成同一页**，两两重合 50/50）；单路串行 18 步 **714~744 条**；4 路**错峰 200ms** 恢复正常；该视频列表上限约 **850 条**（`cursor=850` 只回 8 条、`has_more=0`；`cursor≥900` 回 `null`） |
 
@@ -919,7 +919,7 @@ node _probe_pick_0520.mjs https://www.douyin.com/video/7600000000000000010      
 
 ```powershell
 # 1) 建一个只装 headless app + 本插件的临时 profile
-mkdir C:\Users\mo\.dsh\profiles\hdcheck
+mkdir ~/.dsh/profiles\hdcheck
 @'
 {
   "name": "dsh-profile-hdcheck",
@@ -927,16 +927,16 @@ mkdir C:\Users\mo\.dsh\profiles\hdcheck
   "dependencies": {},
   "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-headless"] } }
 }
-'@ | Set-Content C:\Users\mo\.dsh\profiles\hdcheck\package.json -Encoding utf8
-dsh plugin --profile hdcheck add file:D:\dycopy\dsh-douyin-comments
+'@ | Set-Content ~/.dsh/profiles\hdcheck\package.json -Encoding utf8
+dsh plugin --profile hdcheck add file:dsh-douyin-comments
 
 # 2) 让 agent 自己调工具（会真开浏览器采一轮）
 dsh --profile hdcheck headless '用 douyin_comments 工具采集 https://www.douyin.com/video/7600000000000000010 （max=30）。工具返回后只回复三行：ok=、count=、csvPath=。'
 ```
 
 实测（`_headless3.txt`）：agent 自己决定调 `douyin_comments`，拿到 `ok=true count=99`，
-csvPath `C:\Users\mo\.dsh\douyin-collector\out\douyin-comments-7600000000000000010-2026-10-05T04-08-25.csv`，
-并按要求的格式回复。验证完不想留着这个 profile，直接删 `C:\Users\mo\.dsh\profiles\hdcheck` 即可。
+csvPath `~/.dsh/douyin-collector\out\douyin-comments-7600000000000000010-2026-10-05T04-08-25.csv`，
+并按要求的格式回复。验证完不想留着这个 profile，直接删 `~/.dsh/profiles\hdcheck` 即可。
 
 （注意 `dsh --profile web headless "task"` **不行**：web app 不接受位置参数，会报 `too many arguments`。
 headless 是另一个 app，必须有对应的 profile。）
@@ -946,7 +946,7 @@ headless 是另一个 app，必须有对应的 profile。）
 同步开发目录里的扩展进插件：
 
 ```powershell
-node sync-extension.mjs                    # 源目录默认 D:\dycopy\douyin-collector
+node sync-extension.mjs                    # 源目录默认 douyin-collector
 node sync-extension.mjs D:\path\to\ext
 ```
 
@@ -960,7 +960,7 @@ node sync-extension.mjs D:\path\to\ext
 更早一版 [v0.5.17](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.17)（CSV 末尾加 3 列用户标识）、
 [v0.5.16](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.16)（修 8 处数据正确性缺陷）。
 
-本地发布物在 `D:\dycopy\release\dsh-douyin-comments-v0.5.31\`：
+本地发布物在 `release\dsh-douyin-comments-v0.5.31\`：
 
 | 文件 | 说明 |
 | --- | --- |
@@ -971,21 +971,21 @@ node sync-extension.mjs D:\path\to\ext
 
 整包单文件 `dsh-douyin-comments-v0.5.31.zip`（把上面整目录打成一个单文件，方便直接发给人）**也放在同一个 `release\dsh-douyin-comments-v0.5.31\` 目录里**（v0.5.12 起改为随版本目录存放，不再放在 `release\` 根下）。
 
-更早的草稿目录（`D:\dycopy\release\dsh-douyin-comments-v0.5.7\` 及以前）都保留作对照，不删。
+更早的草稿目录（`release\dsh-douyin-comments-v0.5.7\` 及以前）都保留作对照，不删。
 
 重新打包：
 
 ```powershell
-cd D:\dycopy\dsh-douyin-comments
-npm pack --pack-destination D:\dycopy\release\dsh-douyin-comments-v0.5.31
+cd dsh-douyin-comments
+npm pack --pack-destination release\dsh-douyin-comments-v0.5.31
 
 # 扩展开 zip（顶层目录名必须是 douyin-collector；只装 8 个运行文件，别把 md 打进去）。
 # 用 .NET ZipFile 逐个 CreateEntry 造，避免 Compress-Archive 多套一层目录：
 # 本版扩展的**代码和 manifest 版本号都变了**（0.5.17 → 0.5.31），**必须重新打**，不能沿用旧 zip。
-$rel = 'D:\dycopy\release\dsh-douyin-comments-v0.5.31'
+$rel = 'release\dsh-douyin-comments-v0.5.31'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [IO.Compression.ZipFile]::Open("$rel\douyin-collector-extension-v0.5.31.zip", 'Create')
-Get-ChildItem D:\dycopy\douyin-collector -File |
+Get-ChildItem douyin-collector -File |
   Where-Object { $_.Extension -in '.js','.json','.css','.html' } |
   ForEach-Object { [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $_.FullName, "douyin-collector/$($_.Name)") | Out-Null }
 $zip.Dispose()
@@ -997,8 +997,8 @@ $zip.Dispose()
 打包验收（**全新 profile 从 tgz 装**，2026-10-05 对 v0.5.5 实测通过，日志 `_accept_tgz.txt`；v0.5.11 / v0.5.12 / v0.5.13 / v0.5.14 / v0.5.15 打包后按同样三步验收）：
 
 ```powershell
-mkdir C:\Users\mo\.dsh\profiles\pkgtest     # package.json：dsh.profile.bundles = ["@deepseek-ai/dsh-base","@deepseek-ai/dsh-headless"]
-dsh plugin --profile pkgtest add file:D:\dycopy\release\dsh-douyin-comments-v0.5.5\dsh-douyin-comments-0.5.5.tgz
+mkdir ~/.dsh/profiles\pkgtest     # package.json：dsh.profile.bundles = ["@deepseek-ai/dsh-base","@deepseek-ai/dsh-headless"]
+dsh plugin --profile pkgtest add file:release\dsh-douyin-comments-v0.5.5\dsh-douyin-comments-0.5.5.tgz
 dsh --profile pkgtest --dump-config | Select-String dsh-douyin-comments
 dsh --profile pkgtest headless '用 douyin_comments 工具采集 https://www.douyin.com/video/7600000000000000010 （max=20）。工具返回后只回复三行：ok=、count=、csvPath=。'
 # ⇒ ok=true，CSV 落在 ~\.dsh\douyin-collector\out\（实测两轮：194 条 / 227 条——按页落库，条数每轮不同）
@@ -1008,11 +1008,11 @@ dsh --profile pkgtest headless '用 douyin_comments 工具采集 https://www.dou
 > v0.5.15 打包后照抄同样三步，只把包路径换成本版：
 
 ```powershell
-dsh plugin --profile pkgtest add file:D:\dycopy\release\dsh-douyin-comments-v0.5.15\dsh-douyin-comments-0.5.15.tgz
+dsh plugin --profile pkgtest add file:release\dsh-douyin-comments-v0.5.15\dsh-douyin-comments-0.5.15.tgz
 dsh --profile pkgtest --dump-config | Select-String dsh-douyin-comments
 dsh --profile pkgtest headless '用 douyin_comments 工具采集 https://www.douyin.com/video/7600000000000000010 （max=30，先清空）。工具返回后只回复三行：ok=、count=、csvPath=。'
 # ⇒ v0.5.15 是**纯版本号统一**（功能等同 v0.5.14）：自测 193/193；打包后照跑上面三步，结果见下方「实测记录（2026-10-07，v0.5.15 + 扩展 0.5.15）」
-#   csv：D:\dycopy\douyin-comments\douyin-comments-<videoId>-<时间戳>.csv
+#   csv：douyin-comments\douyin-comments-<videoId>-<时间戳>.csv
 #   （headless 的 cwd 是 D:\dycopy，所以没传 outDir 时 CSV 落在工作目录的 douyin-comments\ 下）
 ```
 
@@ -1022,7 +1022,7 @@ dsh --profile pkgtest headless '用 douyin_comments 工具采集 https://www.dou
 
 ## 与其他组件的关系
 
-- 浏览器里跑的扩展本体在 `D:\dycopy\douyin-collector\`（权威开发目录，0.5.15）；插件里的 `extension/`
+- 浏览器里跑的扩展本体在 `douyin-collector\`（权威开发目录，0.5.15）；插件里的 `extension/`
   由 `node sync-extension.mjs` 单向同步过去（同步后会反向清理白名单外的旧文件；别再手动复制）。
   插件每次启动都会把扩展 hash 记进 `~/.dsh/douyin-collector/extension.launched.json`，一变就清掉
   profile 里的旧脚本缓存再开浏览器。**注意清的范围**：要清 `Default/Code Cache` + **整个**
@@ -1033,8 +1033,8 @@ dsh --profile pkgtest headless '用 douyin_comments 工具采集 https://www.dou
   只清 ScriptCache 跑 2 轮（1 轮正常、1 轮扩展 SW 数=0 且探活失败），清掉整个
   `Default/Service Worker` 后 **2/2 正常**。手工换扩展文件后若发现浏览器还在跑旧代码
   （AI 桥回 `UNKNOWN_COMMAND`），也是同一处缓存没清干净。
-- 采集结果想接着做统计/情感/检索，用分析后端 `D:\dycopy\douyin-analysis\`：
+- 采集结果想接着做统计/情感/检索，用分析后端 `douyin-analysis\`：
   `python -m douyin_analysis ingest`（自动扫 `~/Downloads` 与 `~/.dsh/douyin-collector/out`），
   或让 agent 直接调 MCP 工具 `mcp__douyin__ingest_paths`。
-- 老的 Node 控制面 `D:\dycopy\douyin-mcp\`（Hub + 扩展轮询）仍然可用，但**与本插件不要同时开浏览器扩展通道**：
+- 老的 Node 控制面 `douyin-mcp\`（Hub + 扩展轮询）仍然可用，但**与本插件不要同时开浏览器扩展通道**：
   插件的扩展是它自己 `--load-extension` 起来的独立实例，和 `douyin-mcp` 的 Hub 不是同一条链路。
