@@ -1013,7 +1013,7 @@ dsh --profile pkgtest --dump-config | Select-String dsh-douyin-comments
 dsh --profile pkgtest headless '用 douyin_comments 工具采集 https://www.douyin.com/video/7600000000000000010 （max=30，先清空）。工具返回后只回复三行：ok=、count=、csvPath=。'
 # ⇒ v0.5.15 是**纯版本号统一**（功能等同 v0.5.14）：自测 193/193；打包后照跑上面三步，结果见下方「实测记录（2026-10-07，v0.5.15 + 扩展 0.5.15）」
 #   csv：douyin-comments\douyin-comments-<videoId>-<时间戳>.csv
-#   （headless 的 cwd 是 D:\dycopy，所以没传 outDir 时 CSV 落在工作目录的 douyin-comments\ 下）
+#   （headless 的 cwd 是仓库根目录，所以没传 outDir 时 CSV 落在工作目录的 douyin-comments/ 下）
 ```
 
 - 依赖 `playwright-core ^1.63.0`（13 MB，只有驱动、不含浏览器）由 `dsh plugin add` 自动装进 profile；
