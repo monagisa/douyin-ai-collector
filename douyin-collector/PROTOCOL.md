@@ -2,7 +2,7 @@
 
 > 所有实现必须严格按本文件。改协议要先改本文件并通知所有实现者。
 >
-> **版本号（v0.5.15 起）**：扩展 / DSH 插件 / MCP **统一编号**，当前均为 `0.5.38`。正文里的 `v0.2.x` 是**扩展侧历史编号**：0.2.11↔发布 v0.5.9、0.2.12↔v0.5.10、0.2.13↔v0.5.11、0.2.14↔v0.5.12、0.2.15↔v0.5.13/v0.5.14。
+> **版本号（v0.5.15 起）**：扩展 / DSH 插件 / MCP **统一编号**，当前均为 `0.5.44`。正文里的 `v0.2.x` 是**扩展侧历史编号**：0.2.11↔发布 v0.5.9、0.2.12↔v0.5.10、0.2.13↔v0.5.11、0.2.14↔v0.5.12、0.2.15↔v0.5.13/v0.5.14。
 
 ## 0. 文件边界（禁止跨界写入）
 
@@ -795,6 +795,12 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
   判据：`_probe_cloud_0530.mjs`（16 项：按钮存在/旧按钮消失/下载完成/文件名/面板提示/
   快照内嵌 `__CW_BOOT__`/内联无外链/`$$` 未被吞/`file://` 打开后词云与行数正确/无 JS 报错/
   自选 2 条时快照里两个视频的数据）。
+- **v0.5.44 等签名期间持续助推**：`waiting-sign` 阶段新增 `schedulePersistNudge()`（`PERSIST_NUDGE_MS = 3000`、`PERSIST_NUDGE_MAX = 20`），按 `persistNudgeTick()` 循环：`commentAreaOpen()` 为真时交替 `persistScroll(±1)`（滚到底 / 回拉 1.5 屏，并补发 `WheelEvent`），每第 3 次走 `persistTogglePanel()`（收起 1.2s 再点开）；滚不动则 toggle；未开则 `persistClickEntry()`。`setPhase()` 里离开 `waiting-sign` 会 `stopPersistNudge()`。诊断日志走 `logAutoOpen(「persist#N …」)`。验收：`verify-tool.mjs` 3a-6b 三条断言（常量、交替滚动、`schedulePersistNudge` 存在）。
+- **v0.5.43 导出范围默认不预选**：`ensureExportPickDefault()` 现在只做「空数组 → null」的复位，不再把当前视频塞进 `exportPick`（`exportPick` 默认 `null`）。面板按钮文案 `exportScopeText()` 在未选时返回 **`导出范围：未选中视频`**。`exportAs()` / `exportCloud()` 在无选择时 setPhase 文案 **`未选中视频：先点「导出范围」勾选要导出的视频（「全选」= 本地全部视频）`** 并 `openPicker()`（`openPicker()` 会把 errText 清空、note 写成「勾选要导出的视频，点「选中视频」」，所以「未选中视频」出现在浮层 info 行），不再走到后台报 `EMPTY_POOL`。验收：`_probe_pick_0520.mjs`（22 项，含「没选点导出 → 自动开浮层 + info 未选中视频」）、`_probe_clearall_0522.mjs`（19 项，默认与全部清空后都是未选中）、`_probe_picksel_0523.mjs`（13 项，info「未选中视频」+ 按钮「选中视频」禁用）。
+- **v0.5.42 词云页导出按钮**：评论表右上角由「导出筛选结果」改为 **「导出 CSV」+「导出 JSON」** 两个按钮（`#btnExport` / `#btnExportJson`，无数据时均 disabled）。两者都导出**当前筛选结果**（默认全部）。CSV：第 1 行 12 个英文键（`cid,video_id,video_title,text,user_nickname,user_unique_id,user_sec_uid,digg_count,reply_comment_total,ip_label,create_time_str,level`），第 2 行中文说明、首格以 `# ` 开头；JSON：`{exportedAt,count,filters,videos[],comments[]}`，单条含 `cid/videoId/text/textClean/createTimeStr/diggCount/replyCommentTotal/ipLabel/level/isReply/isHot/isFolded/user{nickname,uid,secUid,uniqueId,shortId}`。文件名 `comments-view-<时间戳>.csv|json`。三处同源（独立台 / DSH 内嵌页 / 扩展内联快照），`verify-tool.mjs` 232/232。
+- **v0.5.41 关键词升级（对标 jieba 系词云项目）**：`buildWords(comments)` 现在返回 `{ word, count, weight, ratio, generic, cids, users }`：① `weight = count × log(1 + N/count)`（`N` = 有文字的评论数，即视频内轻量 IDF）；② `ratio = count / N`，`N ≥ 30 且 ratio > 0.4` 的词标记 `generic` 并从词云剔除（泛词）；③ 词云字号按 `weight` 取，不再按纯词频，词表排序也按 `weight`。自定义词表：`state.kwKeep` / `state.kwBlock`（`parseWordList()` 按 `[,，、;；\s]` 拆分、去重、小写、上限 200），加词在 `tokensOf()` 里按「原文包含即计一次」塞回（解决 `Intl.Segmenter` 无词典、把「露营装备」切碎的问题），屏蔽词在 `buildWords()` 里跳过；两者存 `localStorage`（`cw.kw.keep` / `cw.kw.block`）。UI：侧栏「加词 / 屏蔽」两个 `.kw-input`，输入 400ms 后 `applyWordLists()` 生效并记忆。判据：查看器 50/50、词云插件页 31/31（含 weight>0、泛词剔除、加词/屏蔽、localStorage 记忆四条）。
+- **v0.5.40 关键词过滤虚词**：词云页 `cleanToken(w, strict)` 在 `strict !== false` 时同时用 ① `STOPWORDS`（新增 ~150 个组合虚词/口头词）与 ② 字符级启发式 `isFunctionOnly(t)`（`FUNCTION_CHARS` 里全是虚词/代词字符的词整词丢弃，如 这种/都是/我的/出来/中的）；`buildWords()` 传 `state.filters.onlyContent !== false`；页面新增 `#onlyContent`「过滤虚词」复选框（默认 checked），关掉则 `cleanToken(w, false)` 保留原词。判据：`_test_comment_viewer.mjs` 8.7（46 项）与 `_test_wordcloud_plugin.mjs` 8.9（27 项）。
+- **v0.5.39 选择浮层不预勾 + 文案精简**：`openPicker()` 只做 `pickSel = {}`（不再把 `exportPick` 灌进去），`updatePickerInfo()` 在 0 选时写 `还未选中视频`、按钮固定文案 `选中视频` 并 `disabled = sel.length === 0`；`exportScopeText()` 空选文案改 `导出范围：未选中视频`；`confirmPicker()` 0 选只提示「还未选中视频」、不改原选择。面板默认口径（`ensureExportPickDefault()` 跟随当前视频）不变。
 - **v0.5.38 词云也能被 AI / MCP 触发（Hub `cloud` 命令）**：入参
   `{ type: "cloud", args: { videoId?, videoIds?: string[], all?: boolean } }`，优先级
   `all > videoIds > videoId`（与 `export` 一致）；内部调 `exportCloud({ videoIds })`

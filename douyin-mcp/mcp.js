@@ -28,7 +28,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-const VERSION = '0.5.38';
+const VERSION = '0.5.44';
 const HUB_NAME = 'douyin-collector-mcp';
 
 const argv = process.argv.slice(2);

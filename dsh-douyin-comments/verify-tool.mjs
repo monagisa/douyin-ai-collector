@@ -780,6 +780,25 @@ if (fs.existsSync(path.join(devExtDir, 'manifest.json'))) {
   check('「交付 0 条」如实归因（区分落库失败 vs 真没新评论）',
     /const stalled = \(pageSaw > 0 && all\.length <= beforeCids\.size\) \|\| bgTold;/.test(collectorSrc));
 
+  // ---------- 3a-6b) 「等签名」期间持续助推（v0.5.44，用户 m00597：等太久要自己滚一滚） ----------
+  // 续采时评论区已开着、页面走缓存渲染不发 comment/list，旧的 3 次预算用完就干等 → 用户以为
+  // 「点一次没反应，得再点一次」。现在等签名期间每 3s 助推一次（滚列表/收起再点开/点入口），
+  // 上限 20 次，拿到签名或阶段变化立刻停。
+  check('等签名期间持续助推（常量 + 计数 + 每 3 次开合）',
+    /var PERSIST_NUDGE_MS = 3000;/.test(ctSrc)
+    && /var PERSIST_NUDGE_MAX = 20;/.test(ctSrc)
+    && /function persistNudgeTick\(\)/.test(ctSrc)
+    && /persistNudgeCount % 3 === 0/.test(ctSrc));
+  check('助推挂在 waitForNewSignature 末尾、setPhase 离开 waiting-sign 时停掉',
+    /function waitForNewSignature[\s\S]{0,1200}?schedulePersistNudge\(\);/.test(ctSrc)
+    && /function setPhase\(p, err, note\) \{\n    if \(p !== 'waiting-sign'\) stopPersistNudge\('phase:' \+ p\);/.test(ctSrc));
+  check('助推三条路：滚列表 / 收起再点开 / 评论区没开就点入口',
+    /function persistScroll\(dir\)/.test(ctSrc)
+    && /function persistTogglePanel\(\)/.test(ctSrc)
+    && /persistClickEntry\('toggle-open'\)/.test(ctSrc)
+    && /persistClickEntry\('open'\)/.test(ctSrc)
+    && /persist-giveup:max=/.test(ctSrc));
+
   // ---------- 3a-7) 清空拆成两个按钮（用户 2026-10-06 要求） ----------
   // 「清空」= 只清本条视频链接的评论；「全部清空」= 清掉所有视频（不可恢复）。
   // 两个按钮文案都含「清空」，所以按钮上挂 data-dts-act，采集器按挂点精确点，不按文案匹配。
@@ -929,7 +948,7 @@ check('CSV 第 2 行是中文列名说明（两处都插到表头后，v0.5.27�
     && /}, 20000\);/.test(ctSrc));
   check('导出把范围传给后台（面板侧 all 恒 false，只传 videoIds）+ 没选时自动打开浮层',
     /all: false,\s*videoIds: pick\s*\}/.test(ctSrc)
-    && /if \(!pick\) \{\s*\/\/ v0\.5\.21：范围只剩自选/.test(ctSrc)
+    && /if \(!pick\) \{\s*\/\/ v0\.5\.4[0-9]：/.test(ctSrc)
     && /openPicker\(\);\s*return;\s*\}/.test(ctSrc));
   check('AI 桥的导出命令也支持 all:true（与面板同一条链路）',
     /if \(t === 'dts-ai-export'\) \{[\s\S]{0,200}?var wantAll = !!\(msg && msg\.all === true\);/.test(ctSrc)
@@ -975,6 +994,18 @@ check('CSV 第 2 行是中文列名说明（两处都插到表头后，v0.5.27�
     /\.dts-picker-item:has\(\.dts-picker-box:checked\)/.test(cssSrc)
     && /\.dts-picker-info\.dts-has-sel/.test(cssSrc)
     && /classList\.toggle\('dts-has-sel', sel\.length > 0\)/.test(ctSrc));
+  check('浮层未选中时不说「已选 1 个」+ 文案精简 + 按钮叫「选中视频」（v0.5.39 客户反馈）',
+    /\/\/ v0\.5\.39：浮层打开时不再预勾当前视频[\s\S]{0,160}?pickSel = \{\};/.test(ctSrc)
+    && !/if \(exportPick\) exportPick\.forEach/.test(ctSrc)
+    && /'未选中视频'/.test(ctSrc)
+    && /if \(ui\.pickerOk\.textContent !== '选中视频'\)/.test(ctSrc)
+    && /ui\.pickerOk\.disabled = sel\.length === 0;/.test(ctSrc)
+    && /导出范围：未选中视频/.test(ctSrc));
+  check('默认不预选任何视频（v0.5.43：客户「我什么都没选就说选中 1 条」——面板默认显示「未选中视频」，导出前必须勾）',
+    /v0\.5\.43：不再「默认跟着当前视频走」[\s\S]{0,320}?function ensureExportPickDefault\(\) \{\s*\n\s*if \(exportPick && !exportPick\.length\) exportPick = null;/.test(ctSrc)
+    && !/if \(exportPickTouched \|\| \(exportPick && exportPick\.length\)\) return;/.test(ctSrc)
+    && /'未选中视频：先点「导出范围」勾选要导出的视频/.test(ctSrc)
+    && /'导出范围：未选中视频'/.test(ctSrc));
   check('浮层里显示真实作品标题（v0.5.24：通用页名换成「视频 <id 末 8>」，另补 ID/采集时间小字）',
     /var GENERIC_TITLE_RE = \/\^\(抖音\|抖音精选/.test(ctSrc)
     && /function isGenericTitle\(t\) \{/.test(ctSrc)
@@ -1051,6 +1082,33 @@ check('CSV 第 2 行是中文列名说明（两处都插到表头后，v0.5.27�
     fs.existsSync(viewerApp)
     && /function bootFromSnapshot\(\) \{/.test(fs.readFileSync(viewerApp, 'utf8'))
     && /window\.__CW_BOOT__/.test(fs.readFileSync(viewerApp, 'utf8')));
+  check('词云页关键词过滤虚词（v0.5.40：FUNCTION_CHARS 启发式 + 「过滤虚词」开关，内联资产同源）',
+    /FUNCTION_CHARS/.test(bgSrc)
+    && /isFunctionOnly/.test(bgSrc)
+    && /过滤虚词/.test(bgSrc)
+    && /onlyContent/.test(bgSrc)
+    && fs.existsSync(viewerApp)
+    && /const FUNCTION_CHARS = new Set\(/.test(fs.readFileSync(viewerApp, 'utf8'))
+    && /function isFunctionOnly\(t\) \{/.test(fs.readFileSync(viewerApp, 'utf8')));
+  // v0.5.41：关键词升级（停用词扩充 + 视频内 IDF 权重 + 自定义加词/屏蔽词），内联资产必须同源
+  const viewerSrc0541 = fs.existsSync(viewerApp) ? fs.readFileSync(viewerApp, 'utf8') : '';
+  check(
+    '词云页有「导出 CSV / 导出 JSON」两个按钮（v0.5.42，内联资产同源）',
+    /function exportFilteredJson\(\)/.test(viewerSrc0541) &&
+      /id="btnExportJson"/.test(fs.readFileSync(path.join(devExtDir, '..', 'comment-viewer', 'index.html'), 'utf8')) &&
+      /function exportFilteredJson\(\)/.test(bgSrc) &&
+      /导出 JSON/.test(bgSrc),
+  );
+  check('词云页关键词过滤升级（v0.5.41：IDF 权重 + 泛词剔除 + 自定义加词/屏蔽，内联资产同源）',
+    /v0\.5\.41：轻量 IDF/.test(bgSrc)
+    && /rec\.weight = rec\.count \* Math\.log\(1 \+ \(docN \|\| 1\) \/ Math\.max\(1, rec\.count\)\)/.test(bgSrc)
+    && /rec\.generic = docN >= 30 && rec\.ratio > 0\.4/.test(bgSrc)
+    && /kwKeep/.test(bgSrc) && /kwBlock/.test(bgSrc) && /kwKeep/.test(bgSrc)
+    && /v0\.5\.41：自定义加词/.test(bgSrc)
+    && /cw\.kw\.keep/.test(bgSrc)
+    && /v0\.5\.41：轻量 IDF/.test(viewerSrc0541)
+    && /function parseWordList\(v\) \{/.test(viewerSrc0541)
+    && /setWordLists/.test(viewerSrc0541));
 } else {
   console.log('ℹ️ 跳过扩展副本一致性校验（找不到开发目录 ' + devExtDir + '，非开发机上属正常）');
 }

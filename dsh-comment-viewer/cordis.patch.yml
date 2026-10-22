@@ -1,0 +1,3 @@
+- insert:
+    - id: comment-viewer
+      name: dsh-comment-viewer

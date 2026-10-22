@@ -896,6 +896,120 @@
     return true;
   }
 
+  /**
+   * 等签名期间的「持久助推」（v0.5.44，用户 m00597 要求：等太久要自己滚一滚）。
+   *
+   * 为什么需要：签名过期（>8 分钟）后扩展进入 waiting-sign，先合成点开评论区、滚 NUDGE_MAX=3 次
+   * 就收手，然后干等页面发 comment/list。可**续采**时评论区早就开着，页面直接用缓存渲染、
+   * 压根不发请求 —— 3 次预算用完后扩展什么都不做，用户看到的就是「点一次没反应，得再点一次」。
+   * 这里把「等签名」期间的助推改成持续动作，直到拿到签名或阶段变化：
+   *   ① 评论区开着 → 交替「滚到底 / 往上回拉一屏」（虚拟列表翻页会发新请求）；每第 3 次
+   *      顺带收起再点开（逼它重拉第一页）；
+   *   ② 列表在但滚不动 → 收起再点开评论区；
+   *   ③ 评论区没开 → 直接点入口打开。
+   * 每 PERSIST_NUDGE_MS 一次，最多 PERSIST_NUDGE_MAX 次（默认 3s × 20 ≈ 60s），
+   * 拿到签名 / 暂停 / 换视频时由 setPhase 立刻停掉（不会和采集抢页面）。
+   */
+  var PERSIST_NUDGE_MS = 3000;
+  var PERSIST_NUDGE_MAX = 20;
+  var persistNudgeTimer = null;
+  var persistNudgeCount = 0;
+  var persistNudgeFlip = false;   // 交替「滚到底 / 往上拉」：一直往下滚到底反而不触发加载
+
+  function stopPersistNudge(why) {
+    if (!persistNudgeTimer) return;
+    clearTimeout(persistNudgeTimer);
+    persistNudgeTimer = null;
+    logAutoOpen('persist-stop:' + (why || ''));
+  }
+
+  function resetPersistNudge() {
+    persistNudgeCount = 0;
+    persistNudgeFlip = false;
+    stopPersistNudge('reset');
+  }
+
+  /**
+   * 滚一下评论列表：dir>0 滚到底，dir<0 往上回拉 1.5 屏。
+   * 为什么还要往上拉：滚到底后 scrollTop 已经在底，再赋同样的值不产生 scroll 事件，
+   * 页面就不会请求下一页；先回拉再滚到底才会重新触发加载。
+   */
+  function persistScroll(dir) {
+    var list = document.querySelector('[data-e2e="comment-list"]');
+    if (!list || !visibleForClick(list)) return false;
+    try {
+      var r = list.getBoundingClientRect();
+      if (dir > 0) list.scrollTop = list.scrollHeight;
+      else list.scrollTop = Math.max(0, list.scrollTop - Math.round(r.height * 1.5));
+      list.dispatchEvent(new WheelEvent('wheel', {
+        bubbles: true, cancelable: true, composed: true,
+        clientX: Math.round(r.left + r.width / 2),
+        clientY: Math.round(r.top + r.height / 2),
+        deltaY: dir > 0 ? 1200 : -1200, deltaMode: 0
+      }));
+    } catch (e) { /* 只靠 scrollTop 也能触发原生 scroll */ }
+    return true;
+  }
+
+  /** 点一下评论入口（不论抽屉开没开）：收起再点开能让页面重新拉第一页评论 */
+  function persistClickEntry(tag) {
+    var box = currentVideoBox();
+    var hit = box ? bestVisibleEntry(box, COMMENT_ENTRY_SEL) : null;
+    if (!hit) hit = bestVisibleEntry(document, COMMENT_ENTRY_SEL);
+    if (!hit) return null;
+    panelStateSuspect = false;
+    synthClick(hit.el);
+    autoOpenLast = 'clicked:' + hit.sel;
+    logAutoOpen('persist-' + tag + ':' + hit.sel);
+    return hit.sel;
+  }
+
+  /**
+   * 列表滚不动时的兜底：先点一下把抽屉收起，1.2s 后再点一下重新打开。
+   * 抽屉重新打开会重新请求第一页评论 → 带 a_bogus 的新签名。只在还停在 waiting-sign 时补第二下。
+   */
+  function persistTogglePanel() {
+    if (!persistClickEntry('toggle-close')) return false;
+    setTimeout(function () {
+      if (!needSign || phase !== 'waiting-sign') return;
+      persistClickEntry('toggle-open');
+      render();
+    }, 1200);
+    return true;
+  }
+
+  function persistNudgeTick() {
+    persistNudgeTimer = null;
+    if (!needSign || phase !== 'waiting-sign') { logAutoOpen('persist-stop:phase=' + phase); return; }
+    if (persistNudgeCount >= PERSIST_NUDGE_MAX) { logAutoOpen('persist-giveup:max=' + persistNudgeCount); return; }
+    persistNudgeCount++;
+    var open = commentAreaOpen();
+    var did = '';
+    if (open) {
+      // 每 3 次强制开合一次：光滚列表在「列表已到底/页面复用缓存」时不一定会发新请求
+      if (persistNudgeCount % 3 === 0) {
+        if (persistTogglePanel()) did = 'toggle';
+      }
+      if (!did) {
+        persistNudgeFlip = !persistNudgeFlip;
+        if (persistScroll(persistNudgeFlip ? 1 : -1)) did = 'scroll-' + (persistNudgeFlip ? 'down' : 'up');
+        else if (persistTogglePanel()) did = 'toggle';
+      }
+    } else if (persistClickEntry('open')) {
+      did = 'open';
+    }
+    logAutoOpen('persist#' + persistNudgeCount + ' ' + (did || 'no-target')
+      + ' area=' + (open ? 1 : 0) + ' vis=' + visibleCommentItemCount());
+    render();
+    persistNudgeTimer = setTimeout(persistNudgeTick, PERSIST_NUDGE_MS);
+  }
+
+  /** 开始等签名时挂上持续助推；重复调用会重置计数与计时 */
+  function schedulePersistNudge() {
+    resetPersistNudge();
+    persistNudgeTimer = setTimeout(persistNudgeTick, PERSIST_NUDGE_MS);
+  }
+
   /** 试着自动打开评论区；返回是否真的点了入口（只在「需要签名」的路径上调用） */
   function autoOpenComments(why) {
     logAutoOpen('enter:' + why + ' n=' + autoOpenCount + ' area=' + (commentAreaOpen() ? 1 : 0)
@@ -982,7 +1096,7 @@
     }
     if (/^no-target:/.test(autoOpenLast)) return '还没拿到签名：没能自动找到评论入口。' + signHint();
     if (/^clicked:/.test(autoOpenLast)) {
-      return base + '扩展已替你点开评论区（没反应会再试两次，全是合成点击）。' + signHint();
+      return base + '扩展已替你点开评论区（没反应会隔几秒再试，最多持续约 1 分钟，全是合成点击）。' + signHint();
     }
     return base + signHint();
   }
@@ -1005,6 +1119,8 @@
     if (phase !== 'waiting-sign') return;   // 页面已经把签名发回来了，自动接上
     var fin = lead + waitingSignNote();
     setPhase('waiting-sign', asError ? fin : '', asError ? '' : fin);
+    if (phase !== 'waiting-sign') return;   // 上面这一行（或点击）期间签名已到，不用再助推
+    schedulePersistNudge();
   }
 
   // 最近一次「因页面切换而被作废」的签名所属视频。只用于向用户解释为什么在等待，
@@ -2686,16 +2802,19 @@
     }
   }
 
-  /** v0.5.21：面板只剩「导出范围」= 自选浮层。没被用户改过时默认跟着当前视频走（等价旧「本条视频」） */
+  /**
+   * v0.5.43：不再「默认跟着当前视频走」。
+   * 客户反馈「我什么都没选就说选中 1 条」——之前这里会把当前视频预选进去，面板显示
+   * 「导出范围：1 个视频」，但那条视频本地可能一条评论都没有，点导出就报 EMPTY_POOL。
+   * 现在默认什么都不选（面板显示「未选中视频」），导出前必须先在浮层里勾。
+   */
   function ensureExportPickDefault() {
-    if (exportPickTouched || (exportPick && exportPick.length)) return;
-    var v = videoId || pageViewId();
-    if (v) exportPick = [v];
+    if (exportPick && !exportPick.length) exportPick = null;
   }
 
   /** 导出范围按钮上的文案（也是当前口径的唯一提示） */
   function exportScopeText() {
-    if (!exportPick || !exportPick.length) return '导出范围：未选择';
+    if (!exportPick || !exportPick.length) return '导出范围：未选中视频';
     if (exportPick.length === 1) {
       var v = videoId || pageViewId();
       return exportPick[0] === v ? '导出范围：本条视频' : '导出范围：1 个视频';
@@ -2755,15 +2874,17 @@
     var sel = selectedPickIds();
     var total = 0;
     sel.forEach(function (id) { total += Number(pickMeta[id] && pickMeta[id].count) || 0; });
+    // v0.5.39：文案精简——没勾就直说「未选中视频」，勾了才报数量
     ui.pickerInfo.textContent = pickIds.length
-      ? ('本地 ' + pickIds.length + ' 个视频 · 已选 ' + sel.length + ' 个（约 ' + total + ' 条）')
+      ? (sel.length ? ('已选 ' + sel.length + ' 个 · 约 ' + total + ' 条') : '未选中视频')
       : '';
     // v0.5.23：选中反馈——用户「选中没有提示」。除了每行高亮（CSS :has），顶部这行也变色加粗，
     // 让「选了几个 / 大概多少条」一眼可见。
     ui.pickerInfo.classList.toggle('dts-has-sel', sel.length > 0);
     if (ui.pickerOk) {
-      var txt = sel.length ? ('导出选中的 ' + sel.length + ' 个…') : '确定';
-      if (ui.pickerOk.textContent !== txt) ui.pickerOk.textContent = txt;
+      // v0.5.39：按钮只说「选中视频」（原来是「导出选中的 N 个…」），一个都没勾时禁用
+      if (ui.pickerOk.textContent !== '选中视频') ui.pickerOk.textContent = '选中视频';
+      ui.pickerOk.disabled = sel.length === 0;
     }
   }
 
@@ -2862,10 +2983,11 @@
       ui.root.classList.add('dts-settings-open');   // 撑高面板，够放视频清单
     }
     ui.picker.classList.remove('dts-hidden');
+    // v0.5.39：浮层打开时不再预勾当前视频（客户「没选中视频时也是显示选中是 1 条」）。
+    // 面板默认口径仍是「本条视频」，但浮层里必须由用户亲手勾。
     pickSel = {};
-    if (exportPick) exportPick.forEach(function (id) { pickSel[id] = true; });
     errText = '';
-    noteText = '选择要导出的视频：勾选后点「确定」，再点面板上的「导出 CSV / JSON」';
+    noteText = '勾选要导出的视频，点「选中视频」';
     loadPickerList();
     render();
   }
@@ -2887,17 +3009,14 @@
     sel.forEach(function (id) { total += Number(pickMeta[id] && pickMeta[id].count) || 0; });
     exportPickTouched = true;      // 用户亲手改过选择：之后不再自动跟随当前视频
     if (!sel.length) {
-      exportPick = null;
-      errText = '没选任何视频：点「导出范围」重新选，或直接点「导出 CSV」前先在浮层里勾几条';
-      noteText = '';
-      closePicker();
+      // 0 选时按钮是禁用的，这里只是兜底：不改动原选择、也不关浮层
+      errText = '未选中视频';
       render();
       return;
     }
     exportPick = sel;
     errText = '';
-    noteText = '导出范围：已选 ' + sel.length + ' 个视频（共约 ' + total
-      + ' 条）；点「导出 CSV / 导出 JSON」就只导这几条';
+    noteText = '已选中 ' + sel.length + ' 个视频（约 ' + total + ' 条），点导出即可';
     closePicker();
     render();
   }
@@ -2910,8 +3029,8 @@
     var vid = videoId || pageViewId();
     var pick = exportPick && exportPick.length ? exportPick.slice() : null;
     if (!pick) {
-      // v0.5.21：范围只剩自选，没选就当场把浮层打开，别让用户猜要先去哪选
-      errText = '还没选要导哪些视频：先在「导出范围」里勾几条（「全选」= 本地全部视频）';
+      // v0.5.43：默认不再预选当前视频 —— 没勾就明确说「未选中视频」，并把浮层打开
+      errText = '未选中视频：先点「导出范围」勾选要导出的视频（「全选」= 本地全部视频）';
       render();
       openPicker();
       return;
@@ -2977,7 +3096,7 @@
     ensureExportPickDefault();
     var pick = exportPick && exportPick.length ? exportPick.slice() : null;
     if (!pick) {
-      errText = '还没选要导哪些视频：先在「导出范围」里勾几条（「全选」= 本地全部视频）';
+      errText = '未选中视频：先点「导出范围」勾选要导出的视频（「全选」= 本地全部视频）';
       render();
       openPicker();
       return;
@@ -3638,6 +3757,7 @@
   }
 
   function setPhase(p, err, note) {
+    if (p !== 'waiting-sign') stopPersistNudge('phase:' + p);   // 只在等签名期间持续助推
     phase = p;
     if (err !== undefined) errText = err || '';
     if (note !== undefined) noteText = note || '';
