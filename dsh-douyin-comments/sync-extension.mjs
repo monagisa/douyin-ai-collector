@@ -12,7 +12,7 @@ const src = process.argv[2] || process.env.DOUYIN_EXT_DIR || path.resolve(here, 
 const dst = path.join(here, 'extension');
 
 // 只同步白名单：源目录里混入的 probe/备份脚本不能被一起装进浏览器
-const KEEP = ['manifest.json', 'hook.js', 'content.js', 'background.js', 'panel.css', 'app.js', 'index.html', 'style.css'];
+const KEEP = ['manifest.json', 'hook.js', 'content.js', 'background.js', 'panel.css', 'app.js', 'index.html', 'cloud.html', 'style.css'];
 
 if (!fs.existsSync(path.join(src, 'manifest.json'))) {
   console.error('❌ 源目录里没有 manifest.json：' + src);

@@ -3092,6 +3092,7 @@
    * 导出词云（v0.5.30）：让后台把选中的评论打包成一个自包含 HTML（词云页 + 数据内嵌），
    * 下载下来双击就能看交互词云，发给别人也不用装扩展。数据不出本机。
    */
+  // v0.5.46：面板「导出词云」不再下载文件——后台把数据放进 storage，再打开扩展页 ?cloudview=1
   function exportCloud() {
     ensureExportPickDefault();
     var pick = exportPick && exportPick.length ? exportPick.slice() : null;
@@ -3106,37 +3107,33 @@
       return;
     }
     errText = '';
-    noteText = '正在打包词云（' + pick.length + ' 个视频）…（若弹出「另存为」对话框，请选择保存位置）';
+    noteText = '正在打包词云（' + pick.length + ' 个视频）…';
     render();
-    var pending = '正在打包词云…';
     try {
-      chrome.runtime.sendMessage({ type: 'dts-cloud', videoIds: pick }, function (resp) {
+      chrome.runtime.sendMessage({ type: 'dts-cloud-open', videoIds: pick }, function (resp) {
         if (chrome.runtime.lastError) {
           var le = chrome.runtime.lastError.message || '';
           if (isExtContextInvalid(le)) { onExtContextLost(le); return; }
           noteText = '';
-          errText = '导出词云失败：' + le;
+          errText = '打开词云失败：' + le;
           render();
           return;
         }
         if (resp && resp.ok) {
           errText = '';
-          noteText = '已导出词云 ' + resp.filename + '（' + resp.count + ' 条 · ' +
-            resp.videoCount + ' 个视频 · ' + Math.round((Number(resp.bytes) || 0) / 1024) + ' KB）；双击 HTML 打开';
-        } else if (resp && resp.cancelled) {
-          noteText = '';
-          errText = '已取消保存，词云文件没有导出（评论数据仍在本地，可随时重新导出）';
+          noteText = '已在新标签页打开词云（' + resp.count + ' 条 · ' + resp.videoCount + ' 个视频 · ' +
+            Math.round((Number(resp.bytes) || 0) / 1024) + ' KB）— 想存成文件在那一页按 Ctrl+S';
         } else {
           noteText = '';
-          errText = '导出词云失败：' + ((resp && resp.error) || '未知错误')
+          errText = '打开词云失败：' + ((resp && resp.error) || '未知错误')
             + (resp && resp.hint ? '（' + resp.hint + '）' : '');
         }
         render();
       });
     } catch (e) {
-      if (isExtContextInvalid(e)) { onExtContextLost(String(e && e.message || e)); return; }
+      if (isExtContextInvalid(e)) { onExtContextLost(String((e && e.message) || e)); return; }
       noteText = '';
-      errText = '导出词云失败：' + String(e && e.message || e);
+      errText = '打开词云失败：' + String((e && e.message) || e);
       render();
     }
   }

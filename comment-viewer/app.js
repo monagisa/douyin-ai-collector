@@ -87,7 +87,9 @@
     comments: [],              // 全部评论（已归一化、已去重）
     videos: new Map(),         // videoId -> { id, title, url, collectedAt }
     sources: [],               // 已载入文件名
-    filters: { videoId: '', search: '', onlyHasProfile: false, onlyTopLevel: false, onlyNonEmpty: false, onlyContent: true },
+    filters: { videoId: '', search: '', onlyHasProfile: false, onlyTopLevel: false, onlyNonEmpty: false, onlyContent: true, sentiment: '', topic: '' },
+    topics: [],                // v3.0：主题聚类结果（TF-IDF + k-means）
+    topicBusy: false,
     kwKeep: [],               // v0.5.41：自定义加词（长词优先，避免被切碎）
     kwBlock: [],              // v0.5.41：自定义屏蔽词
     sort: 'digg',
@@ -320,12 +322,24 @@
       if (f.onlyHasProfile && !profileOf(c.user)) return false;
       if (f.onlyTopLevel && c.isReply) return false;
       if (f.onlyNonEmpty && !c.text) return false;
+      // v3.0：情感 / 主题筛选（主题由 baseFiltered 的聚类结果给出，避免自我循环）
+      if (f.sentiment && ((c.sentiment && c.sentiment.label) || 'neu') !== f.sentiment) return false;
+      if (f.topic !== '' && f.topic != null && String(c.topic == null ? -1 : c.topic) !== String(f.topic)) return false;
       if (q) {
         const hay = (c.text + ' ' + c.user.nickname + ' ' + c.user.uniqueId + ' ' + c.ip).toLowerCase();
         if (hay.indexOf(q) === -1) return false;
       }
       return true;
     });
+  }
+
+  // v3.0：不含情感/主题的“基础筛选”，主题聚类与洞察面板都基于它，避免筛选后主题编号漂移
+  function baseFiltered() {
+    const savedS = state.filters.sentiment, savedT = state.filters.topic;
+    state.filters.sentiment = ''; state.filters.topic = '';
+    const out = filtered();
+    state.filters.sentiment = savedS; state.filters.topic = savedT;
+    return out;
   }
 
   /* ===================== 分词 ===================== */
@@ -458,6 +472,480 @@
     return out.sort((a, b) => b.weight - a.weight || b.count - a.count || a.word.localeCompare(b.word));
   }
 
+  /* ===================== 情感分析（v3.0） =====================
+   * 纯本地词典法：正向/负向词表（分级权重）+ 程度副词提升 + 否定词翻转 + 抖音表情标签。
+   * 不联网、不调模型，结果可解释；输出挂在评论上：c.sentiment = { score, label, hits }。
+   */
+  const SENT_POS_STRONG = new Set(('太棒 牛逼 绝了 神作 惊艳 完美 精彩 厉害 高能 真香 给力 宝藏 神器 顶 爱了 圈粉 封神 天花板 牛逼克拉斯 大佬 佩服 五体投地 神评 笑死'.split(/\s+/)));
+  const SENT_POS = new Set(('好 赞 棒 强 牛 喜欢 爱 支持 感谢 感动 治愈 暖心 温柔 靠谱 良心 专业 优秀 燃 爽 香 甜 不错 挺好 蛮好 中肯 客观 理性 真实 实在 清楚 明白 简洁 干净 顺畅 稳定 实用 有用 值得 推荐 安利 好用 期待 开心 快乐 高兴 兴奋 满意 舒服 舒适 好看 好听 好玩 可爱 漂亮 帅 美 有趣 搞笑 好笑 感人 贴心 用心 细致 耐心 认真 高手 内行 尊敬 涨知识 学到 受教 好评 有质感 有诚意 有干货 硬核'.split(/\s+/)));
+  const SENT_NEG_STRONG = new Set(('垃圾 恶心 恶心人 烂 骗子 欺骗 智障 弱智 傻逼 恶臭 反感 讨厌 恨 愤怒 崩溃 心碎 失望 无语 离谱 逆天 破防 麻了 服了 难受 痛苦 吐了 呕吐 鄙视 白眼 嘲讽 喷 骂 举报 差评 水军 掉粉 取关 别买 不值 退钱 翻车 侮辱 冒犯 恶俗 低俗 割韭菜 智商税 阴阳怪气 洗白 洗地 拉胯 恰饭 硬广'.split(/\s+/)));
+  const SENT_NEG = new Set(('不行 不好 难看 难听 难受 麻烦 复杂 混乱 卡 卡顿 慢 贵 亏 可惜 遗憾 一般 普通 平庸 老套 套路 水 敷衍 凑数 多余 尬 冷场 叹气 皱眉 害怕 恐怖 吓人 阴影 不适 争议 质疑 反驳 抬杠 双标 强行 尴尬 无聊 拖沓 生气 发怒 差 弱 划水 广告 坑 糊弄 玄学 劝退'.split(/\s+/)));
+  const SENT_NEGATORS = new Set(('不 没 无 未 别 莫 非 勿 没有 不是 不算 不会 不能 不要 不用 不必 不够 不太 不怎么 没那么'.split(/\s+/)));
+  const SENT_DEGREE = new Set(('太 很 非常 特别 超 巨 极 真 更 最 十分 相当 格外 尤其 愈发 更加 简直 实在 真是 巨他妈'.split(/\s+/)));
+  const EMOJI_POS = new Set(('憨笑 微笑 大笑 笑哭 呲牙 偷笑 得意 调皮 酷 比心 鼓掌 加油 玫瑰 爱心 飞吻 抱拳 胜利 强 点赞 撒花 庆祝 耶 亲亲 害羞 愉快 色 吃瓜 调皮'.split(/\s+/)));
+  const EMOJI_NEG = new Set(('流泪 大哭 崩溃 发怒 生气 鄙视 白眼 呕吐 敲打 菜刀 心碎 失望 无语 裂开 叹气 皱眉 骷髅 害怕 惊恐 再见 弱 尬 汗 擦汗 抠鼻 黑线 委屈 可怜 抓狂 咒骂 闭嘴 哼 怒 困'.split(/\s+/)));
+
+  const EMOJI_TAG_RE = /\[[^\[\]]{1,12}\]/g;
+
+  function sentimentOf(text) {
+    const raw = String(text || '');
+    let score = 0;
+    let emoHits = 0;
+    const tags = raw.match(EMOJI_TAG_RE) || [];
+    for (const t of tags) {
+      const name = t.slice(1, -1);
+      if (EMOJI_POS.has(name)) { score += 1.2; emoHits++; }
+      else if (EMOJI_NEG.has(name)) { score -= 1.2; emoHits++; }
+    }
+    const s = raw.replace(EMOJI_TAG_RE, ' ').replace(/@[^\s@]+|#[^\s#]+/g, ' ');
+    if (!s.trim()) {
+      const norm0 = Math.tanh(score / 2);
+      return { score: Math.round(norm0 * 100) / 100, label: norm0 > 0.15 ? 'pos' : (norm0 < -0.15 ? 'neg' : 'neu'), hits: emoHits };
+    }
+    const toks = [];
+    if (segmenter) for (const seg of segmenter.segment(s)) if (seg.isWordLike) toks.push(seg.segment);
+    else for (const p of s.match(/[A-Za-z][A-Za-z0-9']*|[\u4e00-\u9fff]{1,4}/g) || []) toks.push(p);
+    let hits = 0;
+    for (let i = 0; i < toks.length; i++) {
+      const t = toks[i];
+      let base = 0;
+      if (SENT_POS_STRONG.has(t)) base = 2;
+      else if (SENT_POS.has(t)) base = 1;
+      else if (SENT_NEG_STRONG.has(t)) base = -2;
+      else if (SENT_NEG.has(t)) base = -1;
+      if (!base) continue;
+      let mult = 1;
+      for (let j = Math.max(0, i - 2); j < i; j++) {
+        if (SENT_DEGREE.has(toks[j])) mult *= 1.5;
+        if (SENT_NEGATORS.has(toks[j])) mult *= -0.8;
+      }
+      score += base * mult;
+      hits++;
+    }
+    const norm = Math.tanh(score / 2);
+    return {
+      score: Math.round(norm * 100) / 100,
+      label: norm > 0.15 ? 'pos' : (norm < -0.15 ? 'neg' : 'neu'),
+      hits: hits + emoHits,
+    };
+  }
+
+  function annotateSentiment(list) {
+    for (const c of list) if (!c.sentiment) c.sentiment = sentimentOf(c.text);
+  }
+
+  const SENT_LABEL = { pos: '正向', neu: '中性', neg: '负向' };
+
+  function sentimentStats(list) {
+    const s = { pos: 0, neu: 0, neg: 0 };
+    for (const c of list) {
+      const l = (c.sentiment && c.sentiment.label) || 'neu';
+      s[l] = (s[l] || 0) + 1;
+    }
+    return s;
+  }
+
+  /* ===================== 主题聚类（v3.0） =====================
+   * TF-IDF + 轻量 k-means（确定性种子：等距取 k 篇当初始中心），纯前端、无依赖。
+   * 输出 state.topics = [{ id, label, terms, count, reps:[comment] }]，评论上挂 c.topic。
+   */
+  function buildTopics(list) {
+    const docs = [];
+    for (const c of list) {
+      if (!c.text) continue;
+      const seen = new Set();
+      const toks = [];
+      for (const raw of tokensOf(c.textClean || c.text)) {
+        const w = cleanToken(raw, true);
+        if (!w || seen.has(w)) continue;
+        seen.add(w);
+        toks.push(w);
+      }
+      if (toks.length >= 2) docs.push({ c, toks });
+    }
+    const n = docs.length;
+    for (const c of list) delete c.topic;
+    if (n < 12) { state.topics = []; return; }
+    const df = new Map();
+    for (const d of docs) for (const w of d.toks) df.set(w, (df.get(w) || 0) + 1);
+    const minDf = Math.max(2, Math.round(n * 0.012));
+    const vocab = Array.from(df.entries())
+      .filter(([, v]) => v >= minDf)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 900)
+      .map(([w]) => w);
+    if (vocab.length < 8) { state.topics = []; return; }
+    const idx = new Map(vocab.map((w, i) => [w, i]));
+    const idf = vocab.map((w) => Math.log(1 + n / df.get(w)));
+    const vecs = docs.map((d) => {
+      const tf = new Map();
+      for (const w of d.toks) { const i = idx.get(w); if (i != null) tf.set(i, (tf.get(i) || 0) + 1); }
+      const v = new Map();
+      let sum = 0;
+      for (const [i, f] of tf) { const val = (1 + Math.log(f)) * idf[i]; v.set(i, val); sum += val * val; }
+      const norm = Math.sqrt(sum) || 1;
+      for (const [i, val] of v) v.set(i, val / norm);
+      return v;
+    });
+    const k = Math.max(3, Math.min(8, Math.round(Math.sqrt(n) / 2)));
+    const cos = (a, b) => {
+      let s = 0;
+      const small = a.size <= b.size ? a : b;
+      const big = a.size <= b.size ? b : a;
+      for (const [i, v] of small) { const w = big.get(i); if (w) s += v * w; }
+      return s;
+    };
+    const cent = [];
+    for (let i = 0; i < k; i++) cent.push(new Map(vecs[Math.min(n - 1, Math.floor((i + 0.5) * n / k))]));
+    const assign = new Array(n).fill(-1);
+    for (let it = 0; it < 14; it++) {
+      let moved = 0;
+      for (let d = 0; d < n; d++) {
+        let best = 0, bestS = -2;
+        for (let c = 0; c < k; c++) { const s = cos(vecs[d], cent[c]); if (s > bestS) { bestS = s; best = c; } }
+        if (assign[d] !== best) { assign[d] = best; moved++; }
+      }
+      const next = Array.from({ length: k }, () => new Map());
+      for (let d = 0; d < n; d++) {
+        const m = next[assign[d]];
+        for (const [i, v] of vecs[d]) m.set(i, (m.get(i) || 0) + v);
+      }
+      for (let c = 0; c < k; c++) {
+        const m = next[c];
+        let sum = 0;
+        for (const v of m.values()) sum += v * v;
+        const norm = Math.sqrt(sum) || 1;
+        for (const [i, v] of m) m.set(i, v / norm);
+        cent[c] = m;
+      }
+      if (!moved && it > 2) break;
+    }
+    const raw = [];
+    for (let c = 0; c < k; c++) {
+      const members = [];
+      const termW = new Map();
+      for (let d = 0; d < n; d++) {
+        if (assign[d] !== c) continue;
+        members.push(d);
+        for (const [i, v] of vecs[d]) termW.set(i, (termW.get(i) || 0) + v);
+      }
+      if (members.length < 2) { raw.push(null); continue; }
+      const terms = Array.from(termW.entries()).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([i]) => vocab[i]);
+      const reps = members
+        .map((d) => ({ d, s: cos(vecs[d], cent[c]) * (1 + Math.log1p(Math.max(0, docs[d].c.digg))) }))
+        .sort((a, b) => b.s - a.s)
+        .slice(0, 3)
+        .map((x) => docs[x.d].c);
+      raw.push({ label: terms.slice(0, 2).join(' · ') || ('主题 ' + (c + 1)), terms, count: members.length, reps, members });
+    }
+    state.topics = raw.filter(Boolean).map((t, i) => ({ id: i, label: t.label, terms: t.terms, count: t.count, reps: t.reps }));
+    const keep = new Set(raw.map((t, i) => (t ? i : -1)).filter((i) => i >= 0));
+    const remap = new Map();
+    let j = 0;
+    for (let i = 0; i < raw.length; i++) if (raw[i]) remap.set(i, j++);
+    for (let d = 0; d < n; d++) {
+      const c0 = assign[d];
+      if (!keep.has(c0)) continue;
+      docs[d].c.topic = remap.get(c0);
+    }
+  }
+
+  /* ===================== 洞察面板（v3.0） ===================== */
+  function dashboardCard(title, sub, bodyHtml, extraClass) {
+    return `<div class="insight-card${extraClass ? ' ' + extraClass : ''}">
+      <div class="insight-head"><h3>${esc(title)}</h3><span class="meta">${esc(sub || '')}</span></div>
+      <div class="insight-body">${bodyHtml}</div>
+    </div>`;
+  }
+
+  function svgTrend(list) {
+    const byDay = new Map();
+    let minT = Infinity, maxT = -Infinity;
+    for (const c of list) {
+      const s = String(c.createTimeStr || '').slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) continue;
+      const neg = c.sentiment && c.sentiment.label === 'neg' ? 1 : 0;
+      const rec = byDay.get(s) || { n: 0, neg: 0 };
+      rec.n++; rec.neg += neg;
+      byDay.set(s, rec);
+      const t = Date.parse(s + 'T00:00:00');
+      if (t < minT) minT = t;
+      if (t > maxT) maxT = t;
+    }
+    const days = Array.from(byDay.entries()).sort((a, b) => (a[0] < b[0] ? -1 : 1));
+    if (days.length < 2) {
+      return `<p class="meta">${days.length ? '只有一天的数据（' + days[0][0] + '），看不出趋势' : '没有可用的时间字段'}</p>`;
+    }
+    const shown = days.slice(-30);
+    const maxN = Math.max.apply(null, shown.map(([, v]) => v.n)) || 1;
+    const W = 300, H = 92, pad = 4;
+    const x = (i) => pad + (i * (W - pad * 2)) / Math.max(1, shown.length - 1);
+    const y = (n) => H - pad - (n / maxN) * (H - pad * 2);
+    const pts = shown.map(([, v], i) => [x(i), y(v.n)]);
+    const line = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ');
+    const area = line + ` L${x(shown.length - 1).toFixed(1)} ${H - pad} L${pad} ${H - pad} Z`;
+    const negPts = shown.map(([, v], i) => [x(i), H - pad - (v.neg / Math.max(1, v.n)) * (H - pad * 2)]);
+    const negLine = negPts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ');
+    const peak = shown.reduce((a, b) => (b[1].n > a[1].n ? b : a));
+    return `<svg class="trend" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="评论量趋势">
+      <path class="area" d="${area}"></path>
+      <path class="line" d="${line}"></path>
+      <path class="negline" d="${negLine}"></path>
+      ${pts.map((p, i) => (i === 0 || i === pts.length - 1 || shown[i] === peak ? `<circle class="dot" cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="1.8"></circle>` : '')).join('')}
+    </svg>
+    <div class="legend"><span><i class="sw-line"></i>每天评论数</span><span><i class="sw-neg"></i>负评占比</span><span class="meta">峰值 ${valEsc(peak[0].slice(5))} · ${peak[1].n} 条</span></div>
+    <div class="axis"><span>${esc(shown[0][0].slice(5))}</span><span>${esc(shown[shown.length - 1][0].slice(5))}</span></div>`;
+  }
+
+  function valEsc(v) { return String(v == null ? '' : v).replace(/[&<>"]/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[m])); }
+
+  /* ===================== 情感健康度（v3.1：熵权法 + TOPSIS，按天分桶） ===================== */
+  const HEALTH_GRADES = [
+    { min: 80, label: '很好', cls: 'h-good' },
+    { min: 65, label: '较好', cls: 'h-ok' },
+    { min: 50, label: '一般', cls: 'h-mid' },
+    { min: 35, label: '偏弱', cls: 'h-warn' },
+    { min: 0, label: '较差', cls: 'h-bad' },
+  ];
+  const HEALTH_IND = [
+    { key: 'negRatio', label: '负面占比', cap: 0.35 },
+    { key: 'negDigg', label: '负评点赞占比', cap: 0.35 },
+    { key: 'burst', label: '评论热度', cap: 1 },
+    { key: 'topNeg', label: '高赞负评率', cap: 0.5 },
+  ];
+
+  function healthMedian(nums) {
+    if (!nums.length) return 0;
+    const a = nums.slice().sort((x, y) => x - y);
+    const mid = a.length >> 1;
+    return a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2;
+  }
+
+  // 按天分桶：每天是一个“方案”，4 个指标都是「越大越差」的风险向
+  function healthBuckets(list) {
+    const diggAll = list.map((c) => Number(c.digg) || 0);
+    const diggMedian = healthMedian(diggAll);
+    const map = new Map();
+    for (const c of list) {
+      const day = String(c.createTimeStr || '').slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue;
+      let b = map.get(day);
+      if (!b) { b = { day, n: 0, neg: 0, digg: 0, negDigg: 0, topN: 0, topNeg: 0 }; map.set(day, b); }
+      const dg = Number(c.digg) || 0;
+      const neg = c.sentiment && c.sentiment.label === 'neg' ? 1 : 0;
+      b.n++; b.digg += dg; b.neg += neg;
+      if (neg) b.negDigg += dg;
+      if (dg >= diggMedian && dg > 0) { b.topN++; b.topNeg += neg; }
+    }
+    return Array.from(map.values()).sort((a, b) => (a.day < b.day ? -1 : 1));
+  }
+
+  // 熵权法：m 个方案 × k 个指标；方案少于 2 个或区分度全为 0 时退化成等权
+  function entropyWeights(matrix) {
+    const m = matrix.length, k = matrix[0].length;
+    const w = new Array(k).fill(1 / k);
+    if (m < 2) return w;
+    const sums = [];
+    for (let j = 0; j < k; j++) { let s = 0; for (let i = 0; i < m; i++) s += matrix[i][j]; sums.push(s); }
+    const div = 1 / Math.log(m);
+    const ds = [];
+    for (let j = 0; j < k; j++) {
+      if (sums[j] <= 0) { ds.push(0); continue; }
+      let e = 0;
+      for (let i = 0; i < m; i++) {
+        const p = matrix[i][j] / sums[j];
+        if (p > 0) e -= p * Math.log(p);
+      }
+      ds.push(Math.max(0, 1 - e * div));
+    }
+    const sumD = ds.reduce((s, v) => s + v, 0);
+    if (sumD <= 0) return w;
+    for (let j = 0; j < k; j++) w[j] = ds[j] / sumD;
+    return w;
+  }
+
+  // TOPSIS：指标全为「越大越差」，返回每个方案的风险贴近度 0~1（1 = 最差）
+  function topsisRisk(matrix, w) {
+    const m = matrix.length, k = matrix[0].length;
+    if (m < 2) return matrix.map((row) => row.reduce((s, v, j) => s + v * w[j], 0));
+    const norm = [];
+    for (let j = 0; j < k; j++) {
+      let sq = 0;
+      for (let i = 0; i < m; i++) sq += matrix[i][j] * matrix[i][j];
+      norm.push(Math.sqrt(sq) || 1);
+    }
+    const v = matrix.map((row) => row.map((x, j) => (x / norm[j]) * w[j]));
+    const best = [], worst = [];
+    for (let j = 0; j < k; j++) {
+      let hi = -Infinity, lo = Infinity;
+      for (let i = 0; i < m; i++) { if (v[i][j] > hi) hi = v[i][j]; if (v[i][j] < lo) lo = v[i][j]; }
+      best.push(hi); worst.push(lo);
+    }
+    return v.map((row) => {
+      let db = 0, dw = 0;
+      for (let j = 0; j < k; j++) { db += Math.pow(row[j] - best[j], 2); dw += Math.pow(row[j] - worst[j], 2); }
+      db = Math.sqrt(db); dw = Math.sqrt(dw);
+      return db + dw === 0 ? 0.5 : dw / (db + dw);
+    });
+  }
+
+  function healthOf(list) {
+    const buckets = healthBuckets(list);
+    if (!buckets.length) return null;
+    const maxN = Math.max.apply(null, buckets.map((b) => b.n)) || 1;
+    const matrix = buckets.map((b) => [
+      Math.min(1, b.neg / Math.max(1, b.n) / HEALTH_IND[0].cap),
+      Math.min(1, b.negDigg / Math.max(1, b.digg) / HEALTH_IND[1].cap),
+      Math.min(1, b.n / maxN / HEALTH_IND[2].cap),
+      Math.min(1, b.topNeg / Math.max(1, b.topN) / HEALTH_IND[3].cap),
+    ]);
+    const w = entropyWeights(matrix);
+    const risks = topsisRisk(matrix, w);
+    const totalN = buckets.reduce((s, b) => s + b.n, 0) || 1;
+    const risk = buckets.reduce((s, b, i) => s + risks[i] * (b.n / totalN), 0);
+    const score = Math.max(0, Math.min(100, Math.round((1 - risk) * 100)));
+    const grade = HEALTH_GRADES.find((g) => score >= g.min) || HEALTH_GRADES[HEALTH_GRADES.length - 1];
+    const metrics = HEALTH_IND.map((ind, j) => {
+      const mean = buckets.reduce((s, b, i) => s + matrix[i][j] * (b.n / totalN), 0);
+      return { key: ind.key, label: ind.label, risk: mean, weight: w[j], contrib: w[j] * mean };
+    });
+    return { score, risk, grade, metrics, days: buckets.length };
+  }
+
+  function renderHealth(list) {
+    const h = healthOf(list);
+    if (!h) return '';
+    const riskPct = (x) => Math.round(x * 100);
+    const rows = h.metrics
+      .slice()
+      .sort((a, b) => b.contrib - a.contrib)
+      .map((m) => '<tr><td>' + esc(m.label) + '</td><td class="num">' + riskPct(m.risk) + '%</td><td class="num">' + Math.round(m.weight * 100) + '%</td><td class="num">' + riskPct(m.contrib) + '%</td></tr>')
+      .join('');
+    const marks = [20, 40, 60, 80].map((x) => '<span class="mk" style="left:' + x + '%"></span>').join('');
+    return '<div class="insight-card health">'
+      + '<div class="insight-head"><h3>情感健康度</h3><span class="meta">熵权法 + TOPSIS · 按天分桶（' + fmtNum(h.days) + ' 天）</span></div>'
+      + '<div class="insight-body">'
+      + '<div class="health-top">'
+      + '<div class="health-score"><b>' + h.score + '</b><small>/100</small></div>'
+      + '<span class="health-grade ' + h.grade.cls + '">' + esc(h.grade.label) + '</span>'
+      + '<div class="health-bar"><i class="' + h.grade.cls + '" style="width:' + h.score + '%"></i>' + marks + '</div>'
+      + '<span class="meta">风险 ' + riskPct(h.risk) + '%</span>'
+      + '</div>'
+      + '<table class="health-metrics"><thead><tr><th>指标（越大越差）</th><th>风险</th><th>权重</th><th>贡献</th></tr></thead><tbody>' + rows + '</tbody></table>'
+      + '<p class="meta">分数 = 100 − Σ(按天风险 × 当天评论占比)；权重由熵权法从数据里算，区分度越高的指标权重越大。</p>'
+      + '</div></div>';
+  }
+
+  function renderInsights(list) {
+    const box = $('#insightGrid') || $('#insights');
+    if (!box) return;
+    const total = list.length;
+    const st = sentimentStats(list);
+    const pct = (n) => (total ? Math.round((n / total) * 100) : 0);
+    const seg = (cls, n) => (total && n ? `<i class="sent-seg ${cls}" style="width:${(n / total) * 100}%"></i>` : '');
+    const negTop = list
+      .filter((c) => c.sentiment && c.sentiment.label === 'neg')
+      .sort((a, b) => b.digg - a.digg)
+      .slice(0, 3);
+    const sentHtml = total
+      ? `<div class="sent-bar">${seg('pos', st.pos)}${seg('neu', st.neu)}${seg('neg', st.neg)}</div>
+         <div class="sent-list">
+           <span><i class="sw-dot pos"></i>正向 ${fmtNum(st.pos)} · ${pct(st.pos)}%</span>
+           <span><i class="sw-dot neu"></i>中性 ${fmtNum(st.neu)} · ${pct(st.neu)}%</span>
+           <span><i class="sw-dot neg"></i>负向 ${fmtNum(st.neg)} · ${pct(st.neg)}%</span>
+         </div>
+         ${negTop.length ? `<div class="mini-list"><div class="mini-h">负评 Top${negTop.length}（按点赞）</div>${negTop.map((c) => `<button class="mini-row" type="button" data-neg-cid="${esc(c.cid)}"><span class="mini-txt">${esc((c.text || '').slice(0, 46) || '（无文字）')}</span><span class="mini-num">${fmtNum(c.digg)}</span></button>`).join('')}</div>` : '<p class="meta">没有识别到负向评论</p>'}`
+      : '<p class="meta">暂无数据</p>';
+
+    const regions = new Map();
+    for (const c of list) if (c.ip) regions.set(c.ip, (regions.get(c.ip) || 0) + 1);
+    const regTop = Array.from(regions.entries()).sort((a, b) => b[1] - a[1]).slice(0, 8);
+    const regMax = regTop.length ? regTop[0][1] : 1;
+    const regHtml = regTop.length
+      ? regTop.map(([k, v]) => `<div class="region-row"><span class="region-name">${esc(k)}</span><span class="region-bar"><i style="width:${(v / regMax) * 100}%"></i></span><span class="region-num">${fmtNum(v)}</span></div>`).join('')
+      : '<p class="meta">导出数据里没有属地字段</p>';
+
+    const topics = (state.topics || []).slice().sort((a, b) => b.count - a.count).slice(0, 6);
+    const topicHtml = topics.length
+      ? topics.map((t) => `<div class="topic-item">
+          <button class="topic-main" type="button" data-topic="${t.id}" title="只看这个主题">
+            <span class="topic-label">${esc(t.label)}</span>
+            <span class="topic-count">${fmtNum(t.count)} 条</span>
+          </button>
+          <div class="topic-terms">${t.terms.slice(0, 3).map((w) => `<button class="chip" type="button" data-topic-word="${esc(w)}">${esc(w)}</button>`).join('')}</div>
+          <div class="topic-reps">${t.reps.slice(0, 2).map((c) => `<div class="topic-rep">${esc((c.text || '').slice(0, 52) || '（无文字）')}</div>`).join('')}</div>
+        </div>`).join('')
+      : '<p class="meta">评论太少（< 12 条带文字）或没有明显主题</p>';
+
+    box.innerHTML = renderHealth(list) + dashboardCard('情感分布', `${fmtNum(total)} 条评论`, sentHtml)
+      + dashboardCard('评论趋势', '按天 · 最近 30 天', svgTrend(list))
+      + dashboardCard('地域分布', 'Top 8 省份/地区', regHtml)
+      + dashboardCard('主题聚类', `${topics.length} 个主题 · TF-IDF + k-means`, topicHtml, 'topic-card');
+
+    const sub = $('#insightSub');
+    if (sub) sub.textContent = total ? `负评率 ${pct(st.neg)}% · ${topics.length} 个主题` : '';
+    box.classList.toggle('is-empty', total === 0);
+    syncInsightHeights();
+  }
+
+  // v0.5.51：主题卡与左侧「地域分布」等高——量左侧自然高度，把主题列表限到同高并在内部滚动。
+  // 之前主题多（6 个簇 × 标签/词/代表评论）会把整行撑高，视觉上和左边不齐。
+  function syncInsightHeights() {
+    const apply = () => {
+    const box = $('#insightGrid') || $('#insights');
+    if (!box) return;
+    const topic = box.querySelector('.insight-card.topic-card');
+    if (!topic) return;
+    const cards = Array.from(box.querySelectorAll('.insight-card'));
+    const left = cards[cards.indexOf(topic) - 1] || null;
+    const body = topic.querySelector('.insight-body');
+    if (!body) return;
+    body.style.maxHeight = '';
+    body.style.overflowY = '';
+    if (!left) return;
+    const leftBody = left.querySelector('.insight-body');
+    const leftHead = left.querySelector('.insight-head');
+    const topicHead = topic.querySelector('.insight-head');
+    if (!leftBody || !leftHead || !topicHead) return;
+    const cs = getComputedStyle(left);
+    const padV = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+    // 关键：左侧 body 是 flex:1，会被整行拉伸；量自然高度前先取消 stretch，否则会「越量越高」
+    const prevFlex = leftBody.style.flex;
+    leftBody.style.flex = '0 0 auto';
+    const naturalLeftBody = leftBody.offsetHeight;
+    leftBody.style.flex = prevFlex;
+    const naturalLeft = leftHead.offsetHeight + naturalLeftBody + padV;
+    const csT = getComputedStyle(topic);
+    const padT = parseFloat(csT.paddingTop) + parseFloat(csT.paddingBottom);
+    const max = Math.max(120, Math.round(naturalLeft - topicHead.offsetHeight - padT));
+    body.style.maxHeight = max + 'px';
+    body.style.overflowY = 'auto';
+    };
+    apply();
+    // v0.5.51b：字体/布局晚到会让首帧量到的字高偏小，补两帧 + 字体就绪后再复算（幂等）
+    requestAnimationFrame(() => requestAnimationFrame(apply));
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(apply).catch(() => {});
+  }
+
+  let resizeTimer = 0;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(syncInsightHeights, 150);
+  });
+
+  function renderTopicFilter() {
+    const sel = $('#topicFilter');
+    if (!sel) return;
+    const cur = state.filters.topic;
+    const opts = ['<option value="">全部主题</option>'];
+    for (const t of (state.topics || [])) {
+      opts.push(`<option value="${t.id}">${esc(t.label)}（${fmtNum(t.count)} 条）</option>`);
+    }
+    sel.innerHTML = opts.join('');
+    sel.value = cur === '' ? '' : String(cur);
+    sel.disabled = !(state.topics || []).length;
+  }
+
   /* ===================== KPI ===================== */
   function renderKpis(list) {
     const users = new Set();
@@ -470,12 +958,15 @@
     }
     const avg = list.length ? (digg / list.length) : 0;
     const pct = (n) => (list.length ? Math.round(n / list.length * 100) : 0) + '%';
+    const st = sentimentStats(list);
     const cells = [
       { k: '评论数', v: fmtNum(list.length), s: '条' },
       { k: '参与用户', v: fmtNum(users.size), s: '人' },
       { k: '关键词', v: fmtNum(state.words.length), s: '个' },
       { k: '平均点赞', v: fmtNum(Math.round(avg * 10) / 10), s: '' },
-      { k: '高赞（≥100 赞）', v: fmtNum(hot), s: '条' },
+      { k: '正向评论', v: pct(st.pos), s: fmtNum(st.pos) + ' 条' },
+      { k: '负向评论', v: pct(st.neg), s: fmtNum(st.neg) + ' 条' },
+      { k: '主题', v: fmtNum((state.topics || []).length), s: '个' },
       { k: '一级评论', v: pct(topLevel), s: fmtNum(topLevel) + ' 条' },
     ];
     $('#kpis').innerHTML = cells.map((c) => `
@@ -968,6 +1459,11 @@
     return out;
   }
 
+  function sentBadge(c) {
+    const l = (c.sentiment && c.sentiment.label) || 'neu';
+    return '<span class="sbadge ' + l + '" title="词典打分 ' + ((c.sentiment && c.sentiment.score) || 0) + '">' + SENT_LABEL[l] + '</span>';
+  }
+
   function renderTable() {
     const list = sortList(filtered());
     const total = list.length;
@@ -994,15 +1490,16 @@
         ${c.isFolded ? '<span class="badge fold">折叠</span>' : ''}
       </span>`;
       return `<tr>
-        <td><div class="txt">${highlight(c.text || '（无文字）', q)}${badges}</div>
+        <td class="cell-text"><div class="txt">${highlight(c.text || '（无文字）', q)}${badges}</div>
           ${c.videoTitle && !state.filters.videoId ? `<div class="muted small" style="margin-top:4px"><a class="video-link" href="${esc(videoUrl(c.videoId))}" target="_blank" rel="noopener noreferrer" title="在原视频页打开这条视频">${esc(c.videoTitle)} ↗</a></div>` : ''}
         </td>
-        <td>${userCell}</td>
-        <td class="num">${fmtNum(c.digg)}</td>
-        <td class="num">${fmtNum(c.replies)}</td>
-        <td class="muted">${esc(c.ip || '-')}</td>
-        <td class="muted small">${esc(c.createTimeStr ? c.createTimeStr.slice(0, 16) : fmtTime(c.createTime))}</td>
-        <td class="muted small">${c.isReply ? '二级' : '一级'}</td>
+        <td data-label="用户">${userCell}</td>
+        <td class="num" data-label="点赞">${fmtNum(c.digg)}</td>
+        <td class="num" data-label="回复">${fmtNum(c.replies)}</td>
+        <td class="muted" data-label="属地">${esc(c.ip || '-')}</td>
+        <td class="muted small" data-label="时间">${esc(c.createTimeStr ? c.createTimeStr.slice(0, 16) : fmtTime(c.createTime))}</td>
+        <td class="muted small" data-label="层级">${c.isReply ? '二级' : '一级'}</td>
+        <td class="cell-sent" data-label="情感">${sentBadge(c)}</td>
       </tr>`;
     }).join('');
     $('#tableEmpty').classList.toggle('hidden', rows.length > 0);
@@ -1038,7 +1535,13 @@
     ['user_nickname', '用户昵称'], ['user_unique_id', '抖音号'], ['user_sec_uid', 'sec_uid(主页链接用)'],
     ['digg_count', '点赞数'], ['reply_comment_total', '回复数'], ['ip_label', '属地'],
     ['create_time_str', '发布时间'], ['level', '层级(1一级/2二级)'],
+    ['sentiment', '情感(正向/中性/负向)'], ['topic', '主题'],
   ];
+
+  function topicLabelOf(c) {
+    const t = state.topics && state.topics[c.topic];
+    return t ? t.label : '';
+  }
 
   function exportRows() {
     const list = sortList(filtered());
@@ -1069,6 +1572,8 @@
         csvCell(c.user.nickname), csvCell(c.user.uniqueId), csvCell(c.user.secUid),
         csvCell(c.digg), csvCell(c.replies), csvCell(c.ip), csvCell(c.createTimeStr || fmtTime(c.createTime)),
         csvCell(c.isReply ? 2 : 1),
+        csvCell(SENT_LABEL[(c.sentiment && c.sentiment.label) || 'neu']),
+        csvCell(topicLabelOf(c)),
       ].join(','));
     }
     download(new Blob(['\uFEFF' + rows.join('\r\n') + '\r\n'], { type: 'text/csv;charset=utf-8' }), 'comments-view-' + stamp() + '.csv');
@@ -1097,6 +1602,9 @@
         text: c.text, textClean: c.textClean, createTime: c.createTime, createTimeStr: c.createTimeStr,
         diggCount: c.digg, replyCommentTotal: c.replies, ipLabel: c.ip,
         level: c.isReply ? 2 : 1, isReply: !!c.isReply, isHot: !!c.isHot, isFolded: !!c.isFolded,
+        sentiment: (c.sentiment && c.sentiment.label) || 'neu',
+        sentimentScore: (c.sentiment && c.sentiment.score) || 0,
+        topic: topicLabelOf(c),
         user: { nickname: c.user.nickname, uid: c.user.uid, secUid: c.user.secUid, uniqueId: c.user.uniqueId, shortId: c.user.shortId },
       })),
     };
@@ -1127,9 +1635,16 @@
   }
 
   function refreshAll() {
+    // v3.0：先给全部评论打情感分（筛选按它走），再在“基础筛选”集合上做主题聚类，
+    // 最后按当前筛选渲染表格 / KPI / 洞察。
+    annotateSentiment(state.comments);
+    const base = baseFiltered();
+    buildTopics(base);
     const list = filtered();
     recomputeWords(list);
     renderKpis(list);
+    renderInsights(list);
+    renderTopicFilter();
     renderVideoFilter();
     renderWordList();
     renderCloud();
@@ -1192,8 +1707,27 @@
 
     $('#videoFilter').addEventListener('change', (e) => {
       state.filters.videoId = e.target.value;
+      state.filters.topic = '';
       refreshAll();
     });
+    const sentSel = $('#sentFilter');
+    if (sentSel) sentSel.addEventListener('change', (e) => { state.filters.sentiment = e.target.value; refreshAll(); });
+    const topicSel = $('#topicFilter');
+    if (topicSel) topicSel.addEventListener('change', (e) => { state.filters.topic = e.target.value; state.page = 1; refreshAll(); });
+    const insights = $('#insights');
+    if (insights) {
+      insights.addEventListener('click', (e) => {
+        const t = e.target.closest('[data-topic]');
+        if (t) { state.filters.topic = t.dataset.topic; state.page = 1; refreshAll(); return; }
+        const w = e.target.closest('[data-topic-word]');
+        if (w) { $('#search').value = w.dataset.topicWord; state.filters.search = w.dataset.topicWord; state.page = 1; renderTable(); document.querySelector('.table-panel').scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
+        const n = e.target.closest('[data-neg-cid]');
+        if (n) {
+          const c = state.comments.find((x) => x.cid === n.dataset.negCid);
+          if (c) toast((SENT_LABEL[(c.sentiment && c.sentiment.label) || 'neu']) + '：' + (c.text || '（无文字）').slice(0, 80));
+        }
+      });
+    }
     ['onlyHasProfile', 'onlyTopLevel', 'onlyNonEmpty', 'onlyContent'].forEach((id) => {
       $('#' + id).addEventListener('change', (e) => {
         state.filters[id] = e.target.checked;
@@ -1354,8 +1888,20 @@
     closeDrawer,
     renderTable,
     refreshAll,
+    EXPORT_COLS,
+    exportRows,
+    topicLabelOf,
+    sentimentOf,
+    annotateSentiment,
+    sentimentStats,
+    buildTopics,
+    renderInsights,
+    syncInsightHeights,
+    baseFiltered,
+    SENT_LABEL,
     exportFilteredCsv,
     exportFilteredJson,
+    healthOf, renderHealth,
   };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

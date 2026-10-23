@@ -1571,10 +1571,15 @@ export async function collectDouyinComments(o = {}) {
     if (fresh.length === 0) {
       // 区分「真没新评论」和「评论没落库」：后者是扩展后台不可达（页面照采、一条不进库），
       // 早先被错报成「抖音正在限流」，用户看到「交付 0 条」根本不知道发生了什么。
+      // 2026-10-22 修正：落库失败必须有**明确证据**（后台探针挂 / 内容脚本报错），不能只看
+      // 「存储条数没涨」——续采一个已采完的视频时，页面看到的 105 条全是旧 cid、后台 dedupe 后
+      // 存储 163→163 一条没涨，旧逻辑会把它误报成「扩展后台不可达」。真机日志
+      // C:\Users\mo\.dsh\douyin-collector\logs\collect-2026-10-22T04-08-30-8580.log
+      // （bgOk=true、扩展里已有 163 条、交付 0 条）就是这种假失败。
       const pageSaw = Number(finalStatus.unique) || 0;
       const bgTold = finalStatus.bgOk === false
-        || /Receiving end does not exist|Extension context invalidated/i.test(String(finalStatus.error || ''));
-      const stalled = (pageSaw > 0 && all.length <= beforeCids.size) || bgTold;
+        || /Receiving end does not exist|Extension context invalidated|扩展后台没有响应|落库失败|上报 background 失败/i.test(String(finalStatus.error || ''));
+      const stalled = bgTold || (pageSaw > 0 && all.length === 0 && beforeCids.size === 0);
       const whyHead = stalled
         ? '页面采到 ' + pageSaw + ' 条，但扩展存储没有增加（落库失败）：'
           + (finalStatus.error || finalStatus.note || '扩展后台没有响应')

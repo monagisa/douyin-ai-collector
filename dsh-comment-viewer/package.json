@@ -1,6 +1,6 @@
 {
   "name": "dsh-comment-viewer",
-  "version": "0.1.12",
+  "version": "0.2.6",
   "description": "在 DeepSeek Harness Web 侧边栏里直接查看抖音评论词云（交互词云 + 评论表），数据来自本地导出的 douyin-comments-*.json",
   "type": "module",
   "license": "MIT",

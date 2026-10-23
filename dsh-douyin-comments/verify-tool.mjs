@@ -742,7 +742,7 @@ check('扩展 background.js 的 csvCell 有公式注入守卫',
 const devExtDir = path.resolve(here, '..', 'douyin-collector');
 const bundledExtDir = path.resolve(here, 'extension');
 if (fs.existsSync(path.join(devExtDir, 'manifest.json'))) {
-  const SYNC_FILES = ['manifest.json', 'hook.js', 'content.js', 'background.js', 'panel.css', 'app.js', 'index.html', 'style.css'];
+  const SYNC_FILES = ['manifest.json', 'hook.js', 'content.js', 'background.js', 'panel.css', 'app.js', 'index.html', 'cloud.html', 'style.css'];
   const drifted = SYNC_FILES.filter((f) => {
     const a = path.join(devExtDir, f);
     const b = path.join(bundledExtDir, f);
@@ -764,6 +764,7 @@ if (fs.existsSync(path.join(devExtDir, 'manifest.json'))) {
   // 内容脚本自测并镜像 bgOk/bgErr，采集器预检 + 刷新页面自愈 + 如实归因。
   const bgSrc = fs.readFileSync(path.join(devExtDir, 'background.js'), 'utf8');
   const ctSrc = fs.readFileSync(path.join(devExtDir, 'content.js'), 'utf8');
+  const appSrc = fs.readFileSync(path.join(devExtDir, 'app.js'), 'utf8');
   const cssSrc = fs.readFileSync(path.join(devExtDir, 'panel.css'), 'utf8');
   check('扩展后台有零副作用探针 dts-ping（不回落到 dts-status 以免写脏 videoId=undefined）',
     /msg\.type === 'dts-ping'[\s\S]{0,200}?sendResponse\(\{ ok: true, pong: true/.test(bgSrc));
@@ -777,8 +778,11 @@ if (fs.existsSync(path.join(devExtDir, 'manifest.json'))) {
     && /writeLaunchState\(\{ hash: '', version: ext\.version/.test(collectorSrc));
   check('「清空」点了 3 次仍未生效 → 直接报错（不再只记日志然后照样跑）',
     /面板的「清空」没生效（点了 3 次/.test(collectorSrc));
-  check('「交付 0 条」如实归因（区分落库失败 vs 真没新评论）',
-    /const stalled = \(pageSaw > 0 && all\.length <= beforeCids\.size\) \|\| bgTold;/.test(collectorSrc));
+  // 2026-10-22 修正：落库失败必须有明确证据（bgOk=false / 内容脚本报错）。旧逻辑「存储条数没涨」
+  // 会把「续采已采完的视频（全是旧 cid，dedupe 后条数不变）」误报成扩展后台不可达。
+  check('「交付 0 条」如实归因（区分落库失败 vs 真没新评论；必须有明确证据）',
+    /const stalled = bgTold \|\| \(pageSaw > 0 && all\.length === 0 && beforeCids\.size === 0\);/.test(collectorSrc)
+    && /扩展后台没有响应\|落库失败\|上报 background 失败/.test(collectorSrc));
 
   // ---------- 3a-6b) 「等签名」期间持续助推（v0.5.44，用户 m00597：等太久要自己滚一滚） ----------
   // 续采时评论区已开着、页面走缓存渲染不发 comment/list，旧的 3 次预算用完就干等 → 用户以为
@@ -1018,15 +1022,21 @@ check('CSV 第 2 行是中文列名说明（两处都插到表头后，v0.5.27�
     && !/pickFixAutoTried/.test(ctSrc) && !/genericPickIds/.test(ctSrc)
     && !/dts-fix-titles/.test(ctSrc) && !/dts-fix-titles/.test(bgSrc)
     && !/readTitleFromVideoPage/.test(bgSrc) && !/fixVideoTitles/.test(bgSrc)
-    && !/chrome\.tabs\.create/.test(bgSrc) && !/titleFixedAt/.test(bgSrc)
+    // v0.5.46：chrome.tabs.create 现在只用于「导出词云在新标签页打开」，只要不再有「读标题」链路就行
+    && !/titleFixedAt/.test(bgSrc)
     && /return '视频 ' \+ shortVideoId\(id\);/.test(ctSrc)
     && /return 'ID ' \+ shortVideoId\(id\)/.test(ctSrc));
   check('render() 不再引用已删除的本条/全部按钮（只同步 exportScopeText 文案与选中态）',
     !/ui\.scopeVideo/.test(ctSrc)
     && !/ui\.scopeAll/.test(ctSrc)
     && /var pickText = exportScopeText\(\) \+ ' ▾';/.test(ctSrc));
-  check('面板 CSS 有自选视频浮层样式（可滚动列表 + 勾选框）',
+  check('面板 CSS 有自选视频浮层样式（可滚动列表 + 整行选中态）',
     /\.dts-picker-list \{/.test(cssSrc) && /\.dts-picker-item \{/.test(cssSrc) && /\.dts-picker-box \{/.test(cssSrc));
+  check('自选浮层不显示复选框（v0.5.53：input 视觉隐藏，只留描边+提亮表示选中）',
+    /\.dts-picker-box \{[^}]*opacity: 0/.test(cssSrc)
+    && /\.dts-picker-box \{[^}]*clip: rect\(0 0 0 0\)/.test(cssSrc)
+    && /className = 'dts-picker-item'/.test(ctSrc)
+    && /box\.className = 'dts-picker-box'/.test(ctSrc));
 
   // ---------- 3a-9) 清空必须自检、失败必须如实报错（用户 2026-10-06：「全部清空没有用，本地已存还是在」） ----------
   // 真机复现两件事：① 存储其实清掉了，但清空前发出的 dts-stats 旧回包晚到，把「本地已存」又写成旧数字，
@@ -1063,11 +1073,19 @@ check('CSV 第 2 行是中文列名说明（两处都插到表头后，v0.5.27�
     /mkBtn\('导出词云', '', exportCloud, 'export-cloud'\)/.test(ctSrc)
     && !/export-risk-log/.test(ctSrc) && !/function exportRiskLog/.test(ctSrc)
     && !/风控日志/.test(ctSrc.replace(/\/\/[^\n]*/g, ''))); // 注释里保留这段历史说明是允许的
-  check('导出词云走 dts-cloud 消息，后台 exportCloud 打包所有选中视频的评论',
-    /type: 'dts-cloud', videoIds: pick/.test(ctSrc)
-    && /case 'dts-cloud':/.test(bgSrc)
+  check('面板「导出词云」→ 新标签页直接打开（后台写 storage + 打开扩展页 ?cloudview=1）',
+    /type: 'dts-cloud-open', videoIds: pick/.test(ctSrc)
+    && /case 'dts-cloud-open':/.test(bgSrc)
     && /async function exportCloud\(opts\) \{/.test(bgSrc)
-    && /function buildCloudHtml\(docs, title\) \{/.test(bgSrc));
+    && /async function openCloud\(opts\) \{/.test(bgSrc)
+    && /async function buildCloudPayload\(opts\) \{/.test(bgSrc)
+    && /chrome\.storage\.local\.set\(\{ dts_cloud_view: boot, dts_cloud_view_ids: p\.videoIds \}\)/.test(bgSrc)
+    && /chrome\.tabs\.create\(\{ url: chrome\.runtime\.getURL\('cloud\.html'\) \+ '\?cloudview=1', active: true \}\)/.test(bgSrc)
+    && /function buildCloudHtml\(docs, title\) \{/.test(bgSrc)
+    // v0.5.46：扩展页 CSP 禁止内联脚本，词云页逻辑必须作为外部脚本 app.js 的一部分
+    && /BEGIN CLOUD VIEWER \(v0\.5\.46\)/.test(appSrc || '')
+    && /cloudview/.test(appSrc || '')
+    && /window\.__cvViewerMain/.test(appSrc || ''));
   check('词云页源码已内联进 background.js（VIEWER_ASSETS 生成块，扩展仍是 8 个文件）',
     /const VIEWER_ASSETS = \{/.test(bgSrc)
     && /BEGIN VIEWER ASSETS/.test(bgSrc) && /END VIEWER ASSETS/.test(bgSrc)
@@ -1075,8 +1093,11 @@ check('CSV 第 2 行是中文列名说明（两处都插到表头后，v0.5.27�
   check('导出的 HTML 是自包含的（内联样式与脚本 + 数据进 __CW_BOOT__）',
     /window\.__CW_BOOT__/.test(bgSrc)
     && /douyin-wordcloud-/.test(bgSrc)
-    && /\.replace\('<link rel="stylesheet" href="styles\.css">', \(\) =>/.test(bgSrc) // 函数式 replace：$$ 会被当转义（词云页满屏 $$(...)）
-    && /\.replace\('<script src="app\.js"><\/script>', \(\) =>/.test(bgSrc));
+    // v0.5.50：资源引用带 ?v=<版本>，替换改成正则（函数式 replace：$$ 会被当转义，词云页满屏 $$(...)）
+    && /styles\\\.css\(\?:\\\?\[\^"\]\*\)\?/.test(bgSrc)
+    && /app\\\.js\(\?:\\\?\[\^"\]\*\)\?/.test(bgSrc)
+    && /\.replace\(\/<link rel="stylesheet" href="styles/.test(bgSrc)
+    && /\.replace\(\/<script src="app/.test(bgSrc));
   const viewerApp = path.resolve(devExtDir, '..', 'comment-viewer', 'app.js');
   check('词云页支持快照启动（bootFromSnapshot 读 __CW_BOOT__，仍兼容手动选文件）',
     fs.existsSync(viewerApp)
@@ -1109,6 +1130,28 @@ check('CSV 第 2 行是中文列名说明（两处都插到表头后，v0.5.27�
     && /v0\.5\.41：轻量 IDF/.test(viewerSrc0541)
     && /function parseWordList\(v\) \{/.test(viewerSrc0541)
     && /setWordLists/.test(viewerSrc0541));
+  // v3.0（0.5.45）：词云页加深度分析（情感 / 主题聚类 / 趋势 / 地域），内联资产必须同源
+  check('词云页深度分析（v3.0：情感 + 主题聚类 + 趋势/地域图 + 筛选 + 导出扩展，内联资产同源）',
+    /function sentimentOf\(text\)/.test(bgSrc)
+    && /function annotateSentiment\(/.test(bgSrc)
+    && /function buildTopics\(/.test(bgSrc)
+    && /function renderInsights\(/.test(bgSrc)
+    && /v3\.0：先给全部评论打情感分/.test(bgSrc)
+    && /sentimentOf\(text\)/.test(viewerSrc0541)
+    && /buildTopics\(/.test(viewerSrc0541)
+    && /insight-grid/.test(bgSrc)
+    && /情感\(正向\/中性\/负向\)/.test(bgSrc)
+    && /const SENT_LABEL/.test(bgSrc));
+  // v3.1（0.5.46）：词云页加「情感健康度」评分（熵权法 + TOPSIS，按天分桶）
+  check('词云页情感健康度评分（v3.1：熵权法 + TOPSIS，内联资产同源）',
+    /function healthOf\(list\)/.test(bgSrc)
+    && /function entropyWeights\(matrix\)/.test(bgSrc)
+    && /function topsisRisk\(matrix, w\)/.test(bgSrc)
+    && /function renderHealth\(list\)/.test(bgSrc)
+    && /情感健康度/.test(bgSrc)
+    && /box\.innerHTML = renderHealth\(list\) \+ dashboardCard/.test(bgSrc)
+    && /function entropyWeights\(matrix\)/.test(viewerSrc0541)
+    && /health-metrics/.test(bgSrc));
 } else {
   console.log('ℹ️ 跳过扩展副本一致性校验（找不到开发目录 ' + devExtDir + '，非开发机上属正常）');
 }
@@ -1243,5 +1286,21 @@ if (liveIdx > -1) {
 }
 
 const bad = results.filter((r) => !r.ok);
+// ---- v0.5.48：云图专用页 cloud.html + 云图页「下载 HTML」+ 侧栏内联样式 ----
+{
+  const app0548 = fs.readFileSync(path.join(ext.dir, 'app.js'), 'utf8');
+  // 侧栏内联样式在「词云页」源码里（扩展 index.html 是诊断页，不含它）
+  const html0548 = fs.readFileSync('D:/dycopy/comment-viewer/index.html', 'utf8');
+  const cloudPath = path.join(ext.dir, 'cloud.html');
+  const cloud0548 = fs.existsSync(cloudPath) ? fs.readFileSync(cloudPath, 'utf8') : '';
+  check('云图改为打开专用页 cloud.html（v0.5.48）', /cloud\.html/.test(bgSrc) && /cloudview=1/.test(bgSrc) && cloud0548.length > 0, 'cloudHtml=' + cloud0548.length);
+  check('打开云图时记住这批视频 id（v0.5.48）', /dts_cloud_view_ids/.test(bgSrc));
+  check('云图页「下载 HTML」走后台落盘（v0.5.48）', /dts-cloud-save/.test(bgSrc) && /dts-cloud-save/.test(app0548) && /cvSaveHtml/.test(app0548));
+  const inlineChecks = (html0548.match(/class="check" style="display:flex;flex-direction:row/g) || []).length;
+  check('侧栏筛选项带内联样式，不受旧缓存 CSS 影响（v0.5.48）',
+    /class="side-body" style="display:flex;flex-direction:column;align-items:stretch/.test(html0548) && inlineChecks === 4,
+    'inlineChecks=' + inlineChecks);
+}
+
 console.log(`\n${bad.length === 0 ? '全绿' : '有失败'}：${results.length - bad.length}/${results.length}`);
 process.exit(bad.length === 0 && liveOk ? 0 : 1);

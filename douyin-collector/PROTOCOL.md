@@ -2,7 +2,86 @@
 
 > 所有实现必须严格按本文件。改协议要先改本文件并通知所有实现者。
 >
-> **版本号（v0.5.15 起）**：扩展 / DSH 插件 / MCP **统一编号**，当前均为 `0.5.44`。正文里的 `v0.2.x` 是**扩展侧历史编号**：0.2.11↔发布 v0.5.9、0.2.12↔v0.5.10、0.2.13↔v0.5.11、0.2.14↔v0.5.12、0.2.15↔v0.5.13/v0.5.14。
+> **版本号（v0.5.15 起）**：扩展 / DSH 插件 / MCP **统一编号**，当前均为 `0.5.51`。正文里的 `v0.2.x` 是**扩展侧历史编号**：0.2.11↔发布 v0.5.9、0.2.12↔v0.5.10、0.2.13↔v0.5.11、0.2.14↔v0.5.12、0.2.15↔v0.5.13/v0.5.14。
+
+### v0.5.45：词云页 v3.0 深度分析（情感 / 主题 / 图表）
+
+词云页（comment-viewer/、dsh-comment-viewer/app/、扩展内联 VIEWER ASSETS 三处同源）在既有词云/关键词/评论表之外新增：
+
+- **情感**：sentimentOf(text) 用内置词典打分（SENT_POS_STRONG +2 / SENT_POS +1 / SENT_NEG -1 / SENT_NEG_STRONG -2；表情标签 ±1.2；前两个 token 内出现程度副词 ×1.5、否定词 ×-0.8；Math.tanh(score/2) 归一，阈值 ±0.15 分 pos/neu/neg）。annotateSentiment(list) 只补算缺失项，评论对象上挂 sentiment:{score,label,hits}。
+- **主题聚类**：buildTopics(list) 取 tokensOf(textClean||text) → cleanToken(raw,true) 去重，≥2 词成 doc；df 过滤 minDf=max(2,round(n*0.012))，词表取 df 前 900；idf=log(1+n/df)，向量 (1+log tf)*idf L2 归一；k=clamp(3,8,round(sqrt(n)/2))，余弦分配最长 14 轮；每簇 ≥2 篇，标签取簇内词权重前 2，代表评论按 cos*(1+log1p(digg)) 取 3 条；结果写 state.topics 并在评论上挂 c.topic。
+- **筛选**：state.filters.sentiment、state.filters.topic；主题聚类与洞察都基于 baseFiltered()（临时清空这两个筛选），避免自我循环。
+- **UI**：洞察面板 #insights > #insightGrid 四张卡（情感分布 / 评论趋势 / 地域分布 / 主题聚类）；侧栏 #sentFilter（4 项）、#topicFilter（动态，无主题时 disabled）；表格新增 <th class="col-sent">情感</th> 与 .sbadge。
+- **导出**：CSV EXPORT_COLS 12 → **14 列**（末尾 sentiment=情感(正向/中性/负向)、topic=主题；第 1 行英文键 + 第 2 行中文说明不变）；JSON 每条评论增加 sentiment（pos/neu/neg）、sentimentScore（-1~1）、topic（主题标签）。
+- **判据**：（本机自测脚本）_probe_insights_028.mjs 合成 60 条（20 正 / 15 负 / 25 中）ALL PASS（4 卡、KPI 8、三分类、趋势 SVG、地域行、主题行、两筛选、CSV 14 列、情感词典单测、无 JS 报错）；查看器 61/61、词云插件页 34/34、verify-tool.mjs 237/237。
+
+### v0.5.53 契约（自选浮层无复选框）
+- 浮层行内**不再渲染可见勾选框**：`.dts-picker-box` 为 `position:absolute; 1px; opacity:0; clip: rect(0 0 0 0); pointer-events:none`（仍留在 DOM 里承载 `:checked` 状态，供 `:has()` 与 label 点击切换）。
+- 选中态 = `box-shadow: inset 0 0 0 1px rgba(224,169,74,.5)` + `background: rgba(224,169,74,.06)` + 标题 `#f2f2f4/600`；未选中行保留透明 1px 内描边占位，切换时不跳格。
+- 键盘可达：仅 `:has(.dts-picker-box:focus-visible)` 时画描边，鼠标点击不留焦点框（避免取消选中后仍有一圈琥珀）。
+
+### v0.5.52 契约（自选浮层选中态）
+
+- 选中行：`background: rgba(224,169,74,0.06)`、`box-shadow: inset 0 0 0 1px rgba(224,169,74,0.5)`；
+  标题 `#f2f2f4`/600、计数 `var(--text)`、小字 `#9a9aa2`；行 `min-height:44px`、`border-radius:8px`、列表 `gap:2px`。
+- 未选中行：`box-shadow: inset 0 0 0 1px transparent`（占位不跳格）、`background: transparent`；hover `#1b1b1f`、active `#202026`。
+- 复选框 16px，`accent-color: var(--accent)`；选中态不再使用 3px 左亮条。
+- 判据：`_probe_picksel_0523.mjs`（13 条）。
+
+### v0.5.51 契约（洞察卡等高 + 主题卡内滚动）
+
+- 洞察区最后一行是「地域分布（左）/ 主题聚类（右）」两张卡；
+  `syncInsightHeights()` 在 `renderInsights()` 末尾调用：清掉主题 body 的 `maxHeight` → 临时 `leftBody.style.flex='0 0 auto'`
+  量左侧自然高度 → 还原 → `max = max(120, leftNatural - topicHead - 上下内边距)` → 写 `body.style.maxHeight` 与 `overflowY='auto'`。
+- 主题项超出时**在卡内滚动**（`overscroll-behavior: contain`），不撑高整行；`resize` 150ms 防抖重算。
+- `@media (max-width: 700px)` 单列下取消 `maxHeight`/滚动（`overflow-y: visible`）。
+- 判据：`（本机自测脚本）_verify_insight_equal_0551.mjs`、`_verify_insight_scroll_0551.mjs`；
+  两套前端测试各有「主题卡与左侧地域卡等高（±2px）」「主题多到溢出时卡内滚动、且两卡仍等高」两条断言。
+
+### v0.5.50 契约（评论分析台 v4.0 设备兼容层）
+
+分析台（独立页 / DSH 内嵌 / 扩展内联 / 云图页）新增一层纯 CSS 兼容层 + 表格语义属性，**不改任何数据契约**：
+
+- 断点：`900px` KPI 4 列；`1080px` 主区单列、侧栏 `position:static`；`700px` KPI 2 列、顶栏竖排、洞察单列；`620px` 评论表转卡片列表；`min-width:1600px` 侧栏 360px。
+- `#table tbody td` 带 `data-label`（用户/点赞/回复/属地/时间/层级/情感），首列 `class="cell-text"`；卡片布局用 `::before{content:attr(data-label)}` 生成标签。**改表格列时必须同步 data-label**。
+- 触屏 `(hover:none),(pointer:coarse)`：`.cw:hover` 取消放大、按钮/下拉/输入/复选行最小高度 40px。
+- `prefers-reduced-motion: reduce` 时动画与过渡降到 0.001s。
+- 页面 `overflow-x:hidden` + `env(safe-area-inset-*)`；`html{-webkit-text-size-adjust:100%}`（防 iOS 字放大）。
+- 判据：`（本机自测脚本）_shot_responsive_0550.mjs`（390/768/1024/1440 截图 + `scrollW==innerW` + rows=50 + kpis=8）、`_shot_mobile_table.mjs`（窄屏卡片）、taste-skill inspect **0 FAIL / 0 WARN**。
+- 自测：`_test_comment_viewer.mjs` 61/61、`_test_wordcloud_plugin.mjs` 34/34、`verify-tool.mjs` 242/242。
+
+### v0.5.49 契约（云图页首帧占位）
+
+- `cloud.html` 首帧只含一个**纯内联样式**的「正在载入词云…」占位（`<style id="bootCss">`），不引用外部 CSS，避免空状态（黑底 + 三个点）闪现。
+- `app.js` 的 cloudview 引导在替换 `document.body` 之前先移除 `#bootCss`、并 `body.removeAttribute('style')`，避免占位的 `display:flex; align-items:center` 影响词云面板尺寸。
+- 判据：`_probe_cloudtab_048.mjs` 17 项仍全绿（专用页 URL、无 `#hubUrl`、词云 87 词、KPI 8、洞察卡 5、健康度 79、下载 HTML 落盘 >50KB 且含 `__CW_BOOT__`）。
+
+### v0.5.48 契约（云图专用页 + 下载 HTML + 侧栏内联样式）
+
+- 面板「导出词云」：后台写 `chrome.storage.local.dts_cloud_view`（boot）+ `dts_cloud_view_ids`（这批视频 id），再 `chrome.tabs.create({ url: chrome.runtime.getURL('cloud.html') + '?cloudview=1' })`。`cloud.html` 是**专用页**（只含词云骨架 + `app.js`），不再复用诊断页 `index.html`，因此不会有诊断界面的闪现。
+- 云图页「下载 HTML」：页面发 `{type:'dts-cloud-save'}` → 后台用存储里的 `dts_cloud_view_ids` 调 `exportCloud(...)` 落盘（文件名 `douyin-wordcloud-<tag>-<时间>.html`）。MV3 SW 里没有 `URL.createObjectURL`，所以下载必须回到后台的 `chrome.downloads`。
+- 侧栏筛选项：4 个 `.check` 标签 + `.side-body` 带**内联样式**（`display:flex` / `flex-direction:column` / `white-space:nowrap` / `width:100%`），不受外部样式表版本影响；`styles.css?v=` / `app.js?v=` 跟随版本号；插件静态服务 `Cache-Control: no-store, max-age=0`。
+- 页脚 `#uiVer` 显示当前版本，用于快速判断页面是否已更新。
+- 判据：`_probe_cloudtab_048.mjs` 17 项（URL 是 `cloud.html?cloudview=1`、无 `#hubUrl`、词云 87 词、KPI 8、洞察卡 5、健康度 79、有 `#cvSaveHtml`、点击后落盘单文件 HTML 且含 `__CW_BOOT__`）。
+
+### v0.5.47 契约（侧栏竖排修复 + 资源防缓存）
+
+- 现象：窄容器 + 旧缓存 CSS 时，侧栏 `.check`（中文复选框标签）逐字竖排；根因是老版本 `.side-body` 为 `row + wrap`，flex 项的 min-content = 1 字。
+- 防御样式（`comment-viewer/styles.css` 与 `dsh-comment-viewer/app/styles.css` 同源）：`.side-body { flex-wrap: nowrap; align-items: stretch }`、`.side-body > * { flex: 0 0 auto; width: 100%; min-width: 0 }`、`.check { white-space: nowrap }`、`.check input { flex: 0 0 auto }`。
+- 缓存：页面 `styles.css?v=<版本>` / `app.js?v=<版本>`；`dsh-comment-viewer/src/index.mjs` 静态资源响应头 `Cache-Control: no-store, max-age=0`（此前 `no-cache`）。
+- 判据：`_verify_side_narrow_047.mjs`（默认与强制注入旧 row+wrap 布局两种情况下，`.check` 高度=20px、文字宽 ≥80、`white-space: nowrap`）；`verify-tool.mjs` 238/238。
+
+### v0.5.46 契约（情感健康度 + 词云新标签页）
+
+- 词云页洞察区新增「情感健康度」整宽卡：`renderHealth(list)` 输出 `#insightGrid` 里的 `.insight-card.health`；`healthOf(list)` 返回 `{score, risk, grade, metrics, days}`。
+  - 指标口径：`negRatio`（负评占比 / cap 0.35）、`negDigg`（负评点赞占比 / cap 0.35）、`burst`（评论热度 / cap 1）、`topNeg`（高赞负评率 / cap 0.5）。
+  - 算法：按 `createTimeStr.slice(0,10)` 分天 → 熵权法 `e=-1/ln(m)·Σp·ln p`、`w=(1-e)/Σ(1-e)` → TOPSIS `C=dWorst/(dBest+dWorst)` → 按天评论数加权 → `score=round(100·(1-risk))`；`m<2` 或指标全 0 退化为等权 / 加权和。
+  - 等级：≥80 很好 / ≥65 较好 / ≥50 一般 / ≥35 偏弱 / 其余 较差。
+- 面板「导出词云」契约变更：`content.js` 发 `{type:'dts-cloud-open', videoIds}`；`background.js` 的 `openCloud(opts)` 把 `{exportedAt,title,docs}` 写入 `chrome.storage.local.dts_cloud_view`，再 `chrome.tabs.create({url: chrome.runtime.getURL('index.html') + '?cloudview=1'})`。
+  - 页面侧：`app.js` 末尾的 `BEGIN CLOUD VIEWER (v0.5.46)` 块读 storage → 注入 `styles.css`（词云页同源）→ 用 `index.html` 的 body 骨架 + 词云页逻辑 `window.__cvViewerMain()` 渲染；`window.__CW_BOOT__` 为同一份快照结构。
+  - 约束：MV3 SW **不能用** `URL.createObjectURL`；`data:` URL 上限 2MB（实测 3MB 打不开）；扩展页 CSP `script-src 'self'` **禁止内联脚本** ⇒ 词云页必须走外部脚本 `app.js`。
+  - AI / MCP 的 `cloud` 命令仍走 `exportCloud(opts)` 下载 `htmlPath`（行为不变）。
+  - 判据：``dsh-douyin-comments/_probe_cloudtab_046.mjs`（真机 12 项：新标签页是扩展页、标题「词云 · …」、词云 88 词、KPI 8、洞察卡 5、健康度 79 分、无新下载、无 JS 报错）。
 
 ## 0. 文件边界（禁止跨界写入）
 
@@ -392,7 +471,7 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
     `导出范围：本条视频 ▾`。两条清空路径都**必须先改 `exportPick` 再 `setPhase()`**（`setPhase` 内部会 `render()`，
     顺序反了会画出旧文案，要等下一次刷新才更新——v0.5.21 的真机 bug，判据见 `_probe_clearall_0522.mjs`）；
   · **v0.5.23**：选中反馈（用户「导出视频那里，选中没有提示」）——`.dts-picker-item:has(.dts-picker-box:checked)`
-    整行 `background: rgba(224,169,74,0.14)` + `box-shadow: inset 3px 0 0 #e0a94a`（v0.5.31 起琥珀色；v0.5.23~v0.5.30 是蓝 `rgba(63,142,224,0.16)`），选中项标题 `font-weight: 600`；
+    整行 `background: rgba(224,169,74,0.06)` + `box-shadow: inset 0 0 0 1px rgba(224,169,74,0.5)`（v0.5.52 起「1px 描边 + 6% 淡底」；v0.5.31~v0.5.51 是 `rgba(224,169,74,.14)` + 3px 左侧亮条；v0.5.23~v0.5.30 是蓝 `rgba(63,142,224,0.16)`），选中项标题 `font-weight: 600`；
     `.dts-picker-box` 由 15px 放大到 17px；`updatePickerInfo()` 给 `.dts-picker-info` 加 / 去 `.dts-has-sel`
     （蓝字加粗）。判据见 `_probe_picksel_0523.mjs`（13 项）。
   · **v0.5.24**：列表每行标题取 `dts_videos[id].title`，但网格页采集时会存成通用页名
@@ -439,7 +518,7 @@ lists=[0x0@0,0 hidden]`（10 条条目全是 0×0 / hidden）。于是新视频�
     状态点 `.dts-dot-busy` 用绿色 `#6cc59a` + `0 0 0 3px rgba(108,197,154,.16)` 淡环、
     次要信息 `.dts-meta-line`（total / cursor / 每页 / 风控 一行 11.5px、整行省略号）、
     底部 `.dts-foot`（「数据只在本地处理」+ `v` + manifest 版本号）、
-    自选浮层选中态改琥珀（`rgba(224,169,74,.14)` + `inset 3px 0 0 #e0a94a`）。
+    自选浮层选中态：v0.5.52 起按 taste 规则改为「1px 琥珀描边（`.5` 透明）+ 6% 淡底」，行高 44px、圆角 8px、复选框 16px，未选中行用透明内描边占位；不再有 3px 亮条与大块琥珀底。
     空闲时进度条不再跑不确定态动画（只在 `collecting` / `replies` / `waiting-sign` 三个阶段跑）。
   · **v0.5.35：词云页清空持久化** —— DSH 内嵌词云页把「已清空的导出文件路径」存进 localStorage["cw.embed.v1"]（`{cleared:[], lastPath}`）：`reload()` 先过滤掉 `cleared` 里的文件，再按 `lastPath` 恢复上次看的那份，只有 `auto && cleared.size===0` 时才自动载入最新；点「清空」把当前文件写进 `cleared` 并清 `lastPath`；「找回已清空的 N」清空该集合。所以切会话/刷新页面后不会再把清空的数据装回来。
 · **v0.5.34：词云页空状态居中 + 清空移除下拉条** —— 导出/内嵌词云页的 `.cloud-panel` 加 `position: relative`，空状态 `#cloudEmpty` 只在面板内居中（不再铺满整页、不再挡右侧栏）；DSH 内嵌页点「清空」时把当前载入的导出文件从 `#embedSelect` 列表里移除一条（其余保留，选择退回占位；磁盘文件不删，`刷新列表` 可重新扫到）。

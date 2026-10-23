@@ -129,7 +129,8 @@ function serveStatic(req, res, pathname) {
   res.writeHead(200, {
     "Content-Type": type,
     "Content-Length": body.length,
-    "Cache-Control": "no-cache",
+    // v0.5.47：静态资源也不缓存，避免升级后浏览器仍用旧 styles.css / app.js
+        "Cache-Control": "no-store, max-age=0",
   });
   res.end(req.method === "HEAD" ? undefined : body);
 }
