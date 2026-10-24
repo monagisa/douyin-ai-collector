@@ -1,138 +1,106 @@
-# 抖音评论采集器 · 评论分析台
+# 抖音评论采集器 + MCP
 
-把抖音的**公开评论**采下来，导出 CSV / JSON，再用内置的**评论分析台**做词云、情感、主题、趋势与健康度分析——全程在本地完成，不上传任何数据。
-
-三种用法，按需要挑：
-
-| 你想做的事 | 用这个 |
-| --- | --- |
-| 手动采某个视频/主页的评论 | Chrome 扩展（**douyin-collector**） |
-| 让 AI 直接帮你采 | DSH 插件（**dsh-douyin-comments**）或本地 MCP（**douyin-mcp**） |
-| 分析已导出的评论 | 评论分析台（**comment-viewer** / DSH 侧栏 **dsh-comment-viewer** / 扩展面板一键导出） |
-
-[![release](https://img.shields.io/github/v/release/monagisa/douyin-ai-collector?label=release)](https://github.com/monagisa/douyin-ai-collector/releases/latest)
-![platform](https://img.shields.io/badge/browser-Chrome%20111%2B%20%2F%20Edge-informational)
-![local-first](https://img.shields.io/badge/data-stays%20local-brightgreen)
-
-> 当前版本 **v0.5.53**（扩展 / DSH 插件 / MCP **三件套同号**）。下载打包好的产物走 [Releases](https://github.com/monagisa/douyin-ai-collector/releases/latest)，仓库里只放源码。
-
----
-
-## 界面
-
-**浏览器扩展面板**——开始/暂停、目标条数、风控观测；导出范围、导出词云；选中要导出的视频：
-
-![扩展面板](docs/screenshots/panel-picker.png)
-
-**评论分析台**——KPI、可交互词云、关键词榜与筛选：
-
-![分析台总览](docs/screenshots/analysis-overview.png)
-
-**洞察面板**——情感健康度（熵权法 + TOPSIS）、情感分布、评论趋势、地域 Top 8、主题聚类（TF-IDF + k-means）：
-
-![洞察面板](docs/screenshots/insights.png)
-
-**手机 / 平板**——≤620px 评论表自动变卡片列表，触屏热区 ≥40px：
-
-<img src="docs/screenshots/analysis-mobile.png" alt="移动端" width="360">
-
-> 以上截图使用**合成数据**（虚构视频与评论），不含任何真实用户信息。
-
----
-
-## 采集
-
-- **不破解签名**：复用页面自己生成的 `a_bogus` 签名，只改分页游标与游标回放；不伪造请求、不绕过登录。
-- **采集能力**：顶层评论分页（3 路错峰 200ms，服务端并页会自动降回单路）、二级回复补采、目标条数（到量只停顶层、回复仍补完）、限速与「回复预热」可调。
-- **适用范围**：视频详情页 / 推荐流 / 主页网格 / 关注 / 朋友 / 我的 等页面按 DOM 形态自适应；部分页面需要手动展开评论区。
-- **导出**：CSV（20 列，含第 2 行中文列名说明；多条视频 21 列）/ JSON；范围可选「任意几条视频」。
-- **一键词云**：面板「导出词云」→ 新标签页直接打开分析台；也可在云图页「下载 HTML」得到**自包含单文件**（数据+样式+脚本全内联，双击即用，可转发）。
-
-## 评论分析台
-
-纯静态页面，双击 `comment-viewer/index.html` 即可，或通过扩展 / DSH 侧栏打开：
-
-- **词云**：悬停放大 + 弹出「说了这个词的评论」；点击词语开抽屉、点评论跳用户主页。
-- **KPI 8 格**：评论数、参与用户、关键词、平均点赞、正向、负向、主题数、一级评论占比。
-- **洞察**：情感健康度（0~100 + 五级评价 + 四项风险指标权重/贡献）、情感分布、按天评论趋势与负评占比、地域 Top 8、主题聚类（簇标签 + 代表评论 + 条数）。
-- **筛选**：视频 / 情感 / 主题 / 只看有主页 / 只看一级 / 只看有文字 / 过滤虚词；支持**自定义加词**与**屏蔽词**。
-- **导出**：CSV 14 列（含情感、主题）、JSON（含 `sentiment`/`score`/`topic`）、导出筛选结果。
-- 多文件载入、管理记录（可批量删除磁盘上的导出）。
-
-## AI 工具链
-
-- **dsh-douyin-comments**（DSH / Cordis 插件）：把采集注册成 agent 原生工具 `douyin_comments`，插件自带浏览器扩展副本，第一次调用自动装进它启动的浏览器；只交付本次新采的数据。
-- **douyin-mcp**（本地 MCP，stdio）：12 个工具——采集控制（状态/开采/暂停/直播状态/读评论/导出/清空/词云）、设置、以及基于 SQLite(FTS5) 的统计/检索（`summary`/`stats`/`query`/`search`/`sample`/`sentiment`）。
-- **dsh-comment-viewer**（DSH 客户端插件）：在 DSH 侧栏加「评论词云」页，自动读取 `~/.dsh/douyin-collector/out` 里最新的导出。
-
----
-
-## 目录结构
+仓库结构 :
 
 ```text
-douyin-ai-collector/
-├─ README.md                 ← 本文件
-├─ douyin-collector/         ← Chrome MV3 扩展（采集主体 + 面板 + 内联词云页）
-├─ comment-viewer/           ← 评论分析台（纯静态单页：词云 / 洞察 / 表格）
-├─ dsh-douyin-comments/      ← DSH 插件：agent 工具 douyin_comments（自带扩展副本）
-├─ dsh-comment-viewer/       ← DSH 客户端插件：侧栏「评论词云」
-└─ douyin-mcp/               ← 本地 MCP server（采集控制 + 评论检索/统计）
+douyin-ai-collector/          ← 仓库根（可自行命名）
+├─ README.md                  ← 本文件：总览与导航
+├─ .gitignore
+├─ douyin-collector/          ← Chrome MV3 扩展（主项目）
+├─ dsh-douyin-comments/       ← 可选：DSH 插件（把采集做成 agent 工具 douyin_comments，自带扩展自动安装）
+├─ douyin-mcp/                ← 可选：AI / MCP 控制面（控制采集）
+├─ comment-viewer/            ← 可选：纯静态评论分析台（交互词云 + 评论表，点评论跳用户主页）
+├─ dsh-comment-viewer/        ← 可选：DSH 客户端插件（把词云页嵌进 DSH 侧栏「评论词云」）
 ```
 
-## 快速开始
+若只上传扩展，可单独使用 `douyin-collector/` 目录；AI 调用请同时带上 `douyin-mcp/`。
 
-**1. 只采集（扩展）**
+> **版本号（v0.5.15 起）**：扩展、DSH 插件、MCP **三件套统一编号**，当前都是 `0.5.53`。
+> 最近几版：**0.5.53** 自选视频浮层去掉复选框（整行点击切换，选中只靠描边+提亮）；**0.5.52** 自选视频浮层选中态按 taste 重做（1px 琥珀描边 + 6% 淡底，去厚亮条）；**0.5.51** 词云页洞察面板「主题聚类 / 地域分布」两卡等高、主题多时卡内滚动；**0.5.50** 评论分析台 v4.0 设备兼容性适配（360~1920 无横向溢出、≤620px 评论表变卡片、触屏热区 40px、尊重减少动效）+ 视觉打磨；**0.5.49** 云图页首帧改成「正在载入词云…」占位（不再闪一下空状态的黑底三点）；**0.5.48** 云图改用专用页 `cloud.html`（不再先闪诊断页）+ 云图页加「下载 HTML」+ 侧栏复选框改内联样式（彻底防旧缓存竖排）；**0.5.47** 修复侧栏复选框文字在窄容器/旧缓存下逐字竖排（`.side-body` 防御 + `styles.css?v=` 版本号 + 静态资源 `no-store`）；**0.5.46** 词云页加「情感健康度」评分（0~100 + 四项风险指标，熵权法 + TOPSIS）+ 面板「导出词云」改为新标签页直接打开（不再下载）；**0.5.45** 词云页升级为分析台（情感 + 主题聚类 + 趋势/地域图 + 情感/主题筛选，KPI 8 格、CSV 14 列）；**0.5.44** 等签名期间持续助推（每 3 秒滚/开合评论区，最多 20 次，不再点一次就干等）；**0.5.43** 面板「导出范围」默认不再预选视频，没选时提示「未选中视频」；**0.5.42** 词云页加「导出 CSV / 导出 JSON」两个按钮（12 列 CSV + 结构化 JSON，导当前筛选结果）；**0.5.41** 关键词算法升级（视频内 IDF + 泛词剔除 + 自定义加词/屏蔽，1541 条实测 986→710）；**0.5.40** 词云关键词过滤虚词（「这种/都是/我的」不再上榜）+「过滤虚词」开关；**0.5.39** 选择浮层不再假装已选 1 条（未选中就写「还未选中视频」，按钮改「选中视频」）；**0.5.38** 词云导出打通 AI / MCP（Hub `cloud` 命令、MCP `ai_export_wordcloud`、插件 `cloud:true` → `htmlPath`）；**0.5.37** 词云页两栏等高 + 管理记录批量删除；**0.5.36** 词云骨架屏改大块；**0.5.35** 词云页「清空」持久记忆（刷新/切会话不再回来）；**0.5.34** 词云页空状态居中 + 清空后从下拉移除刚清空那条；**0.5.33** 词云页布局稳定 + 加载骨架屏（切换数据不再跳）；**0.5.32** 词云分词剥离抖音 `[表情]` 标签（`[悲伤]` 不再成为关键词）；**0.5.31** 面板视觉改版（三组分栏 / 单一琥珀色 / 白色「开始采集」/ 采集中状态点变绿 / 次要信息压成一行 / 底部版本号）；**0.5.30** 面板「导出风控日志」换成「导出词云」（一键把一个自包含词云 HTML 导出，双击即可交互，可发给别人）；**0.5.29** CSV 的 `user_unique_id`（抖音号）为空时填数字短号（不新增列）；**0.5.28** 删掉 `user_short_id`（单视频 19 列 / 多条 20 列），
+保留 `user_sec_uid`（拼主页）与 `user_unique_id`；**0.5.27** CSV 第 2 行加**中文列名说明**（第 1 行英文键不变）；**0.5.26** 起不再为补标题打开页面，拿不到就显示「视频 <末 8 位>」；**0.5.23** 自选浮层选中高亮；**0.5.22** 全部清空后导出选择立刻复位；**0.5.21** 导出范围只留「导出范围 ▾」；**0.5.20** 支持自选任意几条视频导出；**0.5.19** 面板放大（宽 310px / 基础字号 14px）；**0.5.18** 二级回复预热可调（默认 10 秒，0 = 不预热）。
+> 更早对照：发布 v0.5.9~v0.5.12 = 扩展 0.2.11~0.2.14，v0.5.13 / v0.5.14 = 扩展 0.2.15（MCP 依次 0.3.2~0.3.6）。
 
-1. Chrome / Edge → `chrome://extensions`（`edge://extensions`）→ 开发者模式 → **加载已解压的扩展程序** → 选 `douyin-collector/`
-2. 在**这个浏览器**里登录抖音，打开视频页 → 面板 **开始采集** → **导出 CSV**
-3. 面板「导出范围」可选任意几条已采视频；「导出词云」一键打开分析台
+**下载发布物**（打包好的 tgz / 扩展 zip / 使用说明 / SHA256SUMS）走 **GitHub Releases**，不放在仓库里：
+<https://github.com/monagisa/douyin-ai-collector/releases>（最新版直接看 [releases/latest](https://github.com/monagisa/douyin-ai-collector/releases/latest)）。
+本仓库是 **public**，release 附件可直接下载；给不熟 GitHub 的人，把 zip / tgz 附件直接传文件即可。
 
-**2. 做分析（分析台）**
+---
 
-- 直接双击 `comment-viewer/index.html`，把导出的 JSON / CSV 拖进去；或从扩展面板「导出词云」打开。
-- 首次本地打开时按钮可能需要点一下（浏览器对 `file://` 的文件选择框有限制），从 DSH 侧栏或 `python -m http.server` 打开没有任何限制。
+## 项目是什么
 
-**3. 让 AI 采（DSH 插件）**
+**抖音评论采集器**：在浏览器里采集公开评论并导出 CSV/JSON。  
+设计原则：不破解签名、不绕过登录、不伪造请求；复用页面自己生成的签名，只改分页游标。
 
-```bash
-dsh plugin --profile web add file:<本仓库绝对路径>/dsh-douyin-comments
-```
+**适用范围**：**Chrome 111+ / Edge（Chromium）**；**不支持** Firefox、Safari。详见 [douyin-collector/README.md](./douyin-collector/README.md)「适用范围」。
 
-然后直接对 agent 说「采集这个视频的评论 <链接>」。目标条数、并发路数、回复限速/预热、等扫码秒数、是否先清空等都能在**面板齿轮 / DSH 插件设置 / MCP 工具参数**三处调整（优先级：面板 > AI 下发 > 默认）。
+**douyin-mcp**：本地 MCP Hub，让 AI 代理通过 tools 调用采集能力（状态 / 开采 / 读评论 / 导出）。
 
-**4. 只要 MCP**
+**dsh-douyin-comments**：DeepSeek Harness（Cordis）工具插件，把采集做成 agent 的原生工具 `douyin_comments`。
+插件**自带浏览器扩展副本**，第一次调用时自动把扩展装进它启动的浏览器；只交付本次新采的数据，
+拿不到签名或没有新数据就明确失败。文档见 [dsh-douyin-comments/README.md](./dsh-douyin-comments/README.md)。
 
-```bash
-cd douyin-mcp && node mcp.js
-```
+**comment-viewer**：纯静态单页「评论分析台」——载入插件/扩展导出的 JSON / CSV，生成**可交互词云**与评论表；
+鼠标悬停词语会放大并弹出「说了这个词的评论」，点评论直接跳该用户的抖音主页。无后端、无依赖、数据不出本机。
+文档见 [comment-viewer/README.md](./comment-viewer/README.md)。
 
-在 MCP 客户端注册为 stdio server 即可（详见 [douyin-mcp/README.md](./douyin-mcp/README.md)）。
+**dsh-comment-viewer**：DSH 客户端 UI 插件——在 DSH 里加一个「评论词云」页（左侧栏「插件」组），
+把上面那个分析台整页嵌进去，自动读取 `~/.dsh/douyin-collector/out` 里最新的导出，不用手动拖文件；
+「管理记录」可勾选多条批量删除磁盘上的导出（越权路径会被拒绝）。
+文档见 [dsh-comment-viewer/README.md](./dsh-comment-viewer/README.md)。
 
-## 版本与发布
+| 目录 | 文档 |
+|---|---|
+| 扩展 | [douyin-collector/README.md](./douyin-collector/README.md) |
+| 安装打包 | [douyin-collector/INSTALL.md](./douyin-collector/INSTALL.md) |
+| 内部协议 | [douyin-collector/PROTOCOL.md](./douyin-collector/PROTOCOL.md) |
+| 采集控制 MCP | [douyin-mcp/README.md](./douyin-mcp/README.md) |
+| DSH 采集插件 | [dsh-douyin-comments/README.md](./dsh-douyin-comments/README.md) |
+| 评论分析网页 | [comment-viewer/README.md](./comment-viewer/README.md) |
+| DSH 内嵌词云页 | [dsh-comment-viewer/README.md](./dsh-comment-viewer/README.md) |
 
-- **v0.5.15 起三件套统一编号**；当前 `0.5.53`。
-- 打包产物（扩展 zip / 插件 tgz / 整包 / MCP zip / 使用说明 / SHA256SUMS）见 [Releases](https://github.com/monagisa/douyin-ai-collector/releases/latest)。
-- 最近几版：
-  - **0.5.53** 自选导出浮层去掉复选框（整行点击切换）
-  - **0.5.50** 评论分析台 v4.0 设备兼容（断点 / 卡片化表格 / 触屏 / 减少动效）
-  - **0.5.46** 情感健康度（熵权法 + TOPSIS）+ 「导出词云」改为新标签页
-  - **0.5.45** 分析台加入洞察面板（情感 / 趋势 / 地域 / 主题）
-  - **0.5.41** 关键词算法升级（视频内 IDF + 自定义词表）
+---
+
+## 快速体验
+
+> 浏览器：仅 **Chrome / Edge（Chromium）**，版本建议 ≥ 111；加载解压目录，不要用命令行 `--load-extension`。
+
+1. Chrome 或 Edge → `chrome://extensions` / `edge://extensions` → 开发者模式 → **加载已解压的扩展** → `douyin-collector/`
+2. 在**该浏览器**登录抖音，打开视频页，点面板 **开始采集** → **导出 CSV**
+3. （可选）打开 comment-viewer/index.html，把导出的 JSON/CSV 拖进去 → 看词云、点词看评论、点评论跳主页
+4. （可选）`cd douyin-mcp && node mcp.js`，在 MCP 客户端注册 stdio server
+5. （可选，DSH）`dsh plugin --profile web add file:./dsh-douyin-comments`，直接对 agent 说
+   「采集这个视频的评论 <链接>」——扩展由插件自己装，不用手动加载目录；目标条数 `max`（默认 80000，
+   **采到这么多只停止顶层扫描，二级回复仍会补完**——0.5.11 + 扩展 0.2.13 起真正如此）、
+   顶层列表路数 `lanes`（0.5.13 + 扩展 0.2.15 起生效：默认 **3 路错峰 200ms**，1 = 单路；发现两路同页会自动降回 1 路）、
+   超时、等扫码秒数、是否先清空、二级回复限速（`replyLanes` / `replyGlobalGapMs` / `replyGapMs` / `replyThrottleSec`）与**二级回复预热**（`replyWarmupSec`，0.5.18 起默认 **10 秒**、以前写死 30 秒，0 = 不预热）都可以改，三个入口：
+   **扩展面板标题栏右上角的设置齿轮 `⚙`**（0.2.5 起，优先级最高，用不用 DSH 都能改）→
+   DSH「设置 → 插件 → dsh-douyin-comments」的设置表（0.5.0 起，改完立即生效，不用重启）→
+   AI 经 MCP（`douyin-mcp` 0.5.31）的 `ai_get_settings` / `ai_set_settings`，`ai_start_collect`
+   可带 `max` / `lanes` / `replyLanes` / `replyGlobalGapMs` / `replyGapMs` / `replyWarmupMs` / `replyThrottleMaxWaitMs`
+   （优先级：面板齿轮 > AI 下发 > 内置默认）。0.5.12 + 扩展 0.2.14 起，回复接口被服务端暂时拒绝时
+   **不再「十秒不行就收尾」**：单波最多撞 12 秒，波间停 15/30/60 秒自动再来一波，总窗口默认 120 秒
+   （`replyThrottleSec` / `replyThrottleMaxWaitMs` 可调，设 10 秒 = 老行为）；`replyGlobalGapMs = 0`
+   明确等于「用内置 250ms」。0.5.14 起**每次调用都写一份运行日志**（`~/.dsh/douyin-collector/logs/`，
+   返回值 `logPath`，末尾一行是「收工原因」），**失败或没采完时另存失败现场**（`~/.dsh/douyin-collector/failures/`，
+   含截图 / 页面 HTML / 状态 JSON / 日志副本，返回值 `snapshotDir`；正常采完不留，日志留 50 份、现场留 20 份）。
+   装完**不用重启**：桌面端这类宿主默认开着 HMR（只监听 profile 配置，`@deepseek-ai/dsh-hmr` 的 `root: []`），
+   新装插件会即时重新组合并挂载；只有**覆盖安装同一个包换版本**时才需要重启 DSH 才会加载新代码。
+   要把这套发给别人：下载 [v0.5.31 的单文件包](https://github.com/monagisa/douyin-ai-collector/releases/download/v0.5.31/dsh-douyin-comments-v0.5.31.zip)
+
+   （解压后是 `dsh-douyin-comments-0.5.31.tgz` 插件包 + `douyin-collector-extension-v0.5.31.zip`
+    单独扩展 + `使用说明.md` + `SHA256SUMS.txt`）。
+   对方**不用 DSH、只要 MCP**：下载
+   [v0.5.31 里的 MCP 单文件包](https://github.com/monagisa/douyin-ai-collector/releases/download/v0.5.31/douyin-collector-mcp-v0.5.31.zip)
+   （解压后是 `douyin-collector/` 扩展源码（0.5.31）+ `douyin-mcp/` 本地 MCP server（0.5.31）+
+    `使用说明.md`）。同页附件里还有 `SHA256SUMS.txt` 可校验，单独的中文说明是附件 `USAGE-zh-CN.md`。
+   （**v0.5.15 起三件套同号**；v0.5.14 及更早是扩展 `0.2.x` / 插件 `0.5.x` / MCP `0.3.x` 各自编号。）
+
+---
 
 ## 合规提示
 
-- 仅用于自有账号、公开数据与研究场景；可能违反平台用户协议，**风险自负**。
-- 不要提交 Cookie、浏览器 profile、私钥或真实评论数据集到任何仓库。
-- 采集是只读的：不发帖、不点赞、不关注。
+- 仅用于自有账号、公开数据与研究场景  
+- 可能违反平台用户协议，风险自负  
+- 勿提交 Cookie、profile、私钥、真实评论数据集  
 
-## 文档
-
-| 主题 | 文档 |
-| --- | --- |
-| 扩展使用与限制 | [douyin-collector/README.md](./douyin-collector/README.md) |
-| 安装 / 打包 | [douyin-collector/INSTALL.md](./douyin-collector/INSTALL.md) |
-| 内部协议（签名、分页、面板、导出格式） | [douyin-collector/PROTOCOL.md](./douyin-collector/PROTOCOL.md) |
-| 评论分析台 | [comment-viewer/README.md](./comment-viewer/README.md) |
-| DSH 采集插件 | [dsh-douyin-comments/README.md](./dsh-douyin-comments/README.md) |
-| DSH 侧栏词云页 | [dsh-comment-viewer/README.md](./dsh-comment-viewer/README.md) |
-| 本地 MCP | [douyin-mcp/README.md](./douyin-mcp/README.md) |
+详细限制与数据口径见扩展 README / INSTALL。

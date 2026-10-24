@@ -7,7 +7,7 @@
 - 数据只在**本机浏览器**里处理，不发任何网络请求、不上传服务器。
 - 目录结构仿 `dsh-douyin-comments/`，独立可移植：整个文件夹拷给别人即可。
 
-![词云与悬浮框](../docs/screenshots/cloud-tooltip.png)
+![词云与悬浮框](screenshots/cloud-tooltip.png)
 
 ## 洞察卡等高（v0.5.51）
 
@@ -78,15 +78,21 @@
 node <taste-skill>/skills/taste-skill/scripts/inspect.mjs "http://127.0.0.1:8791/index.html" --app --widths 1440
 ```
 
-## 截图
+改版前的样子留在 `screenshots/before-taste-skill.png` 做对比。
 
-> 下面所有截图都用**虚构数据**生成（3 个虚构视频、140 条合成评论、虚构昵称/ID），不包含任何真实用户或真实评论。
+## 截图
 
 | 词云 + 悬停悬浮框 | 点词后的评论抽屉 |
 | --- | --- |
-| ![词云](../docs/screenshots/cloud-tooltip.png) | ![抽屉](../docs/screenshots/word-drawer.png) |
+| ![词云](screenshots/cloud-tooltip.png) | ![抽屉](screenshots/word-drawer.png) |
 
-完整界面总览与洞察面板见仓库根目录 [README](../README.md#界面) 的截图；另有一张 390px 手机端截图。
+![悬浮框近景](screenshots/tooltip.png)
+
+空状态：![空状态](screenshots/empty-state.png)
+
+插件面板「导出词云」按钮（v0.5.30）：![面板](screenshots/panel-export-cloud.png)
+
+双击那个 HTML 打开的快照模式（数据全内联，可直接发给别人）：![快照](screenshots/cloud-snapshot.png)
 
 ## 快速开始
 
@@ -218,7 +224,7 @@ comment-viewer/
 ├── styles.css   # 深色主题样式
 ├── app.js       # 解析 / 分词 / 词云布局 / 交互（无依赖）
 ├── README.md
-└── README.md
+└── screenshots/ # 截图（词云 / 抽屉 / 悬浮框）
 ```
 
 ## 自动化测试
