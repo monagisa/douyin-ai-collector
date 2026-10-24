@@ -1,7 +1,9 @@
 # dsh-douyin-comments
 
 DeepSeek Harness（Cordis）工具插件：**采集抖音视频的公开评论**，注册一个工具 `douyin_comments`。
-（插件版本 0.5.53；**v0.5.15 起插件 / 内置扩展「抖音评论采集器」/ MCP `douyin-collector-mcp` 三件套统一编号**，同为 `0.5.53`。）
+（插件版本 0.5.54；**v0.5.15 起插件 / 内置扩展「抖音评论采集器」/ MCP `douyin-collector-mcp` 三件套统一编号**，同为 `0.5.54`。）
+
+**0.5.54 变更**（2026-10-24）：**隐私清理，无功能变化** —— README / PROTOCOL / 插件说明里引用的真实视频 ID、评论 ID 与真实关键词示例，统一换成 `76…`/`露营` 这类占位符；代码行为、文件格式、工具参数都没变。
 
 **0.5.53 变更**（2026-10-23）：自选视频浮层去掉复选框——整行点击切换，选中只用 1px 琥珀描边 + 6% 淡底 + 标题提亮（`input` 视觉隐藏，保留状态与键盘可达）。
 
@@ -973,23 +975,23 @@ node sync-extension.mjs D:\path\to\ext
 ## 打包 / 发布
 
 **正式分发走 GitHub Releases**（仓库里不放二进制包，`release/` 只在本地做打包输出）：
-<https://github.com/monagisa/douyin-ai-collector/releases> —— 当前版本 [v0.5.53](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.53)，
-附件有 `dsh-douyin-comments-v0.5.53.zip`（整目录单文件）、`dsh-douyin-comments-0.5.53.tgz`、
-`douyin-collector-extension-v0.5.53.zip`、`douyin-collector-mcp-v0.5.53.zip`、`USAGE-zh-CN.md`（中文说明，zip 里叫 `使用说明.md`）、`SHA256SUMS.txt`。
-**v0.5.15 起三件套同号**（插件 = 扩展 = MCP = `0.5.53`）。
+<https://github.com/monagisa/douyin-ai-collector/releases> —— 当前版本 [v0.5.54](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.53)，
+附件有 `dsh-douyin-comments-v0.5.54.zip`（整目录单文件）、`dsh-douyin-comments-0.5.54.tgz`、
+`douyin-collector-extension-v0.5.54.zip`、`douyin-collector-mcp-v0.5.54.zip`、`USAGE-zh-CN.md`（中文说明，zip 里叫 `使用说明.md`）、`SHA256SUMS.txt`。
+**v0.5.15 起三件套同号**（插件 = 扩展 = MCP = `0.5.54`）。
 更早一版 [v0.5.44](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.44)（等签名期间持续助推）、
 [v0.5.38](https://github.com/monagisa/douyin-ai-collector/releases/tag/v0.5.38)（词云导出打通 AI/MCP）。
 
-本地发布物在 `release\dsh-douyin-comments-v0.5.53\`：
+本地发布物在 `release\dsh-douyin-comments-v0.5.54\`：
 
 | 文件 | 说明 |
 | --- | --- |
-| `dsh-douyin-comments-0.5.53.tgz` | 插件本体，14 个文件（`index.js`/`collector.mjs`/`cordis.patch.yml`/`README.md`/`package.json` + `client/client.js` + `extension/` 8 个） |
-| `douyin-collector-extension-v0.5.53.zip` | 单独的扩展 zip，顶层目录 `douyin-collector/`（8 个文件），供 `chrome://extensions` 手动「加载已解压的扩展程序」（**本版扩展代码与 manifest 版本号都变了 ⇒ 必须重新打包**，不能沿用旧 zip） |
+| `dsh-douyin-comments-0.5.54.tgz` | 插件本体，14 个文件（`index.js`/`collector.mjs`/`cordis.patch.yml`/`README.md`/`package.json` + `client/client.js` + `extension/` 8 个） |
+| `douyin-collector-extension-v0.5.54.zip` | 单独的扩展 zip，顶层目录 `douyin-collector/`（8 个文件），供 `chrome://extensions` 手动「加载已解压的扩展程序」（**本版扩展代码与 manifest 版本号都变了 ⇒ 必须重新打包**，不能沿用旧 zip） |
 | `使用说明.md` | 给收件人看的中文说明（安装/扫码/两处设置/参数/FAQ/macOS） |
 | `SHA256SUMS.txt` | 三个文件的 SHA256 |
 
-整包单文件 `dsh-douyin-comments-v0.5.53.zip`（把上面整目录打成一个单文件，方便直接发给人）**也放在同一个 `release\dsh-douyin-comments-v0.5.53\` 目录里**（v0.5.12 起改为随版本目录存放，不再放在 `release\` 根下）。
+整包单文件 `dsh-douyin-comments-v0.5.54.zip`（把上面整目录打成一个单文件，方便直接发给人）**也放在同一个 `release\dsh-douyin-comments-v0.5.54\` 目录里**（v0.5.12 起改为随版本目录存放，不再放在 `release\` 根下）。
 
 更早的草稿目录（`release\dsh-douyin-comments-v0.5.7\` 及以前）都保留作对照，不删。
 
